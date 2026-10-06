@@ -19,6 +19,24 @@ x-topic: &topic
         --partitions "$${PARTITIONS:-1}" \
         --replication-factor "$${REPLICATION_FACTOR:-1}"
 
+# Consumer: subscribe to one topic, print every record to stdout.
+# GROUP_ID defaults to the container hostname, so a consumer without one is
+# its own group (fan-out); consumers sharing a GROUP_ID split the partitions.
+x-consumer: &consumer
+  image: confluentinc/cp-kcat:8.2.4
+  depends_on:
+    kafka:
+      condition: service_healthy
+  entrypoint:
+    - sh
+    - -ec
+    - |
+      exec kcat -b kafka:19092 \
+        -G "$${GROUP_ID:-$$HOSTNAME}" \
+        -X auto.offset.reset="$${AUTO_OFFSET_RESET:-earliest}" \
+        -u -f 'partition=%p offset=%o key=%k value=%s\n' \
+        "$${TOPIC_NAME:?TOPIC_NAME is required}"
+
 services:
   kafka:
     image: apache/kafka:4.3.1
@@ -56,3 +74,29 @@ services:
     <<: *topic
     environment:
       TOPIC_NAME: events
+
+  # Two members of one group on a 3-partition topic: each gets a share.
+  # `docker compose up -d --scale orders-workers=3` adds a member.
+  orders-workers:
+    <<: *consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      topic-orders:
+        condition: service_completed_successfully
+    deploy:
+      replicas: 2
+    environment:
+      TOPIC_NAME: orders
+      GROUP_ID: orders-workers
+
+  # Own group (no GROUP_ID): receives every record regardless of the workers.
+  orders-audit:
+    <<: *consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      topic-orders:
+        condition: service_completed_successfully
+    environment:
+      TOPIC_NAME: orders
