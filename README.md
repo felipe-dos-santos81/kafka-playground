@@ -65,7 +65,7 @@ Each record prints as `partition=0 offset=12 key=k1 value={"id":1}`. On every gr
 ## Walkthrough
 
 1. `make logs` in one terminal.
-2. Open http://localhost:8080/topics/orders/produce-record. Enter key `k1`, paste `{"id": 1, "status": "new"}` as the value and click Produce. Console reports the partition and offset of the new record.
+2. Open http://localhost:8080/topics/orders/produce-record. Enter key `k1`, paste `{"id": 1, "status": "new"}` as the value and click Produce. Console reports the partition and offset of the new record in a brief toast ("Record published on partition N with offset M") and then shows the topic's messages. Console does not validate JSON before sending; an invalid value is produced as plain text.
 3. In the logs the record appears once in `orders-workers` (one of the two replicas) and once in `orders-audit`.
 4. Produce again with the same key: same partition, offset + 1. Use another key, or pick a partition in the form, to see the other worker replica print it.
 5. `make scale n=3`: the rebalance lines show three members with one partition each. `make scale n=2` goes back.
