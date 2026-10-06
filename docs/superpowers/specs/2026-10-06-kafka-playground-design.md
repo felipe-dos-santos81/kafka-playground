@@ -44,6 +44,7 @@ verification, not guaranteed.
 
 ```
 docker-compose.yml
+Makefile
 README.md
 docs/superpowers/specs/2026-10-06-kafka-playground-design.md
 ```
@@ -137,17 +138,38 @@ x-consumer: &consumer
   "records":[{"key":<base64>,"value":<base64>,"headers":[],"partitionId":-1}]}`,
   200 response with partition and offset per record.
 
+## Makefile
+
+Style copied from the user's reference Makefile: `SERVICE` variable, a `help`
+target that greps `## ` comments, `.PHONY`, `# ── Section ──` rules, lower-case
+`arg ?= default` variables passed as `make target arg=val`, `@echo` progress
+lines. Targets:
+
+| Target | Does |
+|---|---|
+| `help` | print targets (default) |
+| `up` | `docker compose up -d --wait`, print URLs |
+| `down` | `docker compose down --remove-orphans` |
+| `ps` | `docker compose ps -a` |
+| `logs [svc=...]` | follow logs, default `orders-workers orders-audit` |
+| `topics` | `kafka-topics.sh --describe` inside the broker |
+| `groups` | `kafka-consumer-groups.sh --describe --all-groups` inside the broker |
+| `produce value='{...}' [topic=orders] [key=k]` | one record via `POST /api/topics-records` (base64 key/value, `partitionId: -1`) |
+| `scale n=3` | `docker compose up -d --scale orders-workers=N orders-workers` |
+| `verify` | `up`, produce a unique record, assert `orders-workers` logged it once and `orders-audit` once |
+
+`verify` is the one runnable end-to-end check that ships with the repo.
+
 ## README.md
 
 Sections, in order: what you get (one table of services and ports), start
-(`docker compose up`, URLs), add a topic (copy the three-line service), add a
-consumer (copy a service; note the `depends_on` on the topic job and the
-`GROUP_ID` semantics), scale (`docker compose up -d --scale orders-workers=3`),
-walkthrough (produce from the Console form, watch
-`docker compose logs -f orders-workers orders-audit`, what to expect for
-shared vs separate groups, same key → same partition), produce from the
-command line (the `curl` above), connect from the host (`localhost:9092`),
-reset (`docker compose down`).
+(`make up`, URLs, `make help`), add a topic (copy the three-line service), add
+a consumer (copy a service; note the `depends_on` on the topic job and the
+`GROUP_ID` semantics), walkthrough (produce from the Console form, watch
+`make logs`, what to expect for shared vs separate groups, same key → same
+partition, `make scale n=3`, `make groups`), produce from the command line
+(`make produce` and the raw `curl`), connect from the host (`localhost:9092`),
+reset (`make down`), verify (`make verify`).
 
 ## Verification plan
 
