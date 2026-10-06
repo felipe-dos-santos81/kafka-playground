@@ -34,7 +34,7 @@ Copy one of the topic jobs in `docker-compose.yml`:
       REPLICATION_FACTOR: 1     # optional, default 1 (single broker: keep 1)
 ```
 
-Re-running a job is safe: it exits 0 if the topic already exists.
+Re-running a job is safe: it exits 0 if the topic already exists. Changing `PARTITIONS` for an existing topic does nothing (`--if-not-exists`); run `make down` first.
 
 ## Add a consumer
 
@@ -68,7 +68,7 @@ Each record prints as `partition=0 offset=12 key=k1 value={"id":1}`. On every gr
 2. Open http://localhost:8080/topics/orders/produce-record. Enter key `k1`, paste `{"id": 1, "status": "new"}` as the value and click Produce. Console reports the partition and offset of the new record in a brief toast ("Record published on partition N with offset M") and then shows the topic's messages. Console does not validate JSON before sending, even with the value Type set to JSON; an invalid value is produced as plain text.
 3. In the logs the record appears once in `orders-workers` (one of the two replicas) and once in `orders-audit`.
 4. Produce again with the same key: same partition, offset + 1. Use another key, or pick a partition in the form, to see the other worker replica print it.
-5. `make scale n=3`: the rebalance lines show three members with one partition each. `make scale n=2` goes back.
+5. `make scale n=3`: the rebalance lines show three members with one partition each. `make scale n=2` goes back. `make up` and `make verify` reset `orders-workers` to the 2 replicas declared in the compose file.
 6. `make groups` shows each group's members, assigned partitions and lag.
 
 ## Produce from the command line
@@ -101,11 +101,11 @@ The HTTP status is 200 even when a record fails; check each record's `error` fie
 
 ## Connect from the host
 
-Any Kafka client on your machine: bootstrap server `localhost:9092`, no auth, no TLS.
+The broker and Console bind to `127.0.0.1` only. Any Kafka client on your machine: bootstrap server `localhost:9092`, no auth, no TLS.
 
 ```sh
 kcat -L -b localhost:9092                                                                 # if kcat is installed
-docker run --rm --entrypoint kcat confluentinc/cp-kcat:8.2.4 -L -b host.docker.internal:9092   # otherwise
+docker run --rm --entrypoint kcat confluentinc/cp-kcat:8.2.4 -L -b host.docker.internal:9092   # otherwise (metadata only)
 ```
 
 ## Reset

@@ -58,9 +58,8 @@ produce: ## [STEP 2] Produce one JSON record via the Console backend (usage: mak
 	@test -n '$(value)' || { echo "value is required, e.g. make produce value='{\"id\":1}'"; exit 1; }
 	@if [ -n '$(key)' ]; then key="\"$$(printf '%s' '$(key)' | base64 | tr -d '\n')\""; else key=null; fi; \
 	value=$$(printf '%s' '$(value)' | base64 | tr -d '\n'); \
-	curl -sS -X POST $(CONSOLE_URL)/api/topics-records -H 'Content-Type: application/json' \
-		-d "{\"topicNames\":[\"$(topic)\"],\"compressionType\":0,\"useTransactions\":false,\"records\":[{\"key\":$$key,\"value\":\"$$value\",\"headers\":[],\"partitionId\":-1}]}"; \
-	echo
+	curl -fsS -X POST $(CONSOLE_URL)/api/topics-records -H 'Content-Type: application/json' \
+		-d "{\"topicNames\":[\"$(topic)\"],\"compressionType\":0,\"useTransactions\":false,\"records\":[{\"key\":$$key,\"value\":\"$$value\",\"headers\":[],\"partitionId\":-1}]}" && echo
 
 # ── Scale ────────────────────────────────────────────────────────────────────
 
@@ -73,7 +72,12 @@ scale: ## [STEP 4] Set the number of orders-workers group members (usage: make s
 verify: up ## End-to-end check: produce a unique record, assert the worker group logged it once and the audit group once
 	@id="verify-$$(date +%s)"; \
 	$(MAKE) --no-print-directory produce topic=orders key="$$id" value="{\"id\":\"$$id\"}" >/dev/null; \
-	sleep 3; \
+	for i in $$(seq 15); do \
+		w=$$($(COMPOSE) logs --no-log-prefix orders-workers | grep -c "key=$$id "); \
+		a=$$($(COMPOSE) logs --no-log-prefix orders-audit | grep -c "key=$$id "); \
+		[ "$$w" -ge 1 ] && [ "$$a" -ge 1 ] && break; sleep 1; \
+	done; \
+	sleep 1; \
 	w=$$($(COMPOSE) logs --no-log-prefix orders-workers | grep -c "key=$$id "); \
 	a=$$($(COMPOSE) logs --no-log-prefix orders-audit | grep -c "key=$$id "); \
 	echo "orders-workers saw it $$w time(s), orders-audit saw it $$a time(s)"; \
