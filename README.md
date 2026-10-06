@@ -108,6 +108,12 @@ kcat -L -b localhost:9092                                                       
 docker run --rm --entrypoint kcat confluentinc/cp-kcat:8.2.4 -L -b host.docker.internal:9092   # otherwise
 ```
 
+## Reset
+
+```sh
+make down      # docker compose down: removes containers; topics and messages are gone
+```
+
 ## Verify end to end
 
 ```sh
@@ -115,9 +121,3 @@ make verify
 ```
 
 Produces a unique record and asserts that the worker group logged it exactly once and the audit group exactly once.
-
-## Reset
-
-```sh
-make down      # docker compose down: removes containers; topics and messages are gone
-```
