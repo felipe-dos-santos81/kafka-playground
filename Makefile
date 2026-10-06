@@ -25,6 +25,12 @@ help: ## Print this help message
 
 up: ## [STEP 1] Start the whole stack (topic jobs run to completion first, then consumers start)
 	$(COMPOSE) up -d
+	@echo "Waiting for Console and for every consumer to get partitions..."; \
+	for i in $$(seq 60); do \
+		h=$$(curl -s -o /dev/null -w '%{http_code}' $(CONSOLE_URL)/admin/health); \
+		c=$$($(COMPOSE) logs --no-log-prefix orders-workers orders-audit | grep -c 'assigned: orders'); \
+		[ "$$h" = 200 ] && [ "$$c" -ge 3 ] && exit 0; sleep 1; \
+	done; echo "stack not ready after 60s (console=$$h, assignments=$$c)"; exit 1
 	@echo "Console: $(CONSOLE_URL)   Broker from the host: localhost:9092"
 
 down: ## Stop and remove every container (topics and messages are lost)
