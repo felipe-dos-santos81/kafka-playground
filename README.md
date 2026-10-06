@@ -73,3 +73,7 @@ Consumers sharing a `GROUP_ID` split the partitions; without one, each container
 ## Connect from the host
 
 Any client: bootstrap `localhost:9092`, e.g. `kcat -L -b localhost:9092`.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
