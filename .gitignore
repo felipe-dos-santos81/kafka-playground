@@ -1,0 +1,10 @@
+# Local build output of producer/ (go build)
+/producer/producer
+
+# Agent scratch space
+/.superpowers/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

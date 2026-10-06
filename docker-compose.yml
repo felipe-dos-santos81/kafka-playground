@@ -1,12 +1,12 @@
 # Local Kafka playground: one KRaft broker, one-shot topic jobs, kcat consumers,
-# Redpanda Console as the producer page. No auth, no TLS, nothing persisted.
+# a small producer page and Redpanda Console. No auth, no TLS, nothing persisted.
 # Containers reach the broker at kafka:19092; the host at localhost:9092.
 
 # One-shot job: create a topic, exit 0 (also when it already exists).
 # Declare it as many times as you need topics; only `environment` changes.
 x-topic: &topic
   image: apache/kafka:4.3.1
-  depends_on:
+  depends_on: &after-kafka
     kafka:
       condition: service_healthy
   command:
@@ -24,9 +24,7 @@ x-topic: &topic
 # its own group (fan-out); consumers sharing a GROUP_ID split the partitions.
 x-consumer: &consumer
   image: confluentinc/cp-kcat:8.2.4
-  depends_on:
-    kafka:
-      condition: service_healthy
+  depends_on: *after-kafka
   entrypoint:
     - sh
     - -ec
@@ -79,9 +77,8 @@ services:
   # `docker compose up -d --scale orders-workers=3` adds a member.
   orders-workers:
     <<: *consumer
-    depends_on:
-      kafka:
-        condition: service_healthy
+    depends_on: &orders-deps
+      <<: *after-kafka
       topic-orders:
         condition: service_completed_successfully
     deploy:
@@ -93,22 +90,43 @@ services:
   # Own group (no GROUP_ID): receives every record regardless of the workers.
   orders-audit:
     <<: *consumer
-    depends_on:
-      kafka:
-        condition: service_healthy
-      topic-orders:
-        condition: service_completed_successfully
+    depends_on: *orders-deps
     environment:
       TOPIC_NAME: orders
 
-  # Producer web page: http://localhost:8080 -> Topics -> orders -> Produce record.
+  # Producer page: topic dropdown, key, JSON value validated before sending,
+  # shows partition and offset. Source in ./producer. Waits for every topic
+  # job so the dropdown is complete (and `docker compose up --wait` accepts
+  # the exited jobs as finished dependencies).
+  producer:
+    build: ./producer
+    image: kafka-playground/producer:1.0.0
+    pull_policy: build    # local image: never pull this name from a registry; rebuild on every up (cached)
+    depends_on:
+      <<: *after-kafka
+      topic-orders:
+        condition: service_completed_successfully
+      topic-events:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8081:8081"
+    environment:
+      KAFKA_BROKERS: &bootstrap kafka:19092
+    healthcheck:
+      test: ["CMD", "/producer", "-healthcheck"]
+      interval: 2s
+      retries: 30
+
+  # Kafka web UI for browsing topics, messages and groups: http://localhost:8080
   console:
     image: redpandadata/console:v3.12.0
-    depends_on:
-      kafka:
-        condition: service_healthy
+    depends_on: *after-kafka
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      KAFKA_BROKERS: kafka:19092
+      KAFKA_BROKERS: *bootstrap
       ANALYTICS_ENABLED: "false"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/admin/health"]
+      interval: 2s
+      retries: 30

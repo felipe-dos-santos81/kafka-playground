@@ -26,14 +26,14 @@ registry, multi-broker.
 
 ## Component decisions
 
-No custom code. Every component is an existing image.
+Every component is an existing image except the producer page (see Amendments).
 
 | Component | Chosen | Rejected |
 |---|---|---|
 | Broker | `apache/kafka:4.3.1` — official, KRaft via `KAFKA_*` env, ships CLI scripts used for the healthcheck and topic jobs. 4.4.0 is still RC. | `apache/kafka-native` (no CLI scripts, would need a second image anyway); `bitnami/kafka` (free tag catalog gutted in 2025); `confluentinc/cp-kafka` (bigger, Confluent licence). |
 | Topic provisioner | `kafka-topics.sh --create --if-not-exists` from the broker image, wrapped in a compose YAML anchor. Idempotent by flag, env defaults via bash. | Custom code (nothing to add). |
 | Consumer | `confluentinc/cp-kcat:8.2.4` — kcat with current librdkafka, image rebuilt Sep 2026, `-G` mode prints partition assignments on every rebalance. | `edenhill/kcat:1.7.1` (image frozen Jan 2022, librdkafka 1.8.x, Kafka 4.x compatibility unverified); `kafka-console-consumer.sh` (~300 MB JVM per consumer, slow start, no rebalance output). |
-| Producer page | `redpandadata/console:v3.12.0` — Go binary, produce form at `/topics/<topic>/produce-record` with key, value and partition selector, backend `POST /api/topics-records` returns partition and offset. Producing is a Community feature; no licence needed. | Kafbat UI 1.5.0 (produce API returns 204, no partition/offset); AKHQ 0.28.0 (JVM, no JSON validation); Confluent REST Proxy 8.3.2 (returns offsets but still needs custom HTML, nginx, CORS and a ~1 GB JVM); custom Go page (would fit exactly, but user chose Console). |
+| Producer page | Custom Go page `producer/` (franz-go, multi-stage build, `scratch` final image, 14 MB) — see Amendments. Redpanda Console stays as the browsing UI. Originally: `redpandadata/console:v3.12.0` — Go binary, produce form at `/topics/<topic>/produce-record` with key, value and partition selector, backend `POST /api/topics-records` returns partition and offset. Producing is a Community feature; no licence needed. | Kafbat UI 1.5.0 (produce API returns 204, no partition/offset); AKHQ 0.28.0 (JVM, no JSON validation); Confluent REST Proxy 8.3.2 (returns offsets but still needs custom HTML, nginx, CORS and a ~1 GB JVM); custom Go page (would fit exactly, but user chose Console). |
 
 Known gap accepted by the user: Console selects the topic by navigating to
 it rather than a dropdown on the form, and client-side JSON validation and
@@ -46,6 +46,7 @@ verification, not guaranteed.
 docker-compose.yml
 Makefile
 README.md
+producer/main.go, producer/index.html, producer/Dockerfile, producer/go.mod, producer/go.sum
 docs/superpowers/specs/2026-10-06-kafka-playground-design.md
 ```
 
@@ -154,9 +155,9 @@ lines. Targets:
 | `logs [svc=...]` | follow logs, default `orders-workers orders-audit` |
 | `topics` | `kafka-topics.sh --describe` inside the broker |
 | `groups` | `kafka-consumer-groups.sh --describe --all-groups` inside the broker |
-| `produce value='{...}' [topic=orders] [key=k]` | one record via `POST /api/topics-records` (base64 key/value, `partitionId: -1`) |
+| `produce value='{...}' [topic=orders] [key=k]` | one record via the producer page's `POST /api/produce?topic=&key=` (raw JSON body); exits non-zero on any error |
 | `scale n=3` | `docker compose up -d --scale orders-workers=N orders-workers` |
-| `verify` | `up`, produce a unique record, assert `orders-workers` logged it once and `orders-audit` once |
+| `verify` | `up`, produce a unique record, wait until both groups committed past it (`kafka-consumer-groups`), assert `orders-workers` logged it once and `orders-audit` once |
 
 `verify` is the one runnable end-to-end check that ships with the repo.
 
@@ -204,3 +205,42 @@ reset (`make down`), verify (`make verify`).
 - Console's keyless records may stick to one partition (franz-go sticky
   partitioner); the form's partition selector and keys still demonstrate
   balancing. Document in README.
+
+## Amendments after verification and review
+
+Verification showed Console v3.12.0 does not validate JSON client-side (Text
+or JSON value type) and has no topic dropdown on the form, so it did not meet
+the producer-page requirement. The user asked to fix every review finding:
+
+- **Producer page** `producer` (port 8081): a small Go service (franz-go
+  `kgo`/`kadm`), multi-stage Dockerfile (`golang:1.27.1-alpine` → `scratch`),
+  image tagged `kafka-playground/producer:1.0.0`. `GET /` serves one HTML page
+  with a topic `<select>` filled from `GET /api/topics` (broker topics,
+  internal excluded), optional key, JSON textarea, Send. The browser runs
+  `JSON.parse` before sending and refuses invalid JSON; the server checks
+  `json.Valid` again. `POST /api/produce?topic=&key=` with the raw value as the
+  body returns `{"topic","partition","offset"}` or a non-2xx `{"error"}`.
+  Console remains for browsing.
+- **Ports** bind to `127.0.0.1` (local-only scope; a 0.0.0.0 bind exposed a
+  no-auth Console to the LAN).
+- **Console** runs with `ANALYTICS_ENABLED=false` (it otherwise loads Heap and
+  HubSpot trackers).
+- **Readiness via healthchecks:** `producer` (`/producer -healthcheck`, the
+  image is `scratch`) and `console` (`wget /admin/health`) have healthchecks,
+  and `producer` depends on every topic job completing. `--wait` rejects an
+  exited service only when nothing depends on it, so `docker compose up --wait`
+  now succeeds and `make up` is that one command. A new topic job must be
+  added to `producer.depends_on`.
+- **`producer` uses `pull_policy: build`**: Compose would otherwise try to pull
+  `kafka-playground/producer:1.0.0` from a registry first; it now always builds
+  locally (cached), so plain `docker compose up` picks up source changes.
+- **`make verify` is deterministic**: it reads the record's partition/offset
+  from the produce response, waits until both groups have committed past it
+  (no redelivery possible after that), then counts the log lines.
+- **`make produce`** passes topic, key and value to curl via `$(value var)` and
+  shell single-quoting, so quotes, spaces and `$` arrive byte for byte.
+- Added `AGENTS.md` and `.gitignore`.
+- **`make up` / `make verify`** reset `orders-workers` to the declared 2
+  replicas after `make scale`; documented in the README.
+- **Keyless records** may cluster in one partition (sticky partitioner);
+  documented in the README walkthrough.

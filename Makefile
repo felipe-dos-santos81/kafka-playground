@@ -1,14 +1,21 @@
-# Makefile for Kafka Playground — local KRaft broker, topic jobs, kcat consumers, Redpanda Console
+# Makefile for Kafka Playground — KRaft broker, topic jobs, kcat consumers, producer page, Redpanda Console
 # Typical flow: up → produce → logs → scale → groups → down
 SERVICE = Kafka Playground
 
 # Variables
 COMPOSE = docker compose
+PRODUCER_URL ?= http://localhost:8081
 CONSOLE_URL ?= http://localhost:8080
+KAFKA_BIN = $(COMPOSE) exec -T kafka /opt/kafka/bin
+BOOTSTRAP = --bootstrap-server localhost:19092
 topic ?= orders
 key ?=
+value ?=
 n ?= 3
 svc ?= orders-workers orders-audit
+
+# Single-quote $(1) for the shell; fed $(value var), quotes, spaces and $ pass through untouched.
+shq = '$(subst ','\'',$(1))'
 
 .PHONY: help up down ps logs topics groups produce scale verify
 
@@ -23,62 +30,58 @@ help: ## Print this help message
 
 # ── Stack ────────────────────────────────────────────────────────────────────
 
-up: ## [STEP 1] Start the whole stack (topic jobs run to completion first, then consumers start)
-	$(COMPOSE) up -d
-	@echo "Waiting for Console and for every consumer to get partitions..."; \
-	for i in $$(seq 60); do \
-		h=$$(curl -s -o /dev/null -w '%{http_code}' $(CONSOLE_URL)/admin/health); \
-		c=$$($(COMPOSE) logs --no-log-prefix orders-workers orders-audit | grep -c 'assigned: orders'); \
-		[ "$$h" = 200 ] && [ "$$c" -ge 3 ] && exit 0; sleep 1; \
-	done; echo "stack not ready after 60s (console=$$h, assignments=$$c)"; exit 1
-	@echo "Console: $(CONSOLE_URL)   Broker from the host: localhost:9092"
+up: ## [STEP 1] Start everything; returns when the broker and both pages are healthy
+	$(COMPOSE) up -d --wait
+	@echo "Producer page: $(PRODUCER_URL)   Console: $(CONSOLE_URL)   Broker from the host: localhost:9092"
 
-down: ## Stop and remove every container (topics and messages are lost)
+down: ## Remove every container (topics and messages are lost)
 	$(COMPOSE) down --remove-orphans
-	@echo "Stack removed."
 
 ps: ## Show every container, including exited topic jobs
 	$(COMPOSE) ps -a
 
-logs: ## [STEP 3] Follow consumer logs (usage: make logs [svc="orders-audit"]; default: all example consumers)
+logs: ## [STEP 3] Follow consumer logs (usage: make logs [svc=orders-audit])
 	$(COMPOSE) logs -f $(svc)
 
 # ── Inspect ──────────────────────────────────────────────────────────────────
 
 topics: ## Describe every topic: partitions, leaders, replicas
-	$(COMPOSE) exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 --describe
+	$(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --describe
 
-groups: ## [STEP 5] Describe every consumer group: members, assigned partitions, lag
-	$(COMPOSE) exec kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:19092 --describe --all-groups
+groups: ## [STEP 5] Describe every consumer group: members, partitions, lag
+	$(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --describe --all-groups
 
 # ── Produce ──────────────────────────────────────────────────────────────────
 
-# ponytail: value is single-quote wrapped; a value containing ' needs the raw curl in the README.
-produce: ## [STEP 2] Produce one JSON record via the Console backend (usage: make produce value='{"id":1}' [topic=orders] [key=k1])
-	@test -n '$(value)' || { echo "value is required, e.g. make produce value='{\"id\":1}'"; exit 1; }
-	@if [ -n '$(key)' ]; then key="\"$$(printf '%s' '$(key)' | base64 | tr -d '\n')\""; else key=null; fi; \
-	value=$$(printf '%s' '$(value)' | base64 | tr -d '\n'); \
-	curl -fsS -X POST $(CONSOLE_URL)/api/topics-records -H 'Content-Type: application/json' \
-		-d "{\"topicNames\":[\"$(topic)\"],\"compressionType\":0,\"useTransactions\":false,\"records\":[{\"key\":$$key,\"value\":\"$$value\",\"headers\":[],\"partitionId\":-1}]}" && echo
+produce: ## [STEP 2] Produce one JSON record via the producer page (usage: make produce value='{"id":1}' [topic=orders] [key=k1])
+	@$(if $(value value),true,{ echo "value is required, e.g. make produce value='{\"id\":1}'"; exit 1; })
+	@curl -sS --fail-with-body -X POST $(PRODUCER_URL)/api/produce \
+		--url-query $(call shq,topic=$(value topic)) \
+		$(if $(value key),--url-query $(call shq,key=$(value key))) \
+		--data-binary $(call shq,$(value value))
 
 # ── Scale ────────────────────────────────────────────────────────────────────
 
 scale: ## [STEP 4] Set the number of orders-workers group members (usage: make scale n=3)
 	$(COMPOSE) up -d --scale orders-workers=$(n) orders-workers
-	@echo "orders-workers now has $(n) member(s); watch the rebalance with: make logs svc=orders-workers"
 
 # ── Verify ───────────────────────────────────────────────────────────────────
 
-verify: up ## End-to-end check: produce a unique record, assert the worker group logged it once and the audit group once
+# Waits until both groups have committed past the record (so it can no longer be
+# redelivered), then counts it in the logs: exactly once per group.
+verify: up ## End-to-end check: one record, seen once by the worker group and once by the audit group
 	@id="verify-$$(date +%s)"; \
-	$(MAKE) --no-print-directory produce topic=orders key="$$id" value="{\"id\":\"$$id\"}" >/dev/null; \
-	for i in $$(seq 15); do \
-		w=$$($(COMPOSE) logs --no-log-prefix orders-workers | grep -c "key=$$id "); \
-		a=$$($(COMPOSE) logs --no-log-prefix orders-audit | grep -c "key=$$id "); \
-		[ "$$w" -ge 1 ] && [ "$$a" -ge 1 ] && break; sleep 1; \
+	sent=$$($(MAKE) --no-print-directory produce key="$$id" value="{\"id\":\"$$id\"}") || exit 1; \
+	partition=$$(echo "$$sent" | sed 's/.*"partition":\([0-9]*\).*/\1/'); \
+	offset=$$(echo "$$sent" | sed 's/.*"offset":\([0-9]*\).*/\1/'); \
+	audit_group=$$($(COMPOSE) ps -q orders-audit | cut -c1-12); \
+	echo "Produced $$id to orders[$$partition] offset $$offset; waiting for both groups to commit..."; \
+	for i in $$(seq 20); do \
+		$(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --describe --group orders-workers --group $$audit_group 2>/dev/null | \
+			awk -v p="$$partition" -v o="$$offset" '$$2 == "orders" && $$3 == p && $$4 != "-" && $$4 + 0 > o { n++ } END { exit n < 2 }' && break; \
+		[ "$$i" = 20 ] && { echo "VERIFY FAILED: offsets not committed"; exit 1; }; sleep 1; \
 	done; \
-	sleep 1; \
-	w=$$($(COMPOSE) logs --no-log-prefix orders-workers | grep -c "key=$$id "); \
-	a=$$($(COMPOSE) logs --no-log-prefix orders-audit | grep -c "key=$$id "); \
-	echo "orders-workers saw it $$w time(s), orders-audit saw it $$a time(s)"; \
-	if [ "$$w" = 1 ] && [ "$$a" = 1 ]; then echo "VERIFY OK"; else echo "VERIFY FAILED"; exit 1; fi
+	seen() { $(COMPOSE) logs --since 5m --no-log-prefix "$$1" | grep -c "key=$$id "; }; \
+	workers=$$(seen orders-workers); audit=$$(seen orders-audit); \
+	echo "orders-workers: $$workers, orders-audit: $$audit"; \
+	if [ "$$workers" = 1 ] && [ "$$audit" = 1 ]; then echo "VERIFY OK"; else echo "VERIFY FAILED"; exit 1; fi

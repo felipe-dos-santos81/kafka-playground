@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kafka producer</title>
+<style>
+  body { font: 15px system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  label { display: block; margin-top: 1rem; font-weight: 600; }
+  select, input, textarea, button { font: inherit; width: 100%; box-sizing: border-box; margin-top: .25rem; padding: .4rem; }
+  textarea { height: 12rem; font-family: ui-monospace, monospace; }
+  button { width: auto; margin-top: 1rem; padding: .5rem 1.5rem; cursor: pointer; }
+  #out { margin-top: 1rem; padding: .6rem; border-radius: 4px; white-space: pre-wrap; }
+  .ok { background: #e6f4ea; } .err { background: #fdecea; }
+</style>
+</head>
+<body>
+<h1>Kafka producer</h1>
+<form id="f">
+  <label for="topic">Topic</label>
+  <select id="topic" required></select>
+  <label for="key">Key (optional)</label>
+  <input id="key" autocomplete="off">
+  <label for="value">Value (JSON)</label>
+  <textarea id="value" spellcheck="false">{"id": 1, "status": "new"}</textarea>
+  <button>Send</button>
+</form>
+<div id="out" role="status"></div>
+<script>
+const $ = id => document.getElementById(id);
+const show = (cls, text) => { $("out").className = cls; $("out").textContent = text; };
+
+fetch("api/topics").then(r => r.json()).then(t => {
+  if (t.error) return show("err", "Could not list topics: " + t.error);
+  for (const name of t) $("topic").add(new Option(name, name));
+});
+
+$("f").addEventListener("submit", async e => {
+  e.preventDefault();
+  const value = $("value").value;
+  try { JSON.parse(value); } catch (err) { return show("err", "Invalid JSON, not sent: " + err.message); }
+  const q = new URLSearchParams({ topic: $("topic").value });
+  if ($("key").value) q.set("key", $("key").value);
+  try {
+    const r = await fetch("api/produce?" + q, { method: "POST", body: value });
+    const res = await r.json();
+    if (res.error) show("err", "Error: " + res.error);
+    else show("ok", `Sent to ${res.topic}: partition ${res.partition}, offset ${res.offset}`);
+  } catch (err) { show("err", "Error: " + err.message); }
+});
+</script>
+</body>
+</html>
