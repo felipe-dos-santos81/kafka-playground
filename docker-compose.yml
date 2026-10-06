@@ -2,6 +2,23 @@
 # Redpanda Console as the producer page. No auth, no TLS, nothing persisted.
 # Containers reach the broker at kafka:19092; the host at localhost:9092.
 
+# One-shot job: create a topic, exit 0 (also when it already exists).
+# Declare it as many times as you need topics; only `environment` changes.
+x-topic: &topic
+  image: apache/kafka:4.3.1
+  depends_on:
+    kafka:
+      condition: service_healthy
+  command:
+    - bash
+    - -ec
+    - |
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 \
+        --create --if-not-exists \
+        --topic "$${TOPIC_NAME:?TOPIC_NAME is required}" \
+        --partitions "$${PARTITIONS:-1}" \
+        --replication-factor "$${REPLICATION_FACTOR:-1}"
+
 services:
   kafka:
     image: apache/kafka:4.3.1
@@ -28,3 +45,14 @@ services:
       timeout: 10s
       retries: 20
       start_period: 15s
+
+  topic-orders:
+    <<: *topic
+    environment:
+      TOPIC_NAME: orders
+      PARTITIONS: 3
+
+  topic-events:
+    <<: *topic
+    environment:
+      TOPIC_NAME: events
