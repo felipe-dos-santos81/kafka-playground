@@ -345,19 +345,21 @@ func TestApplySteps(t *testing.T) {
 		{Node: "consumer-4", Type: "consumer", Instance: 1, TransformNode: "transform-3"},
 		{Node: "consumer-4", Type: "consumer", Instance: 2, TransformNode: "transform-3"},
 		{Node: "consumer-5", Type: "consumer", TransformNode: "transform-4"},
+		{Node: "consumer-6", Type: "consumer", TransformNode: "transform-5"},
 	}
 	st := FlowState{Status: "running", Nodes: map[string]NodeState{
 		"consumer-1": {State: "exited", Instances: []NodeState{
-			{Instance: 1, State: "running", Boot: "a", step: &stepStats{Total: 5, Errors: 1, LastError: "invalid operation"}},
+			{Instance: 1, State: "running", Boot: "a", step: &tally{Total: 5, Errors: 1, LastError: "invalid operation"}},
 			{Instance: 2, State: "exited"},
 		}},
-		"consumer-2": {State: "running", Boot: "c", step: &stepStats{Total: 3}},
+		"consumer-2": {State: "running", Boot: "c", step: &tally{Total: 3}},
 		"consumer-3": {State: "running"},
 		"consumer-4": {State: "running", Instances: []NodeState{
-			{Instance: 1, State: "running", Boot: "a", step: &stepStats{Total: 5, Errors: 1, LastError: "first"}},
-			{Instance: 2, State: "running", Boot: "b", step: &stepStats{Total: 3, LastError: "second"}},
+			{Instance: 1, State: "running", Boot: "a", step: &tally{Total: 5, Errors: 1, LastError: "first"}},
+			{Instance: 2, State: "running", Boot: "b", step: &tally{Total: 3, LastError: "second"}},
 		}},
 		"consumer-5": {State: "running", Boot: "d"}, // runs, but no container reports transform-4
+		"consumer-6": {State: "running"},            // runs, but its /stats did not answer this tick
 	}}
 	applySteps(&st, specs)
 	want := map[string]NodeState{
@@ -365,14 +367,15 @@ func TestApplySteps(t *testing.T) {
 		"transform-2": {State: "running", Total: 3, Boot: "c"},
 		"transform-3": {State: "running", Total: 8, Errors: 1, LastError: "#1: first", Boot: "a,b"},
 		"transform-4": {State: "missing"},
+		"transform-5": {State: "running"},
 	}
 	for id, w := range want {
 		if got := st.Nodes[id]; !reflect.DeepEqual(got, w) {
 			t.Errorf("%s:\n got %+v\nwant %+v", id, got, w)
 		}
 	}
-	if len(st.Nodes) != 9 {
-		t.Fatalf("only the four transform nodes are added, got %v", st.Nodes)
+	if len(st.Nodes) != 11 {
+		t.Fatalf("only the five transform nodes are added, got %v", st.Nodes)
 	}
 }
 

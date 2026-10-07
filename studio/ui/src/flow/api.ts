@@ -29,9 +29,9 @@ export const containersOf = (rt: NodeRuntime): NodeRuntime[] => rt.instances ?? 
 // The snapshot GET /api/flows/{id}/state answers and every SSE tick carries.
 export type FlowState = { status: 'running' | 'stopped'; nodes: Record<string, NodeRuntime> }
 
-// What the live view says besides its ticks: paused (and why) until the next
+// What the live view is: live (ticks arrive), paused (and why) until the next
 // tick, or gone when the flow was deleted.
-export type LiveStatus = { paused?: string; gone?: boolean }
+export type LiveStatus = { kind: 'live' } | { kind: 'paused'; why: string } | { kind: 'gone' }
 
 // watch opens the flow's event stream: onTick gets a snapshot once a second, and
 // onStatus hears whenever the numbers stop being live. A `problem` event or a
@@ -43,25 +43,26 @@ export function watch(id: string, onTick: (s: FlowState) => void, onStatus: (s: 
   let es: EventSource
   let retry: ReturnType<typeof setTimeout> | undefined
   let closed = false
+  const data = (e: Event) => JSON.parse((e as MessageEvent<string>).data)
   const reopen = (why: string) => {
     if (closed) return
-    onStatus({ paused: why })
+    onStatus({ kind: 'paused', why })
     retry = setTimeout(open, 2000)
   }
   const open = () => {
     es = new EventSource(`/api/flows/${id}/events`)
     es.addEventListener('tick', (e) => {
-      onStatus({})
-      onTick(JSON.parse((e as MessageEvent<string>).data))
+      onStatus({ kind: 'live' })
+      onTick(data(e))
     })
-    es.addEventListener('problem', (e) => onStatus({ paused: JSON.parse((e as MessageEvent<string>).data).error }))
+    es.addEventListener('problem', (e) => onStatus({ kind: 'paused', why: data(e).error }))
     es.onerror = () => {
-      if (es.readyState !== EventSource.CLOSED) return onStatus({ paused: 'connection lost, reconnecting' })
+      if (es.readyState !== EventSource.CLOSED) return onStatus({ kind: 'paused', why: 'connection lost, reconnecting' })
       api.get(id).then(
         () => reopen('the stream was refused, retrying'),
         (e) => {
           if (closed) return
-          if (e instanceof ApiError && e.status === 404) return onStatus({ gone: true })
+          if (e instanceof ApiError && e.status === 404) return onStatus({ kind: 'gone' })
           reopen(describe(e))
         },
       )

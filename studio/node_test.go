@@ -87,7 +87,7 @@ func TestProducerSend(t *testing.T) {
 	bad := &producer{spec: NodeSpec{Topic: "orders", Value: `{{.Seq}}x`}, tail: &tail{}, counts: &counters{}, produce: p.produce}
 	w := httptest.NewRecorder()
 	bad.send(w, httptest.NewRequest(http.MethodPost, "/send", nil))
-	if s := bad.counts.step(); w.Code != http.StatusInternalServerError || s.Errors != 1 || !strings.Contains(s.LastError, `rendered "1x"`) || len(sent) != 3 {
+	if s := bad.counts.read(); w.Code != http.StatusInternalServerError || s.Errors != 1 || !strings.Contains(s.LastError, `rendered "1x"`) || len(sent) != 3 {
 		t.Fatalf("a template rendering 1x: want 500 and one error counted, got %d %s and %+v", w.Code, w.Body, s)
 	}
 	if s := p.counts.stats("b", p.tail.last()); s.Total != 3 || s.Errors != 1 || s.LastError != "broker down" || s.TailSeq != 3 || s.Boot != "b" {
@@ -134,7 +134,7 @@ func TestProducerTimer(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the timer did not stop when its context ended")
 	}
-	if s := p.counts.step(); s.Total < 3 || p.tail.last() < 3 || s.Errors != 0 {
+	if s := p.counts.read(); s.Total < 3 || p.tail.last() < 3 || s.Errors != 0 {
 		t.Fatalf("want at least 3 counted and tailed, and a send cut by the stop not counted as an error; got %+v, tail %d", s, p.tail.last())
 	}
 
@@ -146,7 +146,7 @@ func TestProducerTimer(t *testing.T) {
 	for deadline := time.Now().Add(2 * time.Second); bad.counts.errors.Load() < 2 && time.Now().Before(deadline); {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if s := bad.counts.step(); s.Errors < 2 || !strings.Contains(s.LastError, "not JSON") || bad.tail.last() != 0 {
+	if s := bad.counts.read(); s.Errors < 2 || !strings.Contains(s.LastError, "not JSON") || bad.tail.last() != 0 {
 		t.Fatalf("want the timer's errors counted and nothing produced, got %+v", s)
 	}
 }
@@ -282,7 +282,7 @@ func TestConsumerTransform(t *testing.T) {
 	if len(forwarded) != 1 || forwarded[0] != `k={"id":1,"total":6}` {
 		t.Fatalf("want only k={\"id\":1,\"total\":6} forwarded, got %q", forwarded)
 	}
-	if step := tr.counts.step(); step.Total != 3 || step.Errors != 1 {
+	if step := tr.counts.read(); step.Total != 3 || step.Errors != 1 {
 		t.Fatalf("the transform got 3 records and failed on 1; got %+v", step)
 	}
 	if s := c.counts.stats("b", c.tail.last()); s.Total != 3 || s.Errors != 1 || s.TailSeq != 3 || !strings.HasPrefix(s.LastError, "transform: ") {

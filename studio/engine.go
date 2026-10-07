@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"maps"
 	"math"
@@ -74,16 +73,17 @@ type NodeState struct {
 	Warning    string             `json:"warning,omitempty"`
 	Instances  []NodeState        `json:"instances,omitempty"`
 
-	step    *stepStats // a consumer container's transform counts; applySteps puts them on the transform node
-	created int64      // when the container was created (Unix seconds): withStats gives it statsGrace
+	step    *tally // a consumer container's transform counts; applySteps puts them on the transform node
+	created int64  // when the container was created (Unix seconds): withStats gives it statsGrace
 }
 
-// A snapshot asks every running container for /stats in parallel, all within
-// statsBudget. A container that does not answer gets a warning, unless it was
+// A snapshot asks every running container for /stats in parallel and the broker
+// for lag and end offsets, all within snapshotBudget, so a tick stays about a
+// second apart. A container that does not answer gets a warning, unless it was
 // created less than statsGrace ago: it is still starting.
 const (
-	statsBudget = 800 * time.Millisecond
-	statsGrace  = 5 * time.Second
+	snapshotBudget = 800 * time.Millisecond
+	statsGrace     = 5 * time.Second
 )
 
 // Deploy validates the saved flow, creates its topics and starts one container
@@ -248,17 +248,17 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 	if err != nil || st.Status != "running" {
 		return st, err
 	}
-	// Every running container's /stats at once, under one budget, while the broker
-	// calls below run; each goroutine writes only its own container's state.
-	sctx, cancelStats := context.WithTimeout(ctx, statsBudget)
-	defer cancelStats()
+	// Every running container's /stats at once while the broker calls below run,
+	// all under one budget; each goroutine writes only its own container's state.
+	bctx, cancel := context.WithTimeout(ctx, snapshotBudget)
+	defer cancel()
 	var wg sync.WaitGroup
 	nodes := map[string]*NodeState{}
 	for node, ns := range st.Nodes {
 		nodes[node] = &ns
 		for _, c := range ns.containers() {
 			if c.State == "running" {
-				wg.Go(func() { *c = withStats(sctx, nodeRef{id, node, c.Instance}.url("/stats"), *c) })
+				wg.Go(func() { *c = withStats(bctx, nodeRef{id, node, c.Instance}.url("/stats"), *c) })
 			}
 		}
 	}
@@ -280,19 +280,17 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 	}
 	slices.Sort(groups)
 	groups = slices.Compact(groups)
-	kctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
 	// Errors leave the broker's fields out of this snapshot; called with no names
 	// these list every group or topic on the broker, hence the guards.
 	var lags kadm.DescribedGroupLags
 	var ends kadm.ListedOffsets
 	if len(groups) > 0 {
-		lags, _ = e.adm.Lag(kctx, groups...)
+		lags, _ = e.adm.Lag(bctx, groups...)
 	}
 	if len(names) > 0 {
 		// Only a complete answer counts: a partial map (a shard timed out) would
 		// read as missing topics and too few partitions.
-		if got, err := e.adm.ListEndOffsets(kctx, names...); err == nil {
+		if got, err := e.adm.ListEndOffsets(bctx, names...); err == nil {
 			ends = got
 		}
 	}
@@ -325,8 +323,9 @@ func withStats(ctx context.Context, url string, ns NodeState) NodeState {
 // applySteps gives each transform node its consumer node's state and the counts
 // the consumer's containers report for it, summed as sumCounts sums instances. Its
 // boot joins theirs, so a container that restarted gives the transform no rate
-// rather than a wrong one. A transform whose consumer runs but that no container
-// reports (added after deploy) is "missing" until one does.
+// rather than a wrong one. A transform whose consumer's containers answer but
+// none reports it (added after deploy) is "missing" until one does; one whose
+// consumer did not answer keeps the consumer's state, with no numbers.
 func applySteps(st *FlowState, specs []NodeSpec) {
 	for _, s := range specs {
 		if s.TransformNode == "" || s.Instance > 1 {
@@ -336,7 +335,9 @@ func applySteps(st *FlowState, specs []NodeSpec) {
 		t := NodeState{State: consumer.State}
 		var steps []NodeState
 		var boots []string
+		answered := false // a container's /stats answered (it has a boot)
 		for _, c := range consumer.containers() {
+			answered = answered || c.Boot != ""
 			if c.step != nil {
 				steps = append(steps, NodeState{Instance: c.Instance, Total: c.step.Total, Errors: c.step.Errors, LastError: c.step.LastError})
 				boots = append(boots, c.Boot)
@@ -344,7 +345,7 @@ func applySteps(st *FlowState, specs []NodeSpec) {
 		}
 		t.sumCounts(steps)
 		t.Boot = strings.Join(boots, ",")
-		if len(boots) == 0 && (t.State == "running" || t.State == "") {
+		if len(boots) == 0 && (t.State == "" || t.State == "running" && answered) {
 			t.State = "missing"
 		}
 		st.Nodes[s.TransformNode] = t
@@ -518,37 +519,6 @@ func pickInstance(node string, ns NodeState, instance int) (int, error) {
 	return instance, nil
 }
 
-// withRates sets each node's records per second against the previous snapshot,
-// taken dt seconds earlier; a node with instances gets the sum of theirs. A node
-// or instance whose boot changed (its container restarted) or whose total fell
-// gets no rate this time rather than a wrong one.
-func withRates(cur *FlowState, prev FlowState, dt float64) {
-	if dt <= 0 {
-		return
-	}
-	for id, ns := range cur.Nodes {
-		before, seen := prev.Nodes[id]
-		for _, c := range ns.containers() {
-			var p *NodeState
-			if seen {
-				p = before.container(c.Instance)
-			}
-			c.Rate = rate(*c, p, dt)
-		}
-		ns.sumInstances()
-		cur.Nodes[id] = ns
-	}
-}
-
-// rate is cur's records per second against prev, taken dt seconds earlier, rounded
-// to 0.1; 0 when there is no prev or cur's container restarted since.
-func rate(cur NodeState, prev *NodeState, dt float64) float64 {
-	if prev == nil || prev.Boot != cur.Boot || cur.Total < prev.Total {
-		return 0
-	}
-	return math.Round(float64(cur.Total-prev.Total)/dt*10) / 10
-}
-
 // containers is the states of ns's containers: ns itself when the node has one
 // container, else each entry of Instances. Changes through them land in ns.
 func (ns *NodeState) containers() []*NodeState {
@@ -612,41 +582,4 @@ func instanceError(instance int, err string) string {
 		return err
 	}
 	return fmt.Sprintf("#%d: %s", instance, err)
-}
-
-// streamTicks is the body of GET /api/flows/{id}/events: every period it writes
-// the flow's snapshot as an SSE `tick` event with rates against the previous
-// tick (Δt between the two snapshots' starts); a failed snapshot is a `problem`
-// event and the stream goes on. It returns when ctx ends (the browser went
-// away), a flush fails, or the flow is gone: the browser's reconnect then gets
-// a 404. Each open stream polls on its own: one tab, one loop.
-func streamTicks(ctx context.Context, w io.Writer, flush func() error, snap func(context.Context) (FlowState, error), every time.Duration) {
-	var prev FlowState
-	last := time.Now()
-	t := time.NewTicker(every)
-	defer t.Stop()
-	for {
-		start := time.Now()
-		st, err := snap(ctx)
-		if ctx.Err() != nil || errors.Is(err, ErrNotFound) {
-			return
-		}
-		if err != nil {
-			b, _ := json.Marshal(map[string]string{"error": err.Error()})
-			fmt.Fprintf(w, "event: problem\ndata: %s\n\n", b)
-		} else {
-			withRates(&st, prev, start.Sub(last).Seconds())
-			prev, last = st, start
-			b, _ := json.Marshal(st)
-			fmt.Fprintf(w, "event: tick\ndata: %s\n\n", b)
-		}
-		if flush() != nil {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
 }

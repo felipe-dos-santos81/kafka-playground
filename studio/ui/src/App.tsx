@@ -48,6 +48,13 @@ function Studio() {
     return () => clearInterval(t)
   }, [refresh])
 
+  // Closes the open flow: the canvas empties and its stream closes.
+  const closeFlow = useCallback(() => {
+    setCurrent(null)
+    setNodes([])
+    setEdges([])
+  }, [setNodes, setEdges])
+
   // The open flow's live snapshot: one `tick` a second over SSE (spec 3.6). When
   // the flow is deleted elsewhere (another tab, curl), it closes and says so.
   const flowId = current?.id
@@ -60,16 +67,14 @@ function Studio() {
       setTick((n) => n + 1)
     }
     const onStatus = (s: LiveStatus) => {
-      setPaused(s.paused ?? '')
-      if (!s.gone) return
+      setPaused(s.kind === 'paused' ? s.why : '')
+      if (s.kind !== 'gone') return
       setError('the open flow was deleted')
-      setCurrent(null)
-      setNodes([])
-      setEdges([])
+      closeFlow()
       refresh()
     }
     return watch(flowId, onTick, onStatus)
-  }, [flowId, refresh, setNodes, setEdges])
+  }, [flowId, refresh, closeFlow])
   const running = flowState?.status === 'running'
 
   // Runs an API action, showing any failure in the top bar.
@@ -144,11 +149,7 @@ function Studio() {
     if (!window.confirm('Delete this flow?')) return
     await withTopBarError(async () => {
       await api.remove(id)
-      if (current?.id === id) {
-        setCurrent(null)
-        setNodes([])
-        setEdges([])
-      }
+      if (current?.id === id) closeFlow()
       refresh()
     })
   }

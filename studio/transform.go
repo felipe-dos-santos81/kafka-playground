@@ -40,6 +40,7 @@ type transform struct {
 	counts  counters
 }
 
+// newTransform compiles src for one consumer to run.
 func newTransform(src string) (*transform, error) {
 	p, err := compileTransform(src)
 	if err != nil {
@@ -60,6 +61,8 @@ func (t *transform) run(value []byte) ([]byte, error) {
 	return out, err
 }
 
+// eval is run without the counting: the value decoded (integers exact), the
+// program's result encoded, nil for a dropped record.
 func (t *transform) eval(value []byte) (out []byte, err error) {
 	d := json.NewDecoder(bytes.NewReader(value))
 	d.UseNumber()

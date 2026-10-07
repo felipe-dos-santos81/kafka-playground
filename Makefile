@@ -78,11 +78,11 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	echo "studio health: $$health"; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows -H 'Sec-Fetch-Site: cross-site' --data '{"name":"x"}'); \
 	[ "$$code" = 403 ] || { echo "STUDIO FAILED: cross-site write accepted ($$code)"; exit 1; }; \
-	flow3() { printf '{"name":"%s","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":%s},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"%s","partitions":%s,"replication_factor":1}},{"id":"consumer-1","type":"consumer","position":{"x":400,"y":0},"data":%s}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"},{"id":"e2","source":"topic-1","target":"consumer-1"}]}' "$$1" "$$2" "$$3" "$$4" "$$5"; }; \
+	flow3() { printf '{"name":"%s","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":%s},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"%s","partitions":%s,"replication_factor":1}},{"id":"consumer-1","type":"consumer","position":{"x":400,"y":0},"data":%s}%s],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"},{"id":"e2","source":"topic-1","target":"consumer-1"}%s]}' "$$1" "$$2" "$$3" "$$4" "$$5" "$$6" "$$7"; }; \
 	manual='{"source":"manual","key":"","value":"{}"}'; \
 	flow=$$(flow3 verify "$$manual" studio-verify 1 '{"group":"studio-verify","auto_offset_reset":"earliest","sink":{"kind":"log"}}'); \
 	create() { out=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$1") || { echo "STUDIO FAILED: create $$2: $$out" >&2; return 1; }; echo "$$out" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'; }; \
-	flows=; trap 'for f in $$flows; do curl -sS -X DELETE $(STUDIO_URL)/api/flows/$$f >/dev/null 2>&1; done; docker rm -f studio-$$id-consumer-1 >/dev/null 2>&1; $(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --delete --topic "studio-verify.*" >/dev/null 2>&1' EXIT; \
+	flows=; trap 'for f in $$flows; do curl -sS -X DELETE $(STUDIO_URL)/api/flows/$$f >/dev/null 2>&1; done; docker rm -f studio-$$id-consumer-1 >/dev/null 2>&1; $(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --delete --topic "studio-verify|studio-verify-(timer|a|a-out|b|instances|t-in|t-out)" >/dev/null 2>&1' EXIT; \
 	id=$$(create "$$flow" "the verify flow") || exit 1; flows="$$id"; \
 	nodes() { docker ps -aq -f label=studio.flow=$$id | wc -l | tr -d ' '; }; \
 	[ -f "flows/$$id.json" ] || { echo "STUDIO FAILED: flows/$$id.json not written"; exit 1; }; \
@@ -149,6 +149,8 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 		[ "$$i" = 45 ] && { echo "STUDIO FAILED: the 3 instances never held one partition each: $$(curl -sS $(STUDIO_URL)/api/flows/$$cid/state)"; exit 1; }; sleep 1; \
 	done; \
 	echo "studio instances: $$(curl -sS $(STUDIO_URL)/api/flows/$$cid/state)"; \
+	ticks=$$(curl -sS -N --max-time 3.5 $(STUDIO_URL)/api/flows/$$cid/events 2>/dev/null | grep -c '^event: tick'); \
+	[ "$$ticks" -ge 3 ] || { echo "STUDIO FAILED: $$ticks ticks in 3.5 s from the 3-instance flow, want one about every second"; exit 1; }; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' "$(STUDIO_URL)/api/flows/$$cid/nodes/consumer-1/tail?since=0&instance=3"); \
 	[ "$$code" = 200 ] || { echo "STUDIO FAILED: tail of instance 3: $$code, want 200"; exit 1; }; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' "$(STUDIO_URL)/api/flows/$$cid/nodes/consumer-1/tail?since=0&instance=4"); \
@@ -158,9 +160,9 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' "$(STUDIO_URL)/api/flows/$$cid/nodes/consumer-1/tail?since=0&instance=2"); \
 	[ "$$code" = 409 ] || { echo "STUDIO FAILED: tail of a removed instance: $$code, want 409"; exit 1; }; \
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$cid || { echo "STUDIO FAILED: delete the instances flow"; exit 1; }; \
-	x=$$(flow3 verify-transform "$$manual" studio-verify-t-in 1 '{"group":"studio-verify-t","auto_offset_reset":"earliest","sink":{"kind":"log"}}' | sed \
-		-e 's/}],"edges":\[/},{"id":"transform-1","type":"transform","position":{"x":600,"y":0},"data":{"expr":"{id: msg.id, total: msg.qty * msg.price}"}},{"id":"topic-2","type":"topic","position":{"x":800,"y":0},"data":{"name":"studio-verify-t-out","partitions":1,"replication_factor":1}},{"id":"consumer-2","type":"consumer","position":{"x":1000,"y":0},"data":{"group":"studio-verify-t-out","auto_offset_reset":"earliest","sink":{"kind":"log"}}}],"edges":[/' \
-		-e 's/]}$$/,{"id":"e3","source":"consumer-1","target":"transform-1"},{"id":"e4","source":"transform-1","target":"topic-2"},{"id":"e5","source":"topic-2","target":"consumer-2"}]}/'); \
+	x=$$(flow3 verify-transform "$$manual" studio-verify-t-in 1 '{"group":"studio-verify-t","auto_offset_reset":"earliest","sink":{"kind":"log"}}' \
+		',{"id":"transform-1","type":"transform","position":{"x":600,"y":0},"data":{"expr":"{id: msg.id, total: msg.qty * msg.price}"}},{"id":"topic-2","type":"topic","position":{"x":800,"y":0},"data":{"name":"studio-verify-t-out","partitions":1,"replication_factor":1}},{"id":"consumer-2","type":"consumer","position":{"x":1000,"y":0},"data":{"group":"studio-verify-t-out","auto_offset_reset":"earliest","sink":{"kind":"log"}}}' \
+		',{"id":"e3","source":"consumer-1","target":"transform-1"},{"id":"e4","source":"transform-1","target":"topic-2"},{"id":"e5","source":"topic-2","target":"consumer-2"}'); \
 	broken=$$(echo "$$x" | sed 's/msg\.qty \* msg\.price/msg./'); \
 	xid=$$(create "$$broken" "the transform flow") || exit 1; flows="$$flows $$xid"; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows/$$xid/deploy); \

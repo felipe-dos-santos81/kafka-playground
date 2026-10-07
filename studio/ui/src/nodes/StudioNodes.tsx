@@ -7,13 +7,16 @@ import type { ConsumerNode, ProducerNode, TopicNode, TransformNode } from './typ
 // The live snapshot per node id while the flow runs; empty while it is stopped.
 export const RuntimeContext = createContext<Record<string, NodeRuntime>>({})
 
-// One line of live numbers under a deployed node's summary.
+// One line of live numbers under a deployed node's summary, or '' when there is
+// nothing to say. A node's own counts show once one of its containers answered
+// /stats (it has a boot): a container just started shows nothing yet, and one
+// that does not answer shows its warning. Lag and partitions come from the broker.
 function runtimeLine(type: NodeType, rt: NodeRuntime): string {
   if (type === 'topic') {
     return [`${rt.partitions ?? 0} partitions`, `end ${rt.endOffset ?? 0}`, rt.warning].filter(Boolean).join(' · ')
   }
-  if (rt.warning && rt.total === undefined) return rt.warning // no numbers: say why
-  const parts = [`${rt.total ?? 0} msgs`, `${(rt.rate ?? 0).toFixed(1)}/s`]
+  const answered = containersOf(rt).some((c) => c.boot)
+  const parts = answered ? [`${rt.total ?? 0} msgs`, `${(rt.rate ?? 0).toFixed(1)}/s`] : []
   if (rt.errors) parts.push(`${rt.errors} errors`)
   if (rt.lag !== undefined) parts.push(`lag ${rt.lag}`)
   for (const c of containersOf(rt)) {
@@ -34,13 +37,14 @@ function Shell({ id, type, selected, children }: { id: string; type: NodeType; s
   const runningCount = containers.filter((c) => c.state === 'running').length
   const badge = rt?.instances ? `${runningCount}/${containers.length} running` : rt?.state
   const badgeClass = rt?.instances ? (runningCount === containers.length ? 'running' : 'exited') : rt?.state
+  const line = rt ? runtimeLine(type, rt) : ''
   return (
     <div className={`node ${type}${selected ? ' selected' : ''}`} title={rt?.lastError || undefined}>
       <div className="node-title">
         {type} {rt && <span className={`node-state ${badgeClass}`}>{badge}</span>}
       </div>
       <div className="node-summary">{children}</div>
-      {rt && (type === 'topic' || runningCount > 0 || rt.total !== undefined) && <div className="node-runtime">{runtimeLine(type, rt)}</div>}
+      {line && <div className="node-runtime">{line}</div>}
       {hasInput(type) && <Handle type="target" position={Position.Left} />}
       {hasOutput(type) && <Handle type="source" position={Position.Right} />}
     </div>

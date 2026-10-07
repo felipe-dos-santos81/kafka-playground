@@ -100,15 +100,15 @@ func (t *tail) last() int64 {
 
 // nodeStats is what GET /stats answers; the control plane adds the container state.
 type nodeStats struct {
-	Boot      string     `json:"boot"` // random per process: a restarted container starts its counters and tail over
-	stepStats            // records produced (producers) or fetched (consumers), the failures, the last one
-	TailSeq   int64      `json:"tailSeq"`        // seq of the newest tail record; the drawer fetches when it moves
-	Step      *stepStats `json:"step,omitempty"` // a consumer's transform, when it runs one
+	Boot    string `json:"boot"` // random per process: a restarted container starts its counters and tail over
+	tally          // records produced (producers) or fetched (consumers), the failures, the last one
+	TailSeq int64  `json:"tailSeq"`        // seq of the newest tail record; the drawer fetches when it moves
+	Step    *tally `json:"step,omitempty"` // a consumer's transform, when it runs one
 }
 
-// stepStats is what a counters reports: every record counted, the ones that
-// failed, and the last failure. A consumer's transform has its own.
-type stepStats struct {
+// tally is what counters read: every record counted, the ones that failed, and
+// the last failure. A node has one; a consumer's transform has its own (Step).
+type tally struct {
 	Total     int64  `json:"total"`
 	Errors    int64  `json:"errors"`
 	LastError string `json:"lastError"`
@@ -130,14 +130,14 @@ func (c *counters) fail(err error) {
 	c.mu.Unlock()
 }
 
-func (c *counters) step() stepStats {
+func (c *counters) read() tally {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return stepStats{Total: c.total.Load(), Errors: c.errors.Load(), LastError: c.lastError}
+	return tally{Total: c.total.Load(), Errors: c.errors.Load(), LastError: c.lastError}
 }
 
 func (c *counters) stats(boot string, tailSeq int64) nodeStats {
-	return nodeStats{Boot: boot, stepStats: c.step(), TailSeq: tailSeq}
+	return nodeStats{Boot: boot, tally: c.read(), TailSeq: tailSeq}
 }
 
 // producer serves /send and runs the timer for one producer node.
@@ -385,7 +385,7 @@ func runNode() {
 	mux.HandleFunc("GET /stats", func(w http.ResponseWriter, r *http.Request) {
 		s := counts.stats(boot, t.last())
 		if tr != nil {
-			step := tr.counts.step()
+			step := tr.counts.read()
 			s.Step = &step
 		}
 		reply(w, http.StatusOK, s)
