@@ -607,6 +607,7 @@ open; it runs last, by the user's choice, so M4 lands on M3's snapshot loop.
 - Snapshot cost stays as M3 built it until M6: with several instances a tick
   can take longer than 1 s; rates stay correct because Δt is measured.
 - `make verify-studio` grows the chain demo below and the instances check.
+- Built as decided in its plan: a single-container node keeps its M2 name and no `studio.instance` label, so flows deployed before M4 stay recognised; clashing container names are a 422; after a file edit, what the deploy ran decides between one container and instances; a node's `lastError` is its first instance's, prefixed `#<i>: `; the example flow's group is `orders-studio`, because franz-go's and kcat's assignors share no protocol and the broker refuses a mixed group. A deploy refuses a forward loop (a cycle of topics and consumers, §4.3). A consumer commits only the records it handled (franz-go `AutoCommitMarks`) and, on Stop, finishes its batch within the grace before committing. Partitions are matched to the containers that run, not to the edited file.
 - **Demo:** flow A `timer → orders → consumer(forward) → orders-archive`;
   flow B `producer(manual) → audit → consumer(http → http://studio:8082/api/flows/<A>/nodes/producer-1/send)`
   — flow B's consumer feeds flow A's producer with no extra image (and node

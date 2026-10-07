@@ -24,7 +24,7 @@
       "type": "consumer",
       "position": { "x": 640, "y": 160 },
       "data": {
-        "group": "orders-workers",
+        "group": "orders-studio",
         "auto_offset_reset": "earliest",
         "instances": 2,
         "sink": { "kind": "log" }
