@@ -31,7 +31,7 @@ function Shell({ id, type, selected, children }: { id: string; type: NodeType; s
         {type} {rt && <span className={`node-state ${rt.state}`}>{rt.state}</span>}
       </div>
       <div className="node-summary">{children}</div>
-      {rt && <div className="node-runtime">{runtimeLine(type, rt)}</div>}
+      {rt && (type === 'topic' || rt.state === 'running') && <div className="node-runtime">{runtimeLine(type, rt)}</div>}
       {hasInput(type) && <Handle type="target" position={Position.Left} />}
       {hasOutput(type) && <Handle type="source" position={Position.Right} />}
     </div>

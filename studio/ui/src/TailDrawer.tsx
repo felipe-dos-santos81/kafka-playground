@@ -15,7 +15,11 @@ export default function TailDrawer({ flowId, node, tailSeq = 0, boot = '' }: Pro
   const since = useRef(0)
   const box = useRef<HTMLElement>(null)
 
+  // A tick without stats carries boot "": only a different non-empty boot is a restart.
+  const lastBoot = useRef('')
   useEffect(() => {
+    if (!boot || boot === lastBoot.current) return
+    lastBoot.current = boot
     since.current = 0
     setEntries([])
   }, [boot])
