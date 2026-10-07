@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"math"
 	"net/http"
 	"slices"
 	"sync"
@@ -354,5 +356,58 @@ func (e *Engine) NodeRunning(ctx context.Context, id, node string) error {
 		return fmt.Errorf("node %s has no container: %w", node, ErrNotRunning)
 	default:
 		return fmt.Errorf("node %s is %s: %w", node, state, ErrNotRunning)
+	}
+}
+
+// withRates sets each node's records per second against the previous snapshot,
+// taken dt seconds earlier. A node whose boot changed (its container restarted)
+// or whose total fell gets no rate this time rather than a wrong one.
+func withRates(cur *FlowState, prev FlowState, dt float64) {
+	if dt <= 0 {
+		return
+	}
+	for id, ns := range cur.Nodes {
+		p, ok := prev.Nodes[id]
+		if !ok || p.Boot != ns.Boot || ns.Total < p.Total {
+			continue
+		}
+		ns.Rate = math.Round(float64(ns.Total-p.Total)/dt*10) / 10
+		cur.Nodes[id] = ns
+	}
+}
+
+// streamTicks is the body of GET /api/flows/{id}/events: every period it writes
+// the flow's snapshot as an SSE `tick` event with rates against the previous
+// tick; a failed snapshot is a `problem` event and the stream goes on. It returns
+// when ctx ends (the browser went away) or a flush fails. Each open stream polls
+// on its own: one tab, one loop.
+func streamTicks(ctx context.Context, w io.Writer, flush func() error, snap func(context.Context) (FlowState, error), every time.Duration) {
+	var prev FlowState
+	last := time.Now()
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		st, err := snap(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			b, _ := json.Marshal(map[string]string{"error": err.Error()})
+			fmt.Fprintf(w, "event: problem\ndata: %s\n\n", b)
+		} else {
+			now := time.Now()
+			withRates(&st, prev, now.Sub(last).Seconds())
+			prev, last = st, now
+			b, _ := json.Marshal(st)
+			fmt.Fprintf(w, "event: tick\ndata: %s\n\n", b)
+		}
+		if flush() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
 	}
 }

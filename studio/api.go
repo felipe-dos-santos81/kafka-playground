@@ -41,11 +41,12 @@ func newMux(s *server, ui fs.FS) http.Handler {
 	mux.HandleFunc("POST /api/flows/{id}/deploy", s.deploy)
 	mux.HandleFunc("POST /api/flows/{id}/stop", s.stopFlow)
 	mux.HandleFunc("GET /api/flows/{id}/state", s.flowState)
+	mux.HandleFunc("GET /api/flows/{id}/events", s.events)
 	mux.HandleFunc("POST /api/flows/{id}/nodes/{node}/send", s.nodeProxy("/send"))
 	mux.HandleFunc("GET /api/flows/{id}/nodes/{node}/tail", s.nodeProxy("/tail"))
 	// Method-less fallbacks keep every /api/ answer JSON: a known path with
 	// the wrong method is 405, anything else under /api/ is 404.
-	for _, path := range []string{"/api/health", "/api/flows", "/api/flows/{id}", "/api/flows/{id}/deploy", "/api/flows/{id}/stop", "/api/flows/{id}/state", "/api/flows/{id}/nodes/{node}/send", "/api/flows/{id}/nodes/{node}/tail"} {
+	for _, path := range []string{"/api/health", "/api/flows", "/api/flows/{id}", "/api/flows/{id}/deploy", "/api/flows/{id}/stop", "/api/flows/{id}/state", "/api/flows/{id}/nodes/{node}/send", "/api/flows/{id}/nodes/{node}/tail", "/api/flows/{id}/events"} {
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusMethodNotAllowed, r.Method+" is not allowed on "+r.URL.Path)
 		})
@@ -201,6 +202,20 @@ func (s *server) flowState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, http.StatusOK, st)
+}
+
+// events streams the flow's snapshot once a second as server-sent events.
+func (s *server) events(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.store.Get(id); storeErr(w, err) {
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	rc := http.NewResponseController(w)
+	streamTicks(r.Context(), w, rc.Flush, func(ctx context.Context) (FlowState, error) {
+		return s.engine.Snapshot(ctx, id)
+	}, time.Second)
 }
 
 // nodeProxy forwards to path on the node's own container once it runs;

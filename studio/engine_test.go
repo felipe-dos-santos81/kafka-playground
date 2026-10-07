@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
@@ -95,5 +97,61 @@ func TestApplyKafka(t *testing.T) {
 	applyKafka(&empty, "f", specs, topics, nil, kadm.ListedOffsets{})
 	if n := empty.Nodes["topic-1"]; n.State != "missing" {
 		t.Fatalf("empty end offsets: want topic-1 missing, got %+v", n)
+	}
+}
+
+func TestWithRates(t *testing.T) {
+	prev := FlowState{Nodes: map[string]NodeState{
+		"steady":    {Boot: "a", Total: 10},
+		"restarted": {Boot: "a", Total: 10},
+		"fell":      {Boot: "a", Total: 50},
+	}}
+	cur := FlowState{Nodes: map[string]NodeState{
+		"steady":    {Boot: "a", Total: 31},
+		"restarted": {Boot: "b", Total: 3},
+		"fell":      {Boot: "a", Total: 40},
+		"new":       {Boot: "a", Total: 5},
+		"topic-1":   {State: "ready", EndOffset: 99},
+	}}
+	withRates(&cur, prev, 2)
+	for node, want := range map[string]float64{"steady": 10.5, "restarted": 0, "fell": 0, "new": 0, "topic-1": 0} {
+		if got := cur.Nodes[node].Rate; got != want {
+			t.Errorf("%s: rate %v, want %v", node, got, want)
+		}
+	}
+}
+
+func TestStreamTicks(t *testing.T) {
+	var out bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	snap := func(context.Context) (FlowState, error) {
+		calls++
+		switch calls {
+		case 1:
+			return FlowState{Status: "running", Nodes: map[string]NodeState{"p": {State: "running", Boot: "a"}}}, nil
+		case 2:
+			return FlowState{}, errors.New("docker: down")
+		case 3:
+			return FlowState{Status: "running", Nodes: map[string]NodeState{"p": {State: "running", Boot: "a", Total: 5}}}, nil
+		}
+		cancel() // the browser went away
+		return FlowState{}, context.Canceled
+	}
+	done := make(chan struct{})
+	go func() {
+		streamTicks(ctx, &out, func() error { return nil }, snap, time.Millisecond)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stream did not end with its context")
+	}
+	s := out.String()
+	if strings.Count(s, "event: tick\ndata: {") != 2 ||
+		!strings.Contains(s, "event: problem\ndata: {\"error\":\"docker: down\"}\n\n") ||
+		strings.Count(s, `"rate":`) != 1 {
+		t.Fatalf("want two ticks around a problem event, the second tick with a rate; got:\n%s", s)
 	}
 }

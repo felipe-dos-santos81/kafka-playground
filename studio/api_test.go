@@ -173,6 +173,7 @@ func TestUnroutedAPIAnswersJSON(t *testing.T) {
 		{"GET", "/api/typo", 404},
 		{"POST", "/api/typo", 404},
 		{"POST", "/api/health", 405},
+		{"POST", "/api/flows/deadbeef/events", 405},
 		{"PATCH", "/api/flows/deadbeef", 405},
 		{"PUT", "/api/flows/deadbeef/nodes/producer-1/send", 405},
 	} {
