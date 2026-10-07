@@ -1,48 +1,49 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, describe, type TailEntry } from './flow/api'
 import type { StudioNode } from './nodes/types'
 
-type Props = { flowId: string; node: StudioNode }
+type Props = { flowId: string; node: StudioNode; tailSeq?: number; boot?: string }
 
-// The selected node's last records, fetched once a second (M3 fetches only when
-// the node's tailSeq moves). A producer's drawer also has Send, which renders the
-// node's own key and value templates.
-export default function TailDrawer({ flowId, node }: Props) {
+// The selected node's last records. It fetches only when the node's tailSeq (from
+// the SSE tick) moves past what it has, and starts over when boot changes: the
+// container restarted and numbers its records from 1 again. A producer's drawer
+// also has Send, which renders the node's own key and value templates.
+export default function TailDrawer({ flowId, node, tailSeq = 0, boot = '' }: Props) {
   const [entries, setEntries] = useState<TailEntry[]>([])
   const [error, setError] = useState('')
   const [sent, setSent] = useState('')
+  const since = useRef(0)
+  const box = useRef<HTMLElement>(null)
 
   useEffect(() => {
+    since.current = 0
+    setEntries([])
+  }, [boot])
+
+  useEffect(() => {
+    if (tailSeq <= since.current) return
     let live = true
-    let since = 0
-    let busy = false // a slow answer must not be fetched twice
-    const poll = () => {
-      if (busy) return
-      busy = true
-      api
-        .tail(flowId, node.id, since)
-        .then(
-          (got) => {
-            if (!live) return
-            setError('')
-            if (got.length === 0) return
-            const restarted = got[0].seq <= since // the node restarted and counts from 1 again
-            since = got[got.length - 1].seq
-            setEntries((es) => (restarted ? got : [...es, ...got]).slice(-100))
-          },
-          (e) => live && setError(describe(e)),
-        )
-        .finally(() => {
-          busy = false
-        })
-    }
-    poll()
-    const timer = setInterval(poll, 1000)
+    api.tail(flowId, node.id, since.current).then(
+      (got) => {
+        if (!live) return
+        setError('')
+        if (got.length === 0) return
+        since.current = got[got.length - 1].seq
+        setEntries((es) => [...es, ...got].slice(-100))
+      },
+      (e) => {
+        if (live) setError(describe(e))
+      },
+    )
     return () => {
       live = false
-      clearInterval(timer)
     }
-  }, [flowId, node.id])
+  }, [flowId, node.id, boot, tailSeq])
+
+  // Keep the newest record in view.
+  useEffect(() => {
+    box.current?.scrollTo({ top: box.current.scrollHeight })
+  }, [entries])
 
   const send = () =>
     api.send(flowId, node.id).then(
@@ -51,11 +52,12 @@ export default function TailDrawer({ flowId, node }: Props) {
     )
 
   return (
-    <section className="drawer">
+    <section className="drawer" ref={box}>
       <header>
         <strong>{node.id}</strong> tail
         {node.type === 'producer' && <button onClick={send}>Send</button>}
-        <span className="hint">{error || sent}</span>
+        {sent && <span className="hint">{sent}</span>}
+        {error && <span className="error">{error}</span>}
       </header>
       {entries.length === 0 ? (
         <p className="hint">No records yet.</p>

@@ -39,3 +39,6 @@ html, body, #root { margin: 0; height: 100%; }
 .drawer ol { list-style: none; margin: 6px 0 0; padding: 0; }
 .drawer li { padding: 2px 0; }
 .drawer code { margin-right: 6px; white-space: pre-wrap; word-break: break-all; }
+.node-runtime { margin-top: 2px; font-size: 11px; color: #555; }
+.node-state.ready { background: #c8e6c9; }
+.drawer .error { color: #b00020; }

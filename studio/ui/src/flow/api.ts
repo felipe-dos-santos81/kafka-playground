@@ -1,8 +1,34 @@
 import { FlowSchema, type FlowFile } from './schema'
 
 export type FlowSummary = { id: string; name: string; status: string }
-// GET /api/flows/{id}/state: each producer's and consumer's container state while deployed.
-export type FlowState = { status: 'running' | 'stopped'; nodes: Record<string, { state: string }> }
+// One node of the live snapshot (Go: NodeState in engine.go). Absent fields are zero,
+// except lag, which is absent when the broker did not answer.
+export type NodeRuntime = {
+  state: string
+  total?: number
+  rate?: number
+  errors?: number
+  lastError?: string
+  tailSeq?: number
+  boot?: string
+  lag?: number
+  assigned?: Record<string, number[]>
+  partitions?: number
+  endOffset?: number
+  warning?: string
+}
+
+// The snapshot GET /api/flows/{id}/state answers and every SSE tick carries.
+export type FlowState = { status: 'running' | 'stopped'; nodes: Record<string, NodeRuntime> }
+
+// watch opens the flow's event stream: onTick gets a snapshot once a second.
+// EventSource reconnects by itself; the returned function closes the stream.
+export function watch(id: string, onTick: (s: FlowState) => void): () => void {
+  const es = new EventSource(`/api/flows/${id}/events`)
+  es.addEventListener('tick', (e) => onTick(JSON.parse((e as MessageEvent<string>).data)))
+  return () => es.close()
+}
+
 // One record of a node's tail (Go: tailEntry in node.go).
 export type TailEntry = { seq: number; time: string; partition: number; offset: number; key: string; value: string }
 type Problem = { node?: string; edge?: string; message: string }
@@ -42,7 +68,6 @@ export const api = {
   remove: (id: string) => call<void>(`/api/flows/${id}`, { method: 'DELETE' }),
   deploy: (id: string) => call<{ status: string }>(`/api/flows/${id}/deploy`, { method: 'POST' }),
   stop: (id: string) => call<{ status: string }>(`/api/flows/${id}/stop`, { method: 'POST' }),
-  state: (id: string) => call<FlowState>(`/api/flows/${id}/state`),
   // An empty body makes the producer render its own key and value templates.
   send: (id: string, node: string) =>
     call<{ partition: number; offset: number }>(`/api/flows/${id}/nodes/${node}/send`, { method: 'POST' }),
