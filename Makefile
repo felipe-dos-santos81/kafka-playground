@@ -6,6 +6,7 @@ SERVICE = Kafka Playground
 COMPOSE = docker compose
 PRODUCER_URL ?= http://localhost:8081
 CONSOLE_URL ?= http://localhost:8080
+STUDIO_URL ?= http://localhost:8082
 KAFKA_BIN = $(COMPOSE) exec -T kafka /opt/kafka/bin
 BOOTSTRAP = --bootstrap-server localhost:19092
 topic ?= orders
@@ -17,7 +18,7 @@ svc ?= orders-workers orders-audit
 # Single-quote $(1) for the shell; fed $(value var), quotes, spaces and $ pass through untouched.
 shq = '$(subst ','\'',$(1))'
 
-.PHONY: help up down ps logs topics groups produce scale verify
+.PHONY: help up down ps logs topics groups produce scale verify verify-studio
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ help: ## Print this help message
 
 up: ## [STEP 1] Start everything; returns when the broker and both pages are healthy
 	$(COMPOSE) up -d --wait
-	@echo "Producer page: $(PRODUCER_URL)   Console: $(CONSOLE_URL)   Broker from the host: localhost:9092"
+	@echo "Producer page: $(PRODUCER_URL)   Console: $(CONSOLE_URL)   Studio: $(STUDIO_URL)   Broker from the host: localhost:9092"
 
 down: ## Remove every container (topics and messages are lost)
 	$(COMPOSE) down --remove-orphans
@@ -65,11 +66,28 @@ produce: ## [STEP 2] Produce one JSON record via the producer page (usage: make 
 scale: ## [STEP 4] Set the number of orders-workers group members (usage: make scale n=3)
 	$(COMPOSE) up -d --scale orders-workers=$(n) orders-workers
 
+# ── Studio ───────────────────────────────────────────────────────────────────
+
+verify-studio: up ## End-to-end check of the studio API: health, create, reject a bad edge, round trip, delete
+	@health=$$(curl -sS --fail-with-body $(STUDIO_URL)/api/health) || { echo "STUDIO FAILED: health: $$health"; exit 1; }; \
+	echo "studio health: $$health"; \
+	flow='{"name":"verify","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":{"source":"manual","key":"","value":"{}"}},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"verify","partitions":1,"replication_factor":1}}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"}]}'; \
+	created=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$flow") || { echo "STUDIO FAILED: create: $$created"; exit 1; }; \
+	id=$$(echo "$$created" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'); \
+	[ -f "flows/$$id.json" ] || { echo "STUDIO FAILED: flows/$$id.json not written ($$created)"; exit 1; }; \
+	bad=$$(echo "$$flow" | sed 's/"source":"producer-1","target":"topic-1"/"source":"topic-1","target":"producer-1"/'); \
+	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X PUT $(STUDIO_URL)/api/flows/$$id -H 'Content-Type: application/json' --data "$$bad"); \
+	[ "$$code" = 422 ] || { echo "STUDIO FAILED: bad edge accepted ($$code)"; exit 1; }; \
+	curl -sS --fail-with-body $(STUDIO_URL)/api/flows/$$id | grep -q '"name":"verify"' || { echo "STUDIO FAILED: round trip"; exit 1; }; \
+	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$id || { echo "STUDIO FAILED: delete"; exit 1; }; \
+	[ ! -f "flows/$$id.json" ] || { echo "STUDIO FAILED: flows/$$id.json still exists"; exit 1; }; \
+	echo "STUDIO OK ($$id)"
+
 # ── Verify ───────────────────────────────────────────────────────────────────
 
 # Waits until both groups have committed past the record (so it can no longer be
 # redelivered), then counts it in the logs: exactly once per group.
-verify: up ## End-to-end check: one record, seen once by the worker group and once by the audit group
+verify: up verify-studio ## End-to-end check: studio API round trip, then one record seen once by the worker group and once by the audit group
 	@id="verify-$$(date +%s)"; \
 	sent=$$($(MAKE) --no-print-directory produce key="$$id" value="{\"id\":\"$$id\"}") || exit 1; \
 	partition=$$(echo "$$sent" | sed 's/.*"partition":\([0-9]*\).*/\1/'); \

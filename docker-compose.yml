@@ -117,6 +117,26 @@ services:
       interval: 2s
       retries: 30
 
+  # Pipeline Studio: canvas editor for flows (http://localhost:8082). Flows are
+  # files in ./flows. The Docker socket lets the studio run nodes as containers
+  # from M2 on; /api/health proves it can reach the engine.
+  studio:
+    build: ./studio
+    image: kafka-playground/studio:0.1.0
+    pull_policy: build
+    depends_on: *after-kafka
+    ports:
+      - "127.0.0.1:8082:8082"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./flows:/data
+    environment:
+      KAFKA_BROKERS: *bootstrap
+    healthcheck:
+      test: ["CMD", "/studio", "-healthcheck"]
+      interval: 2s
+      retries: 30
+
   # Kafka web UI for browsing topics, messages and groups: http://localhost:8080
   console:
     image: redpandadata/console:v3.12.0

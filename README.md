@@ -9,13 +9,14 @@ A local Kafka sandbox for watching partitions, consumer groups and fan-out while
 | `orders-workers` ×2 | kcat consumers sharing group `orders-workers` on `orders` (3 partitions) | `make logs svc=orders-workers` |
 | `orders-audit` | kcat consumer in its own group on `orders` | `make logs svc=orders-audit` |
 | `producer` | producer page built from `producer/` (Go) | http://localhost:8081 |
+| `studio` | Pipeline Studio, built from `studio/` (Go + React Flow): draw flows, save them as JSON | http://localhost:8082 |
 | `console` | Redpanda Console, for browsing topics, messages and groups | http://localhost:8080 |
 
 ## Quick start
 
 ```sh
 make up        # = docker compose up -d --wait
-make verify    # produce one record, assert each consumer group got it exactly once
+make verify    # studio API round trip, then one record seen exactly once per consumer group
 make help      # every target
 make down      # remove everything
 ```
@@ -69,6 +70,14 @@ Also add `topic-payments: {condition: service_completed_successfully}` under `pr
 ```
 
 Consumers sharing a `GROUP_ID` split the partitions; without one, each container gets every record. Add members with `deploy.replicas: N` or `docker compose up -d --scale <service>=N`.
+
+## Pipeline Studio
+
+http://localhost:8082 is a canvas for building flows: drag Producer, Topic and Consumer nodes from the palette, wire them (only Producer → Topic → Consumer edges are accepted; the server rejects anything else on save), edit the selected node on the right, Save. Each flow is one file in `flows/` (`<id>.json`, React Flow's node/edge shape plus `name`); edit, copy or commit them like any other file — a file that does not parse is skipped and logged. `flows/0a1b2c3d.json` is an example.
+
+Deploying a flow is the next milestone. `GET /api/health` reports the Docker Engine version the studio can reach through `/var/run/docker.sock`; deploy will run each node as a container.
+
+UI development: `cd studio/ui && npm install && npm run dev` serves http://localhost:5173 and proxies `/api` to the `studio` container. Go changes need `make up` (the image rebuilds).
 
 ## Connect from the host
 
