@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -122,5 +123,58 @@ func TestProducerTimer(t *testing.T) {
 	}
 	if p.counts.total.Load() < 3 || p.tail.last() < 3 {
 		t.Fatalf("want at least 3 counted and tailed, got %d and %d", p.counts.total.Load(), p.tail.last())
+	}
+}
+
+func TestConsumerHandle(t *testing.T) {
+	var posted []string
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		posted = append(posted, r.Header.Get("Content-Type")+" "+string(b))
+		if strings.Contains(string(b), "bad") {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer sink.Close()
+	var forwarded []*kgo.Record
+	c := &consumer{
+		spec:   NodeSpec{Topic: "orders", Forward: "archive", SinkURL: sink.URL},
+		tail:   &tail{},
+		counts: &counters{},
+		post:   postJSON,
+		produce: func(_ context.Context, r *kgo.Record) error {
+			if string(r.Key) == "down" {
+				return errors.New("broker down")
+			}
+			forwarded = append(forwarded, r)
+			return nil
+		},
+	}
+	for _, r := range []struct{ key, value string }{{"k1", `{"id":1}`}, {"k2", `{"bad":true}`}, {"down", `{"id":3}`}} {
+		c.handle(context.Background(), &kgo.Record{Topic: "orders", Key: []byte(r.key), Value: []byte(r.value)})
+	}
+	// Every record reaches the sink; a failed sink does not stop the forward.
+	if len(posted) != 3 || posted[0] != `application/json {"id":1}` {
+		t.Fatalf("sink got %q", posted)
+	}
+	if len(forwarded) != 2 || forwarded[0].Topic != "archive" || string(forwarded[0].Key) != "k1" || string(forwarded[1].Value) != `{"bad":true}` {
+		t.Fatalf("forwarded %+v", forwarded)
+	}
+	s := c.counts.stats("b", c.tail.last())
+	if s.Total != 3 || s.Errors != 2 || !strings.HasPrefix(s.LastError, "forward: ") || s.TailSeq != 3 {
+		t.Fatalf("want 3 records, 2 errors (sink 500, forward), the last a forward error; got %+v", s)
+	}
+
+	// Without a sink or a forward, a record is only counted and tailed.
+	bare := &consumer{spec: NodeSpec{Topic: "orders"}, tail: &tail{}, counts: &counters{}}
+	bare.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{}`)})
+	if s := bare.counts.stats("b", bare.tail.last()); s.Total != 1 || s.Errors != 0 {
+		t.Fatalf("bare consumer: %+v", s)
+	}
+
+	// An unreachable sink is an error too.
+	sink.Close()
+	if err := postJSON(context.Background(), sink.URL, []byte(`{}`)); err == nil {
+		t.Fatal("want an error from a closed sink")
 	}
 }

@@ -26,6 +26,22 @@ func TestResolve(t *testing.T) {
 	}
 }
 
+func TestResolveConsumerSinkAndForward(t *testing.T) {
+	f := clone(good)
+	f.ID = "0a1b2c3d"
+	f.Nodes[2].Data = json.RawMessage(`{"group":"g","sink":{"kind":"http","url":"http://studio:8082/x"}}`)
+	f.Nodes = append(f.Nodes, node("topic-2", "topic", `{"name":"archive","partitions":1,"replication_factor":1}`))
+	f.Edges = append(f.Edges, edge("consumer-1", "topic-2"))
+	specs, topics := Resolve(f)
+	want := NodeSpec{Flow: "0a1b2c3d", Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "g", Forward: "archive", SinkURL: "http://studio:8082/x"}
+	if len(specs) != 2 || !reflect.DeepEqual(specs[1], want) {
+		t.Fatalf("consumer spec:\n got %+v\nwant %+v", specs, want)
+	}
+	if len(topics) != 2 {
+		t.Fatalf("want both topics created, got %+v", topics)
+	}
+}
+
 func TestNotYetRunnable(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -36,16 +52,22 @@ func TestNotYetRunnable(t *testing.T) {
 		{"timer producer runs", func(f *Flow) {
 			f.Nodes[0].Data = json.RawMessage(`{"source":"timer","interval_ms":100,"value":"{}"}`)
 		}, ""},
-		{"http sink", func(f *Flow) {
+		{"http sink runs", func(f *Flow) {
 			f.Nodes[2].Data = json.RawMessage(`{"group":"g","sink":{"kind":"http","url":"http://x"}}`)
-		}, "consumer-1"},
+		}, ""},
 		{"two instances", func(f *Flow) {
 			f.Nodes[2].Data = json.RawMessage(`{"group":"g","instances":2,"sink":{"kind":"log"}}`)
 		}, "consumer-1"},
-		{"forward to a topic", func(f *Flow) {
+		{"forward to a topic runs", func(f *Flow) {
 			f.Nodes = append(f.Nodes, node("topic-2", "topic", `{"name":"archive","partitions":1,"replication_factor":1}`))
 			f.Edges = append(f.Edges, edge("consumer-1", "topic-2"))
-		}, "consumer-1"},
+		}, ""},
+		{"transform", func(f *Flow) {
+			f.Nodes = append(f.Nodes,
+				node("transform-1", "transform", `{"expr":"msg"}`),
+				node("topic-2", "topic", `{"name":"archive","partitions":1,"replication_factor":1}`))
+			f.Edges = append(f.Edges, edge("consumer-1", "transform-1"), edge("transform-1", "topic-2"))
+		}, "transform-1"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

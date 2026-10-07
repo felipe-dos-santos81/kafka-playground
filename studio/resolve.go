@@ -17,6 +17,8 @@ type NodeSpec struct {
 	Value           string `json:"value,omitempty"`       // producer value template
 	Source          string `json:"source,omitempty"`      // producer: "manual" or "timer"
 	IntervalMS      int    `json:"interval_ms,omitempty"` // producer: the timer's period
+	Forward         string `json:"forward,omitempty"`     // consumer: the topic it forwards every record to
+	SinkURL         string `json:"sink_url,omitempty"`    // consumer: the http sink's URL
 }
 
 // containerName is a node's container name and, on the compose network, its host name.
@@ -33,6 +35,7 @@ func nodeURL(flow, node, path string) string {
 func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 	byID := map[string]Node{}
 	topicName := map[string]string{} // topic node id → topic name
+	forward := map[string]string{}   // consumer node id → the topic it forwards to
 	var topics []TopicData
 	for _, n := range f.Nodes {
 		byID[n.ID] = n
@@ -41,6 +44,11 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 			json.Unmarshal(n.Data, &d)
 			topicName[n.ID] = d.Name
 			topics = append(topics, d)
+		}
+	}
+	for _, e := range f.Edges {
+		if byID[e.Source].Type == "consumer" && byID[e.Target].Type == "topic" {
+			forward[e.Source] = topicName[e.Target]
 		}
 	}
 	var specs []NodeSpec
@@ -54,7 +62,11 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 		case src.Type == "topic" && dst.Type == "consumer":
 			var d ConsumerData
 			json.Unmarshal(dst.Data, &d)
-			specs = append(specs, NodeSpec{Flow: f.ID, Node: dst.ID, Type: "consumer", Topic: topicName[src.ID], Group: d.Group, AutoOffsetReset: d.AutoOffsetReset})
+			spec := NodeSpec{Flow: f.ID, Node: dst.ID, Type: "consumer", Topic: topicName[src.ID], Group: d.Group, AutoOffsetReset: d.AutoOffsetReset, Forward: forward[dst.ID]}
+			if d.Sink.Kind == "http" {
+				spec.SinkURL = d.Sink.URL
+			}
+			specs = append(specs, spec)
 		}
 	}
 	return specs, topics
@@ -64,24 +76,16 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 // cannot run yet. Each line goes when its milestone lands.
 func notYetRunnable(f Flow) []Problem {
 	var ps []Problem
-	types := map[string]string{}
 	for _, n := range f.Nodes {
-		types[n.ID] = n.Type
 		switch n.Type {
 		case "consumer":
 			var d ConsumerData
 			json.Unmarshal(n.Data, &d)
-			if d.Sink.Kind == "http" {
-				ps = append(ps, Problem{Node: n.ID, Message: "the http sink runs from M4; use log for now"})
-			}
 			if d.Instances > 1 {
 				ps = append(ps, Problem{Node: n.ID, Message: "more than one instance runs from M4"})
 			}
-		}
-	}
-	for _, e := range f.Edges {
-		if types[e.Source] == "consumer" {
-			ps = append(ps, Problem{Node: e.Source, Edge: e.ID, Message: "forwarding from a consumer runs from M4 (through a transform from M5)"})
+		case "transform":
+			ps = append(ps, Problem{Node: n.ID, Message: "transforms run from M5"})
 		}
 	}
 	return ps

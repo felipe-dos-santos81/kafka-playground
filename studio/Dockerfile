@@ -17,6 +17,8 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /studio .
 
 FROM scratch
+# The CA bundle lets an http sink post to https URLs.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build /studio /studio
 USER 65534
 EXPOSE 8082

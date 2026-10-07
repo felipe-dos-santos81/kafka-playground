@@ -1,7 +1,8 @@
 // `studio node`: one producer or consumer of a deployed flow, in its own
 // container. Its whole configuration is env STUDIO_NODE (a NodeSpec) plus
 // KAFKA_BROKERS. It serves the control plane on :9000 inside the compose
-// network: POST /send (producers), GET /tail?since=N and GET /stats.
+// network: POST /send (producers), GET /tail?since=N and GET /stats. A consumer
+// also posts each record to its http sink and forwards it to its next topic.
 package main
 
 import (
@@ -217,23 +218,73 @@ func (p *producer) run(ctx context.Context, every time.Duration) {
 	}
 }
 
-// consume polls the group until ctx ends, counting and tailing every record.
-func consume(ctx context.Context, cl *kgo.Client, t *tail, c *counters) {
+// consumer takes each fetched record of one consumer node through the tail, the
+// http sink (when set) and the forward (when set). A failed sink or forward is
+// counted and logged, not retried: autocommit still moves past the record.
+type consumer struct {
+	spec    NodeSpec
+	tail    *tail
+	counts  *counters
+	post    func(ctx context.Context, url string, body []byte) error // the http sink
+	produce func(context.Context, *kgo.Record) error                 // the forward
+}
+
+func (c *consumer) handle(ctx context.Context, r *kgo.Record) {
+	c.counts.ok()
+	c.tail.push(r)
+	log.Printf("%s[%d]@%d key=%s %s", r.Topic, r.Partition, r.Offset, r.Key, r.Value)
+	if c.spec.SinkURL != "" {
+		if err := c.post(ctx, c.spec.SinkURL, r.Value); err != nil {
+			c.counts.fail(fmt.Errorf("sink: %w", err))
+			log.Printf("sink: %v", err)
+		}
+	}
+	if c.spec.Forward != "" {
+		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := c.produce(pctx, &kgo.Record{Topic: c.spec.Forward, Key: r.Key, Value: r.Value})
+		cancel()
+		if err != nil {
+			c.counts.fail(fmt.Errorf("forward: %w", err))
+			log.Printf("forward to %s: %v", c.spec.Forward, err)
+		}
+	}
+}
+
+// consume polls the group until ctx ends, handing every record to c.
+func (c *consumer) consume(ctx context.Context, cl *kgo.Client) {
 	for {
 		fs := cl.PollFetches(ctx)
 		if ctx.Err() != nil || fs.IsClientClosed() {
 			return
 		}
 		fs.EachError(func(topic string, partition int32, err error) {
-			c.fail(err)
+			c.counts.fail(err)
 			log.Printf("fetch %s[%d]: %v", topic, partition, err)
 		})
-		fs.EachRecord(func(r *kgo.Record) {
-			c.ok()
-			t.push(r)
-			log.Printf("%s[%d]@%d key=%s %s", r.Topic, r.Partition, r.Offset, r.Key, r.Value)
-		})
+		fs.EachRecord(func(r *kgo.Record) { c.handle(ctx, r) })
 	}
+}
+
+// postJSON is the http sink: it POSTs body as JSON within 5 s; any answer but
+// 2xx is an error.
+func postJSON(ctx context.Context, url string, body []byte) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(res.Body, 1<<20)) // drained, so the connection is reused
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		return fmt.Errorf("%s answered %s", url, res.Status)
+	}
+	return nil
 }
 
 // runNode is `studio node`: it runs until SIGTERM (Stop), then closes its client,
@@ -263,6 +314,9 @@ func runNode() {
 	defer stop()
 
 	t, counts, boot := &tail{}, &counters{}, NewID()
+	produce := func(ctx context.Context, rec *kgo.Record) error {
+		return cl.ProduceSync(ctx, rec).FirstErr()
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /tail", func(w http.ResponseWriter, r *http.Request) {
 		since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
@@ -272,9 +326,7 @@ func runNode() {
 		reply(w, http.StatusOK, counts.stats(boot, t.last()))
 	})
 	if spec.Type == "producer" {
-		p := &producer{spec: spec, tail: t, counts: counts, produce: func(ctx context.Context, rec *kgo.Record) error {
-			return cl.ProduceSync(ctx, rec).FirstErr()
-		}}
+		p := &producer{spec: spec, tail: t, counts: counts, produce: produce}
 		mux.HandleFunc("POST /send", p.send)
 		if spec.Source == "timer" {
 			go p.run(ctx, time.Duration(spec.IntervalMS)*time.Millisecond)
@@ -283,7 +335,8 @@ func runNode() {
 		mux.HandleFunc("POST /send", func(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusConflict, "only producer nodes send")
 		})
-		go consume(ctx, cl, t, counts)
+		c := &consumer{spec: spec, tail: t, counts: counts, post: postJSON, produce: produce}
+		go c.consume(ctx, cl)
 	}
 	srv := &http.Server{Addr: nodeAddr, Handler: mux}
 	go func() {
