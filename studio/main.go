@@ -37,7 +37,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	s := &server{store: Store{dir: dir}}
+	cli, err := newDocker()
+	if err != nil {
+		log.Fatal(err)
+	}
+	s := &server{store: Store{dir: dir}, docker: cli}
 	log.Println("studio on", addr, "flows in", dir)
 	log.Fatal(http.ListenAndServe(addr, newMux(s, ui)))
 }

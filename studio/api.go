@@ -4,14 +4,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"net/http"
+	"time"
+
+	"github.com/moby/moby/client"
 )
 
 type server struct {
-	store Store
+	store  Store
+	docker *client.Client // nil until main wires it; health then answers 503
 }
 
 type flowSummary struct {
@@ -33,7 +38,18 @@ func newMux(s *server, ui fs.FS) *http.ServeMux {
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
-	fail(w, http.StatusServiceUnavailable, "docker: not configured") // Task 4 wires the Docker client
+	if s.docker == nil {
+		fail(w, http.StatusServiceUnavailable, "docker: not configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	v, err := dockerVersion(ctx, s.docker)
+	if err != nil {
+		fail(w, http.StatusServiceUnavailable, "docker: "+err.Error())
+		return
+	}
+	reply(w, http.StatusOK, map[string]string{"docker": v})
 }
 
 func (s *server) listFlows(w http.ResponseWriter, r *http.Request) {
