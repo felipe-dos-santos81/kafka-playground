@@ -1,6 +1,6 @@
 // The live view (spec M6): numbers that stop being live say so, a deleted flow
 // closes, a silent node warns, and the tail follows only at the bottom.
-import { deleteFlow, deployFlow, expect, flowItem, messageCount, nodeOf, runtimeOf, simple, tail, test, timer, topBar } from './studio'
+import { deleteFlow, deployFlow, expect, expectGrowing, flowItem, messageCount, nodeOf, runtimeOf, simple, tail, test, timer, topBar } from './studio'
 
 test('a studio restart pauses the numbers, then they come back', async ({ page, studio }) => {
   const name = studio.unique('restart')
@@ -15,9 +15,7 @@ test('a studio restart pauses the numbers, then they come back', async ({ page, 
 
   await studio.startStudio()
   await expect(topBar(page)).not.toContainText('live numbers paused', { timeout: 15_000 })
-  const countBefore = await messageCount(line)
-  expect(countBefore).not.toBeNull()
-  await expect.poll(() => messageCount(line), { timeout: 10_000 }).toBeGreaterThan(countBefore ?? 0)
+  await expectGrowing(line)
 })
 
 test('a flow deleted elsewhere closes, saying so', async ({ page, studio }) => {

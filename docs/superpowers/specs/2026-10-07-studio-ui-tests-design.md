@@ -65,9 +65,9 @@ make verify-ui
   unchanged.
 - Makefile: `verify-ui: up ## …` runs the above and prints `UI OK`; `verify: up
   verify-studio verify-ui` (API check, then browser suite, then the kcat check);
-  `test` gains `tsc -p e2e`. Both run `npm ci` only when `package-lock.json` is
-  newer than the last install (`NPM_CI`), so a checkout made before Playwright
-  was added installs it. `KAFKA_BOOTSTRAP` is the Makefile's `BOOTSTRAP`
+  `test` gains `tsc -p e2e`. Both depend on a `studio/ui/node_modules` target
+  that runs `npm ci` whenever `package-lock.json` is newer than the last
+  install, so a checkout made before Playwright was added installs it. `KAFKA_BOOTSTRAP` is the Makefile's `BOOTSTRAP`
   address.
 - `.gitignore`: `studio/ui/test-results/`, `studio/ui/playwright-report/`.
 
@@ -146,18 +146,21 @@ is removed afterwards (§6).
 
 ## 6. Cleanup, failures, timing
 
-- The fixture's teardown runs even when a test fails, and each step runs even
-  when an earlier one failed, in this order: `docker kill -s CONT` every
-  container the test stopped; if the studio was stopped, `docker compose start
-  studio` and wait up to 45 s for `/api/health` 200; delete the test's flows
-  through `/api` (which removes their containers); delete the topics and
-  consumer groups those flows name (`kafka-topics.sh --delete`,
-  `kafka-consumer-groups.sh --delete`). A flow created through the API has its
-  topics and groups recorded when it is created, so a test that deletes its own
-  flow still has them removed; one built in the editor is read back. A name is
-  matched literally (escaped, since `--topic` takes a regex), and only a name
-  starting `studio-ui-` is ever deleted, so a shared topic such as `orders` is
-  never touched. The fixture has its own 120 s budget, apart from the test's.
+- Each test's fixture teardown runs even when the test fails, and each step
+  runs even when an earlier one failed: if the studio was stopped, `docker
+  compose start studio` and wait up to 45 s for `/api/health` 200; then, for
+  each of the test's flows, `docker kill -s CONT` its containers (a paused one
+  would make its removal wait) and delete it through `/api` (which removes its
+  containers). The fixture has its own 120 s budget, apart from the test's.
+- The topics and consumer groups the run's flows name are deleted once, after
+  the last test, by a worker-scoped fixture: one `kafka-topics.sh --delete` and
+  one `kafka-consumer-groups.sh --delete` (each starts a JVM in the broker, so
+  this saves seconds per test). A flow created through the API has its names
+  recorded when it is created, so a test that deletes its own flow still has
+  them removed; one built in the editor is read back. A name is matched
+  literally (escaped, since `--topic` takes a regex), and only a name starting
+  `studio-ui-` is ever deleted, so a shared topic such as `orders` is never
+  touched.
 - Waits use `expect(…).toHaveText/toBeVisible`, `expect.poll` or `toPass`
   with explicit timeouts. The only fixed wait is test 10's 6 s.
 - One worker: test 8 stops the studio every other test talks to, and its
@@ -200,9 +203,10 @@ is removed afterwards (§6).
   needs no UI change.
 - `data-testid="tail"` marks the whole drawer, not only its list: the instance
   picker, Send and the scrolling box live there too.
-- The teardown removes the topics and groups the test's flows name: recorded
-  when a flow is created, read back for a flow built in the editor. It retries
-  the group delete once after 3 s (a consumer may still be leaving).
+- The topics and groups the tests' flows name are deleted after the last test,
+  in one run of each Kafka tool: recorded when a flow is created, read back for
+  a flow built in the editor. The group delete is retried once after 3 s (the
+  last test's consumers may still be leaving).
 - `e2e/tsconfig.json` uses Node's types from `@types/node`, declared at the
   version vite already installs (`24.19.1`).
 - The tail-scroll test's timer runs at 250 ms: the drawer keeps 100 records, and a faster timer passes that cap during the check (100 ms gives only about 10 s), so the first record would change while scrolled up. At 250 ms the cap arrives about 25 s after start, and more than 20 records still arrive within the 20 s poll.

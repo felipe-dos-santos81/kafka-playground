@@ -1,11 +1,13 @@
 // Flows through the studio's API, and the parts the tests build them from.
 import config from '../playwright.config'
+import type { FlowFile, NodeType } from '../src/flow/schema'
 
 export const STUDIO_URL = String(config.use?.baseURL)
 
-export type FlowNode = { id: string; type: string; position: { x: number; y: number }; data: Record<string, unknown> }
-export type FlowEdge = { id: string; source: string; target: string }
-export type Flow = { name: string; nodes: FlowNode[]; edges: FlowEdge[] }
+// The app's flow file (src/flow/schema.ts), without the id the studio assigns.
+export type Flow = Omit<FlowFile, 'id'>
+type FlowNode = Flow['nodes'][number]
+type FlowEdge = Flow['edges'][number]
 type Data = Record<string, unknown>
 
 export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
@@ -29,7 +31,7 @@ export async function flowIdOf(name: string): Promise<string> {
 }
 
 // A flow's parts, laid out left to right.
-export const node = (id: string, type: string, x: number, data: Data): FlowNode => ({ id, type, position: { x, y: 0 }, data })
+export const node = (id: string, type: NodeType, x: number, data: Data): FlowNode => ({ id, type, position: { x, y: 0 }, data })
 export const edge = (source: string, target: string): FlowEdge => ({ id: `${source}-${target}`, source, target })
 export const manual = { source: 'manual', key: '', value: '{"id": {{.Seq}}}' }
 export const timer = (ms: number) => ({ source: 'timer', interval_ms: ms, key: '{{.Seq}}', value: '{"id": {{.Seq}}}' })

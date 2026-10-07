@@ -58,8 +58,7 @@ test('a consumer with instances shows each one and tails the one picked', async 
     const text = (await line.textContent()) ?? ''
     partitionOf = Object.fromEntries([...text.matchAll(/#(\d) p([\d,]+)/g)].map((m) => [m[1], m[2]]))
     expect(Object.keys(partitionOf).sort()).toEqual(['1', '2', '3'])
-    expect(new Set(Object.values(partitionOf)).size).toBe(3) // one partition each: no commas, no repeats
-    expect(Object.values(partitionOf).every((p) => !p.includes(','))).toBe(true)
+    expect(Object.values(partitionOf).sort()).toEqual(['0', '1', '2']) // one partition each
   }).toPass({ timeout: 45_000 })
 
   await nodeOf(page, 'consumer-1').click()

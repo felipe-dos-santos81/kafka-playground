@@ -1,14 +1,13 @@
 // The editor: flows built and run through the UI.
 import {
   connect,
-  consumer,
   deployFlow,
+  expectGrowing,
   expect,
   field,
   flowItem,
-  manual,
+  flowRow,
   messageCount,
-  node,
   nodeOf,
   paletteItem,
   runtimeOf,
@@ -16,7 +15,6 @@ import {
   tail,
   test,
   topBar,
-  topic,
 } from './studio'
 
 test('build, run and stop a flow in the editor', async ({ page, studio }) => {
@@ -53,8 +51,7 @@ test('build, run and stop a flow in the editor', async ({ page, studio }) => {
 
   const line = runtimeOf(page, 'consumer-1')
   await expect.poll(() => messageCount(line), { timeout: 20_000 }).toBeGreaterThan(0)
-  const firstCount = (await messageCount(line)) ?? 0
-  await expect.poll(() => messageCount(line), { timeout: 10_000 }).toBeGreaterThan(firstCount)
+  await expectGrowing(line)
 
   await nodeOf(page, 'consumer-1').click()
   await expect(tail(page).getByRole('listitem').first()).toBeVisible({ timeout: 10_000 })
@@ -66,15 +63,7 @@ test('build, run and stop a flow in the editor', async ({ page, studio }) => {
 
 test('a wire the edge table refuses is not drawn', async ({ page, studio }) => {
   const name = studio.unique('wire')
-  await studio.create({
-    name,
-    nodes: [
-      node('producer-1', 'producer', 0, manual),
-      node('topic-1', 'topic', 250, topic(name)),
-      node('consumer-1', 'consumer', 500, consumer(name)),
-    ],
-    edges: [],
-  })
+  await studio.create({ ...simple(name), edges: [] })
   await studio.open(page, name)
   await connect(page, 'producer-1', 'consumer-1') // producer → consumer: not in the edge table
   await expect(page.locator('.react-flow__edge')).toHaveCount(0)
@@ -115,7 +104,7 @@ test('a flow deployed elsewhere shows as running in the list', async ({ page, st
   const name = studio.unique('elsewhere')
   const id = await studio.create(simple(name))
   await page.goto('/')
-  const item = page.getByRole('listitem').filter({ hasText: name })
+  const item = flowRow(page, name)
   await expect(item).toContainText('(stopped)')
   await deployFlow(id) // another tab, or curl
   await expect(item).toContainText('(running)', { timeout: 6_000 }) // the list re-reads every 5 s

@@ -1,9 +1,10 @@
 // Where things are on the studio's page: accessible names first, a data-testid
 // where the UI has none (node-<id>, runtime-<id>, tail).
-import type { Locator, Page } from '@playwright/test'
+import { expect, type Locator, type Page } from '@playwright/test'
 
 export const topBar = (page: Page) => page.getByRole('banner')
-export const flowItem = (page: Page, name: string) => page.getByRole('listitem').filter({ hasText: name }).getByText(name)
+export const flowRow = (page: Page, name: string) => page.getByRole('listitem').filter({ hasText: name })
+export const flowItem = (page: Page, name: string) => flowRow(page, name).getByText(name) // click it to open the flow
 export const nodeOf = (page: Page, id: string) => page.getByTestId(`node-${id}`)
 export const runtimeOf = (page: Page, id: string) => page.getByTestId(`runtime-${id}`)
 export const tail = (page: Page) => page.getByTestId('tail')
@@ -21,4 +22,11 @@ export async function connect(page: Page, from: string, to: string) {
 export async function messageCount(line: Locator): Promise<number | null> {
   const m = /(\d+) msgs/.exec((await line.textContent()) ?? '')
   return m ? Number(m[1]) : null
+}
+
+// expectGrowing waits until a runtime line's count rises past what it shows now.
+export async function expectGrowing(line: Locator, timeout = 10_000) {
+  const now = await messageCount(line)
+  expect(now).not.toBeNull()
+  await expect.poll(() => messageCount(line), { timeout }).toBeGreaterThan(now ?? 0)
 }

@@ -1,8 +1,9 @@
-// The UI tests' fixture. Tests that stop the studio or pause a node call docker on
-// the host. Every name a test makes is unique (studio-ui-<label>-<time>), and the
-// fixture removes what the test made, even when the test fails: its flows (by id,
-// or by name for one built in the editor), then the topics and consumer groups
-// they named, by literal name and only if they are studio-ui-….
+// The UI tests' fixtures. Tests that stop the studio or pause a node call docker
+// on the host. Every name a test makes is unique (studio-ui-<label>-<time>). Each
+// test's fixture removes its flows when it ends, even after a failure (by id, or
+// by name for one built in the editor); the topics and consumer groups those
+// flows named are deleted once, after the last test, by literal name and only if
+// they are studio-ui-….
 import { test as base, expect, type Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -44,6 +45,8 @@ async function tolerate(step: () => unknown) {
   }
 }
 
+type KafkaCleanup = { topics: Set<string>; groups: Set<string> }
+
 type Studio = {
   unique(label: string): string // a name to use for a flow, a topic or a group
   create(flow: Flow): Promise<string> // the new flow's id
@@ -56,21 +59,46 @@ type Studio = {
   resume(flowId: string, node: string): void
 }
 
-export const test = base.extend<{ studio: Studio }>({
+export const test = base.extend<{ studio: Studio }, { kafkaCleanup: KafkaCleanup }>({
+  // One worker runs every test, so this deletes the run's topics and groups in two
+  // Kafka tool runs instead of two per test (each one starts a JVM in the broker).
+  kafkaCleanup: [
+    async ({}, use) => {
+      const cleanup: KafkaCleanup = { topics: new Set(), groups: new Set() }
+      await use(cleanup)
+      // Only names this suite makes: a test that wires a shared topic such as orders never deletes it.
+      const suiteMade = (xs: Set<string>) => [...xs].filter((x) => x.startsWith('studio-ui-'))
+      const topics = suiteMade(cleanup.topics)
+      const groups = suiteMade(cleanup.groups)
+      if (topics.length) await tolerate(() => kafka('kafka-topics.sh', '--delete', '--topic', topics.map(literal).join('|')))
+      if (groups.length) {
+        const deleteGroups = () => kafka('kafka-consumer-groups.sh', '--delete', ...groups.flatMap((g) => ['--group', g]))
+        await tolerate(async () => {
+          try {
+            deleteGroups()
+          } catch {
+            // the last test's consumers may still be leaving: once more, a little later
+            await new Promise((r) => setTimeout(r, 3000))
+            deleteGroups()
+          }
+        })
+      }
+    },
+    { scope: 'worker', timeout: 60_000 },
+  ],
   // Its own timeout: a test-scoped fixture's teardown would otherwise share the
   // test's budget, and a restart alone may wait 45 s for the studio.
   studio: [
-    async ({}, use) => {
+    async ({ kafkaCleanup }, use) => {
       const names = new Set<string>() // flows, topics and groups the test named
       const ids = new Set<string>() // flows the test created or looked up
-      const topics = new Set<string>()
-      const groups = new Set<string>()
-      const paused = new Set<string>() // container ids
       let stopped = false
+      // A flow's topics and groups go to the run's cleanup as soon as it exists, so
+      // a test that deletes its own flow still has them removed.
       const record = (flow: Flow) => {
         const named = topicsAndGroups(flow)
-        named.topics.forEach((t) => topics.add(t))
-        named.groups.forEach((g) => groups.add(g))
+        named.topics.forEach((t) => kafkaCleanup.topics.add(t))
+        named.groups.forEach((g) => kafkaCleanup.groups.add(g))
       }
       const studio: Studio = {
         unique(label) {
@@ -80,7 +108,7 @@ export const test = base.extend<{ studio: Studio }>({
         },
         async create(flow) {
           names.add(flow.name)
-          record(flow) // now, so a flow the test deletes itself still has its topics removed
+          record(flow)
           const id = (await api<{ id: string }>('POST', '/api/flows', flow)).id
           ids.add(id)
           return id
@@ -106,22 +134,16 @@ export const test = base.extend<{ studio: Studio }>({
           stopped = false
         },
         pause(flowId, node) {
-          for (const c of containers(flowId, node)) {
-            paused.add(c)
-            docker('kill', '-s', 'STOP', c)
-          }
+          for (const c of containers(flowId, node)) docker('kill', '-s', 'STOP', c)
         },
         resume(flowId, node) {
-          for (const c of containers(flowId, node)) {
-            docker('kill', '-s', 'CONT', c)
-            paused.delete(c)
-          }
+          for (const c of containers(flowId, node)) docker('kill', '-s', 'CONT', c)
         },
       }
       await use(studio)
 
-      // Teardown, even after a failure: resume, restart, then remove what the test made.
-      for (const c of paused) await tolerate(() => docker('kill', '-s', 'CONT', c))
+      // Teardown, even after a failure: restart the studio, resume the test's
+      // containers (a paused one would make its removal wait), remove its flows.
       if (stopped) await tolerate(() => studio.startStudio())
       await tolerate(async () => {
         for (const f of await api<{ id: string; name: string }[]>('GET', '/api/flows')) {
@@ -129,27 +151,9 @@ export const test = base.extend<{ studio: Studio }>({
         }
       })
       for (const id of ids) {
+        await tolerate(() => containers(id).forEach((c) => docker('kill', '-s', 'CONT', c)))
         await tolerate(async () => record(await api<Flow>('GET', `/api/flows/${id}`)))
         await tolerate(() => deleteFlow(id))
-      }
-      // Only names this suite makes: a test that wires a shared topic such as orders never deletes it.
-      const suiteMade = (xs: Set<string>) => [...xs].filter((x) => x.startsWith('studio-ui-'))
-      const ownTopics = suiteMade(topics)
-      const ownGroups = suiteMade(groups)
-      if (ownTopics.length) {
-        await tolerate(() => kafka('kafka-topics.sh', '--delete', '--topic', ownTopics.map(literal).join('|')))
-      }
-      if (ownGroups.length) {
-        const deleteGroups = () => kafka('kafka-consumer-groups.sh', '--delete', ...ownGroups.flatMap((g) => ['--group', g]))
-        await tolerate(async () => {
-          try {
-            deleteGroups()
-          } catch {
-            // a member may still be leaving: once more, a little later
-            await new Promise((r) => setTimeout(r, 3000))
-            deleteGroups()
-          }
-        })
       }
     },
     { timeout: 120_000 },
