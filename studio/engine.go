@@ -4,6 +4,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,6 +74,8 @@ type NodeState struct {
 	EndOffset  int64              `json:"endOffset,omitempty"`  // topics: summed over partitions
 	Warning    string             `json:"warning,omitempty"`
 	Instances  []NodeState        `json:"instances,omitempty"`
+
+	steps map[string]stepStats // a consumer container's transform counts, by node id; applySteps moves them to the transform node
 }
 
 // Deploy validates the saved flow, creates its topics and starts one container
@@ -245,8 +249,8 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 		ns.sumInstances()
 		st.Nodes[node] = ns
 	}
-
 	specs, _ := Resolve(f)
+	applySteps(&st, specs)
 	topics := map[string]TopicData{} // topic node id → its data
 	var groups, names []string
 	for _, n := range f.Nodes {
@@ -293,7 +297,42 @@ func withStats(ctx context.Context, r nodeRef, ns NodeState) NodeState {
 		return ns
 	}
 	ns.Total, ns.Errors, ns.LastError, ns.TailSeq, ns.Boot = s.Total, s.Errors, s.LastError, s.TailSeq, s.Boot
+	ns.steps = s.Steps
 	return ns
+}
+
+// applySteps gives each transform node its consumer node's state and the counts
+// the consumer's containers report for it, summed (a last error is the first
+// container's that has one, prefixed with its instance). Its boot joins theirs,
+// so a container that restarted gives the transform no rate rather than a wrong one.
+func applySteps(st *FlowState, specs []NodeSpec) {
+	done := map[string]bool{}
+	for _, s := range specs {
+		if s.TransformNode == "" || done[s.TransformNode] {
+			continue
+		}
+		done[s.TransformNode] = true
+		consumer := st.Nodes[s.Node]
+		t := NodeState{State: cmp.Or(consumer.State, "missing")}
+		var boots []string
+		for _, c := range consumer.containers() {
+			step, ok := c.steps[s.TransformNode]
+			if !ok {
+				continue
+			}
+			t.Total += step.Total
+			t.Errors += step.Errors
+			if t.LastError == "" && step.LastError != "" {
+				t.LastError = step.LastError
+				if c.Instance > 0 {
+					t.LastError = fmt.Sprintf("#%d: %s", c.Instance, step.LastError)
+				}
+			}
+			boots = append(boots, c.Boot)
+		}
+		t.Boot = strings.Join(boots, ",")
+		st.Nodes[s.TransformNode] = t
+	}
 }
 
 // nodeStatsOf asks a running node container for its counters (1 s budget).

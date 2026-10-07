@@ -73,7 +73,7 @@ scale: ## [STEP 4] Set the number of orders-workers group members (usage: make s
 
 # ── Verify ───────────────────────────────────────────────────────────────────
 
-verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail, lag, live ticks, chained flows, instances, stop, delete
+verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail, lag, live ticks, chained flows, instances, transforms, stop, delete
 	@health=$$(curl -sS --fail-with-body $(STUDIO_URL)/api/health) || { echo "STUDIO FAILED: health: $$health"; exit 1; }; \
 	echo "studio health: $$health"; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows -H 'Sec-Fetch-Site: cross-site' --data '{"name":"x"}'); \
@@ -158,6 +158,25 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' "$(STUDIO_URL)/api/flows/$$cid/nodes/consumer-1/tail?since=0&instance=2"); \
 	[ "$$code" = 409 ] || { echo "STUDIO FAILED: tail of a removed instance: $$code, want 409"; exit 1; }; \
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$cid || { echo "STUDIO FAILED: delete the instances flow"; exit 1; }; \
+	x='{"name":"verify-transform","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":'"$$manual"'},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"studio-verify-t-in","partitions":1,"replication_factor":1}},{"id":"consumer-1","type":"consumer","position":{"x":400,"y":0},"data":{"group":"studio-verify-t","auto_offset_reset":"earliest","sink":{"kind":"log"}}},{"id":"transform-1","type":"transform","position":{"x":600,"y":0},"data":{"expr":"{id: msg.id, total: msg.qty * msg.price}"}},{"id":"topic-2","type":"topic","position":{"x":800,"y":0},"data":{"name":"studio-verify-t-out","partitions":1,"replication_factor":1}},{"id":"consumer-2","type":"consumer","position":{"x":1000,"y":0},"data":{"group":"studio-verify-t-out","auto_offset_reset":"earliest","sink":{"kind":"log"}}}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"},{"id":"e2","source":"topic-1","target":"consumer-1"},{"id":"e3","source":"consumer-1","target":"transform-1"},{"id":"e4","source":"transform-1","target":"topic-2"},{"id":"e5","source":"topic-2","target":"consumer-2"}]}'; \
+	xid=$$(create "$$(echo "$$x" | sed 's/msg.qty \* msg.price/msg./')" "the transform flow") || exit 1; flows="$$flows $$xid"; \
+	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows/$$xid/deploy); \
+	[ "$$code" = 422 ] || { echo "STUDIO FAILED: a transform that does not compile deployed ($$code)"; exit 1; }; \
+	curl -sS --fail-with-body -X PUT $(STUDIO_URL)/api/flows/$$xid -H 'Content-Type: application/json' --data "$$x" >/dev/null || { echo "STUDIO FAILED: save the transform flow"; exit 1; }; \
+	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$xid/deploy >/dev/null || { echo "STUDIO FAILED: deploy the transform flow"; exit 1; }; \
+	rec="$$(date +%s)"; \
+	for v in "{\"id\":\"t1-$$rec\",\"qty\":2,\"price\":3}" "{\"id\":\"t2-$$rec\"}"; do \
+		curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$xid/nodes/producer-1/send --data "$$v" >/dev/null || { echo "STUDIO FAILED: send to the transform flow"; exit 1; }; \
+	done; \
+	for i in $$(seq 30); do \
+		curl -sS $(STUDIO_URL)/api/flows/$$xid/state | grep -q '"transform-1":{"state":"running","total":2,"errors":1,' && \
+			curl -sS "$(STUDIO_URL)/api/flows/$$xid/nodes/consumer-2/tail?since=0" | grep -q "t1-$$rec" && break; \
+		[ "$$i" = 30 ] && { echo "STUDIO FAILED: want 2 records and 1 error on the transform and t1-$$rec downstream: $$(curl -sS $(STUDIO_URL)/api/flows/$$xid/state)"; exit 1; }; sleep 1; \
+	done; \
+	out=$$(curl -sS "$(STUDIO_URL)/api/flows/$$xid/nodes/consumer-2/tail?since=0"); \
+	echo "$$out" | grep -qF 'total\":6' && ! echo "$$out" | grep -q "t2-$$rec" || { echo "STUDIO FAILED: want t1-$$rec transformed (total 6) and t2-$$rec not forwarded: $$out"; exit 1; }; \
+	echo "studio transform: $$(curl -sS $(STUDIO_URL)/api/flows/$$xid/state | grep -o '"transform-1":{[^}]*}')"; \
+	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$xid || { echo "STUDIO FAILED: delete the transform flow"; exit 1; }; \
 	echo "STUDIO OK ($$id)"
 
 # Waits until both groups have committed past the record (so it can no longer be
