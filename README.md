@@ -1,6 +1,6 @@
 # Kafka playground
 
-A local Kafka sandbox for watching partitions, consumer groups and fan-out while you produce JSON from a browser. No auth, no TLS, nothing persisted; everything binds to `127.0.0.1`.
+A local Kafka sandbox for watching partitions, consumer groups and fan-out while you produce JSON from a browser. No auth, no TLS, no Kafka data persisted (Studio flows are files in `flows/`); everything binds to `127.0.0.1`.
 
 | Service | What it is | Where |
 |---|---|---|
@@ -73,9 +73,9 @@ Consumers sharing a `GROUP_ID` split the partitions; without one, each container
 
 ## Pipeline Studio
 
-http://localhost:8082 is a canvas for building flows: drag Producer, Topic and Consumer nodes from the palette, wire them (only Producer → Topic → Consumer edges are accepted; the server rejects anything else on save), edit the selected node on the right, Save. Each flow is one file in `flows/` (`<id>.json`, React Flow's node/edge shape plus `name`); edit, copy or commit them like any other file — a file that does not parse is skipped and logged. `flows/0a1b2c3d.json` is an example.
+http://localhost:8082 is a canvas for building flows: drag Producer, Topic and Consumer nodes from the palette, wire them (only Producer → Topic, Topic → Consumer and Consumer → Topic edges, plus Consumer → Transform → Topic used from M5, are accepted; the server rejects anything else on save), edit the selected node on the right, Save. Each flow is one file in `flows/` (`<id>.json`, React Flow's node/edge shape plus `name`); edit, copy or commit them like any other file — a file that does not parse is skipped and logged. `flows/0a1b2c3d.json` is an example.
 
-Deploying a flow is the next milestone. `GET /api/health` reports the Docker Engine version the studio can reach through `/var/run/docker.sock`; deploy will run each node as a container.
+Deploying a flow is the next milestone. `GET /api/health` reports the Docker Engine version the studio can reach through `/var/run/docker.sock`; deploy will run each node as a container. That socket is root-equivalent on the host, one more reason the studio stays bound to `127.0.0.1`.
 
 UI development: `cd studio/ui && npm install && npm run dev` serves http://localhost:5173 and proxies `/api` to the `studio` container. Go changes need `make up` (the image rebuilds).
 

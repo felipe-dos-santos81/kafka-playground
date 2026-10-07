@@ -4,8 +4,8 @@ Local Kafka playground, run with Docker Compose. See README.md for usage; the de
 
 ## Layout
 
-- `docker-compose.yml`: broker, topic jobs (`x-topic` anchor), kcat consumers (`x-consumer`), producer page, Console.
-- `producer/`: the only custom code. Go (franz-go), one `main.go` plus an embedded `index.html`, multi-stage `Dockerfile` onto `scratch`.
+- `docker-compose.yml`: broker, topic jobs (`x-topic` anchor), kcat consumers (`x-consumer`), producer page, Pipeline Studio, Console.
+- `producer/`: the producer page. Go (franz-go), one `main.go` plus an embedded `index.html`, multi-stage `Dockerfile` onto `scratch`.
 - `studio/`: Pipeline Studio. Go control plane (`main.go`, `api.go`, `flow.go`, `store.go`, `docker.go`) with the React Flow UI from `studio/ui/` embedded at build (`go:embed all:ui/dist`; keep `ui/dist/.gitkeep`). Flows persist in `flows/` (bind mount).
 - `Makefile`: day-to-day commands; `make verify` is the end-to-end test.
 
@@ -22,7 +22,7 @@ make down
 
 ## Rules
 
-- Pin every image to an exact version; never `latest`. The producer image is local: keep `pull_policy: build`.
+- Pin every image to an exact version; never `latest`. The producer and studio images are local: keep `pull_policy: build`.
 - Keep it local-only: no auth, no TLS, ports bound to `127.0.0.1`, Console analytics off.
 - Prefer existing images and config over new code.
 - Inside compose `command`/`entrypoint` strings, write a shell `$` as `$$`.
