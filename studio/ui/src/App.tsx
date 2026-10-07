@@ -115,7 +115,7 @@ function Studio() {
       refresh()
     })
 
-  const discard =() => !dirty || window.confirm('Discard unsaved changes?')
+  const discard = () => !dirty || window.confirm('Discard unsaved changes?')
 
   const open = (id: string) => {
     if (discard()) load(id)

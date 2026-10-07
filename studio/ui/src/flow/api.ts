@@ -3,7 +3,7 @@ import { FlowSchema, type FlowFile } from './schema'
 export type FlowSummary = { id: string; name: string; status: string }
 // GET /api/flows/{id}/state: each producer's and consumer's container state while deployed.
 export type FlowState = { status: 'running' | 'stopped'; nodes: Record<string, { state: string }> }
-type Problem ={ node?: string; edge?: string; message: string }
+type Problem = { node?: string; edge?: string; message: string }
 
 // No constructor parameter properties: the Vite template enables erasableSyntaxOnly.
 export class ApiError extends Error {
