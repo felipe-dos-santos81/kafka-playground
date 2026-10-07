@@ -121,10 +121,12 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	[ "$$code" = 409 ] || { echo "STUDIO FAILED: tail of a stopped flow: $$code, want 409"; exit 1; }; \
 	rewound=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$id/nodes/consumer-1/rewind --data '{"to":"earliest"}') || { echo "STUDIO FAILED: rewind: $$rewound"; exit 1; }; \
 	echo "$$rewound" | grep -q '"partitions":1,"to":"earliest"' || { echo "STUDIO FAILED: rewind answered $$rewound"; exit 1; }; \
+	at=$$($(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --describe --group studio-verify 2>/dev/null | awk '$$2 == "studio-verify" && $$3 == 0 { print $$4 }'); \
+	[ "$$at" = 0 ] || { echo "STUDIO FAILED: after a rewind to earliest the group sits at offset $$at, want 0"; exit 1; }; \
 	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$id/deploy >/dev/null || { echo "STUDIO FAILED: redeploy"; exit 1; }; \
 	for i in $$(seq 30); do \
 		curl -sS $(STUDIO_URL)/api/flows/$$id/state | grep -q '"consumer-1":{"state":"running","total":2,' && break; \
-		[ "$$i" = 30 ] && { echo "STUDIO FAILED: rewound to earliest, the consumer did not read its 2 records again: $$(curl -sS $(STUDIO_URL)/api/flows/$$id/state)"; exit 1; }; sleep 1; \
+		[ "$$i" = 30 ] && { echo "STUDIO FAILED: rewound to offset 0, the consumer did not read its 2 records again: $$(curl -sS $(STUDIO_URL)/api/flows/$$id/state)"; exit 1; }; sleep 1; \
 	done; \
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$id || { echo "STUDIO FAILED: delete"; exit 1; }; \
 	[ "$$(nodes)" = 0 ] && [ ! -f "flows/$$id.json" ] || { echo "STUDIO FAILED: delete left $$(nodes) containers or flows/$$id.json"; exit 1; }; \

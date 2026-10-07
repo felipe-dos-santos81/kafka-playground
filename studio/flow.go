@@ -375,3 +375,33 @@ func jsonOut(out string) error {
 	}
 	return fmt.Errorf("renders to invalid JSON: %.60q", out)
 }
+
+// RewindTo is where a rewind sets a consumer's group: the start or the end of its topic.
+type RewindTo string
+
+const (
+	Earliest RewindTo = "earliest"
+	Latest   RewindTo = "latest"
+)
+
+// rewindTarget is what a rewind of node would set: its group on its topic, as a
+// deploy would run them (Resolve), or the problem that stops it.
+func rewindTarget(f Flow, node string, to RewindTo) (Rewound, error) {
+	problem := func(msg string) (Rewound, error) { return Rewound{}, Problems{{Node: node, Message: msg}} }
+	if to != Earliest && to != Latest {
+		return problem(`to must be "earliest" or "latest"`)
+	}
+	i := slices.IndexFunc(f.Nodes, func(n Node) bool { return n.ID == node })
+	if i < 0 {
+		return Rewound{}, fmt.Errorf("%s: %w", node, ErrNoNode)
+	}
+	if f.Nodes[i].Type != "consumer" {
+		return problem("only a consumer has a group to rewind")
+	}
+	specs, _ := Resolve(f)
+	j := slices.IndexFunc(specs, func(s NodeSpec) bool { return s.Node == node })
+	if j < 0 || specs[j].Topic == "" || specs[j].Group == "" {
+		return problem("wire it to a topic first, and give it a group")
+	}
+	return Rewound{Group: specs[j].Group, Topic: specs[j].Topic, To: to}, nil
+}

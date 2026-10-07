@@ -81,6 +81,11 @@ export function watch(id: string, onTick: (s: FlowState) => void, onStatus: (s: 
   }
 }
 
+// Where a rewind sets a consumer's group (Go: RewindTo in flow.go), and what it did
+// (Go: Rewound in engine.go).
+export type RewindTo = 'earliest' | 'latest'
+export type Rewound = { group: string; topic: string; partitions: number; to: RewindTo }
+
 // One record of a node's tail (Go: tailEntry in node.go).
 export type TailEntry = { seq: number; time: string; partition: number; offset: number; key: string; value: string }
 type Problem = { node?: string; edge?: string; message: string }
@@ -121,11 +126,8 @@ export const api = {
   deploy: (id: string) => call<{ status: string }>(`/api/flows/${id}/deploy`, { method: 'POST' }),
   stop: (id: string) => call<{ status: string }>(`/api/flows/${id}/stop`, { method: 'POST' }),
   // Sets a stopped consumer's group to the start or the end of its topic.
-  rewind: (id: string, node: string, to: 'earliest' | 'latest') =>
-    call<{ group: string; topic: string; partitions: number; to: string }>(`/api/flows/${id}/nodes/${node}/rewind`, {
-      method: 'POST',
-      body: JSON.stringify({ to }),
-    }),
+  rewind: (id: string, node: string, to: RewindTo) =>
+    call<Rewound>(`/api/flows/${id}/nodes/${node}/rewind`, { method: 'POST', body: JSON.stringify({ to }) }),
   // An empty body makes the producer render its own key and value templates.
   send: (id: string, node: string) =>
     call<{ partition: number; offset: number }>(`/api/flows/${id}/nodes/${node}/send`, { method: 'POST' }),

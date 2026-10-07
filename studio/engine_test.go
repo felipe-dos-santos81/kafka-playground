@@ -443,16 +443,17 @@ func TestWithStats(t *testing.T) {
 }
 
 func TestRewindTarget(t *testing.T) {
-	spec, err := rewindTarget(clone(good), "consumer-1", "earliest")
-	if err != nil || spec.Group != "orders-workers" || spec.Topic != "orders" {
-		t.Fatalf("a wired consumer: want group orders-workers on orders, got %+v, %v", spec, err)
+	r, err := rewindTarget(clone(good), "consumer-1", Earliest)
+	if err != nil || r != (Rewound{Group: "orders-workers", Topic: "orders", To: Earliest}) {
+		t.Fatalf("a wired consumer: want group orders-workers on orders, got %+v, %v", r, err)
 	}
 	unwired := clone(good)
 	unwired.Edges = unwired.Edges[:1] // the consumer reads no topic
 	for _, c := range []struct {
-		name, node, to string
-		flow           Flow
-		want           string // in the problem's message; "" means ErrNoNode
+		name, node string
+		to         RewindTo
+		flow       Flow
+		want       string // in the problem's message; "" means ErrNoNode
 	}{
 		{"bad to", "consumer-1", "middle", good, `to must be "earliest" or "latest"`},
 		{"not a consumer", "producer-1", "earliest", good, "only a consumer has a group to rewind"},

@@ -176,6 +176,7 @@ func TestUnroutedAPIAnswersJSON(t *testing.T) {
 		{"POST", "/api/flows/deadbeef/events", 405},
 		{"PATCH", "/api/flows/deadbeef", 405},
 		{"PUT", "/api/flows/deadbeef/nodes/producer-1/send", 405},
+		{"GET", "/api/flows/deadbeef/nodes/consumer-1/rewind", 405},
 	} {
 		code, body := call(t, ts, c.method, c.path, nil)
 		var e struct{ Error string }

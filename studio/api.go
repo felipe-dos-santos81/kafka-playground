@@ -48,7 +48,7 @@ func newMux(s *server, ui fs.FS) http.Handler {
 	mux.HandleFunc("POST /api/flows/{id}/nodes/{node}/rewind", s.rewind)
 	// Method-less fallbacks keep every /api/ answer JSON: a known path with
 	// the wrong method is 405, anything else under /api/ is 404.
-	for _, path := range []string{"/api/health", "/api/flows", "/api/flows/{id}", "/api/flows/{id}/deploy", "/api/flows/{id}/stop", "/api/flows/{id}/state", "/api/flows/{id}/nodes/{node}/send", "/api/flows/{id}/nodes/{node}/tail", "/api/flows/{id}/events"} {
+	for _, path := range []string{"/api/health", "/api/flows", "/api/flows/{id}", "/api/flows/{id}/deploy", "/api/flows/{id}/stop", "/api/flows/{id}/state", "/api/flows/{id}/nodes/{node}/send", "/api/flows/{id}/nodes/{node}/tail", "/api/flows/{id}/nodes/{node}/rewind", "/api/flows/{id}/events"} {
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusMethodNotAllowed, r.Method+" is not allowed on "+r.URL.Path)
 		})
@@ -201,18 +201,18 @@ func (s *server) stopFlow(w http.ResponseWriter, r *http.Request) {
 // body {"to": "earliest" | "latest"}.
 func (s *server) rewind(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		To string `json:"to"`
+		To RewindTo `json:"to"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil {
 		fail(w, http.StatusBadRequest, "body: "+err.Error())
 		return
 	}
-	done, err := s.engine.Rewind(r.Context(), r.PathValue("id"), r.PathValue("node"), body.To)
+	rewound, err := s.engine.Rewind(r.Context(), r.PathValue("id"), r.PathValue("node"), body.To)
 	if err != nil {
 		engineErr(w, err)
 		return
 	}
-	reply(w, http.StatusOK, done)
+	reply(w, http.StatusOK, rewound)
 }
 
 func (s *server) flowState(w http.ResponseWriter, r *http.Request) {

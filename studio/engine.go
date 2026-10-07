@@ -156,24 +156,24 @@ func (e *Engine) stop(ctx context.Context, id string) error {
 
 // Rewound is what Rewind did.
 type Rewound struct {
-	Group      string `json:"group"`
-	Topic      string `json:"topic"`
-	Partitions int    `json:"partitions"`
-	To         string `json:"to"` // earliest or latest
+	Group      string   `json:"group"`
+	Topic      string   `json:"topic"`
+	Partitions int      `json:"partitions"`
+	To         RewindTo `json:"to"`
 }
 
 // Rewind sets the committed offsets of a consumer node's group to the start
 // (earliest) or the end (latest) of its topic, so the next deploy reads from
 // there whatever auto_offset_reset says. The broker refuses offset commits for a
 // group with members, so the flow must be stopped.
-func (e *Engine) Rewind(ctx context.Context, id, node, to string) (Rewound, error) {
+func (e *Engine) Rewind(ctx context.Context, id, node string, to RewindTo) (Rewound, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	f, err := e.store.Get(id)
 	if err != nil {
 		return Rewound{}, err
 	}
-	spec, err := rewindTarget(f, node, to)
+	r, err := rewindTarget(f, node, to)
 	if err != nil {
 		return Rewound{}, err
 	}
@@ -182,35 +182,12 @@ func (e *Engine) Rewind(ctx context.Context, id, node, to string) (Rewound, erro
 		return Rewound{}, err
 	}
 	if len(cs) > 0 {
-		return Rewound{}, fmt.Errorf("stop the flow to rewind its groups: %w", ErrRunning)
+		return Rewound{}, fmt.Errorf("stop the flow first: %w", ErrRunning)
 	}
-	n, err := rewindGroup(ctx, e.adm, spec.Group, spec.Topic, to)
-	if err != nil {
+	if r.Partitions, err = rewindGroup(ctx, e.adm, r); err != nil {
 		return Rewound{}, err
 	}
-	return Rewound{Group: spec.Group, Topic: spec.Topic, Partitions: n, To: to}, nil
-}
-
-// rewindTarget is the group and topic of node, a consumer, as a deploy would run
-// it, or why it cannot be rewound.
-func rewindTarget(f Flow, node, to string) (NodeSpec, error) {
-	problem := func(msg string) (NodeSpec, error) { return NodeSpec{}, Problems{{Node: node, Message: msg}} }
-	if to != "earliest" && to != "latest" {
-		return problem(`to must be "earliest" or "latest"`)
-	}
-	i := slices.IndexFunc(f.Nodes, func(n Node) bool { return n.ID == node })
-	if i < 0 {
-		return NodeSpec{}, fmt.Errorf("%s: %w", node, ErrNoNode)
-	}
-	if f.Nodes[i].Type != "consumer" {
-		return problem("only a consumer has a group to rewind")
-	}
-	specs, _ := Resolve(f)
-	j := slices.IndexFunc(specs, func(s NodeSpec) bool { return s.Node == node })
-	if j < 0 || specs[j].Topic == "" || specs[j].Group == "" {
-		return problem("wire it to a topic first, and give it a group")
-	}
-	return specs[j], nil
+	return r, nil
 }
 
 // stateOf is State for a flow already read from the store.
