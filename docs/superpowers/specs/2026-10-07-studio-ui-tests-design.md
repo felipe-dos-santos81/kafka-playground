@@ -92,8 +92,8 @@ is removed afterwards (§6).
    shows a count that grows between two reads. Select the consumer: the tail
    drawer lists records. Stop: the status reads `stopped`, and
    `docker ps -q -f label=studio.flow=<id>` prints nothing.
-2. **Refused wire.** Dragging from a Consumer's source handle to a Producer
-   creates no edge.
+2. **Refused wire.** Dragging from a Producer's output handle to a Consumer's
+   input (an edge the table refuses) creates no edge.
 3. **Deploy errors in the top bar.** Deploying a flow whose consumer has no
    incoming edge shows the 422 message in the top bar, naming the node; the
    canvas keeps the flow.
@@ -129,7 +129,7 @@ is removed afterwards (§6).
     `docker kill -s STOP` the consumer's container: within 3 s its runtime line
     shows `stats:` while the producer's keeps its numbers. `docker kill -s
     CONT`: the warning goes.
-11. **Tail scroll.** A timer at 100 ms fills the drawer. Scrolled to the top, the
+11. **Tail scroll.** A timer at 250 ms fills the drawer. Scrolled to the top, the
     first visible record stays the same while new ones arrive; scrolled back to
     the bottom, the newest record comes into view.
 
@@ -141,7 +141,8 @@ is removed afterwards (§6).
   `/api/health` 200; delete the test's flows through `/api` (which removes
   their containers); delete the test's topics and consumer groups by exact
   name (`kafka-topics.sh --delete`, `kafka-consumer-groups.sh --delete`). No
-  prefix matching: only names the test created.
+  prefix matching: only names the test's flows hold, and of those only names
+  starting `studio-ui-`.
 - Waits use `expect(…).toHaveText/toBeVisible`, `expect.poll` or `toPass`
   with explicit timeouts. The only fixed wait is test 10's 6 s.
 - One worker: test 8 stops the studio every other test talks to, and its
@@ -156,7 +157,8 @@ is removed afterwards (§6).
 - `AGENTS.md`: `make verify-ui` in "Check your change" (the one-time Chromium
   download noted), and a rule: a change to the UI's visible text, roles or
   `data-testid`s runs `make verify-ui`; the top-bar messages the tests check are
-  quoted in the Studio spec, so wording changes go through the spec.
+  quoted in the Studio spec or the UI tests spec (§5), so wording changes go
+  through the spec.
 - `README.md`: the development section names `make verify-ui`.
 
 ## 8. Assumptions
@@ -188,4 +190,5 @@ is removed afterwards (§6).
   once after 3 s (a consumer may still be leaving).
 - `e2e/tsconfig.json` uses Node's types from `@types/node`, which `npm ci`
   already installs (vite brings it in); no new dependency.
-- The tail-scroll test's timer runs at 100 ms, not 50: the drawer keeps 100 records, and at 50 ms it passes that cap during the check, so its first record would change while scrolled up.
+- The tail-scroll test's timer runs at 250 ms: the drawer keeps 100 records, and a faster timer passes that cap during the check (100 ms gives only about 10 s), so the first record would change while scrolled up. At 250 ms the cap arrives about 25 s after start, and more than 20 records still arrive within the 20 s poll.
+- The fixture has its own 60 s timeout, so its teardown does not share the test's budget. Each teardown step runs even if an earlier one failed. It deletes the flows by recorded id or name, and only topics and groups whose names start with `studio-ui-`.

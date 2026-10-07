@@ -17,6 +17,7 @@ test('a studio restart pauses the numbers, then they come back', async ({ page, 
   await studio.startStudio()
   await expect(topBar(page)).not.toContainText('live numbers paused', { timeout: 15_000 })
   const before = await msgs(line)
+  expect(before).toBeGreaterThanOrEqual(0)
   await expect.poll(() => msgs(line), { timeout: 10_000 }).toBeGreaterThan(before)
 })
 
@@ -48,7 +49,7 @@ test('a node that stops answering shows why', async ({ page, studio }) => {
 
 test('the tail follows new records only while scrolled to the bottom', async ({ page, studio }) => {
   const name = studio.unique('scroll')
-  const id = await studio.create(chain(name, timer(100), topic(name), consumer(name)))
+  const id = await studio.create(chain(name, timer(250), topic(name), consumer(name)))
   await studio.deploy(id)
   await studio.open(page, name)
   await nodeOf(page, 'consumer-1').click()

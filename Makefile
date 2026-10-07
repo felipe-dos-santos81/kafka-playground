@@ -187,7 +187,7 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	echo "STUDIO OK ($$id)"
 
 verify-ui: up ## Check the studio's UI in a browser (Playwright, Chromium): editor, node types, live view; installs Chromium once
-	@cd studio/ui && { [ -d node_modules ] || npm ci; } && npx playwright install chromium && \
+	@cd studio/ui && { [ node_modules/.package-lock.json -nt package-lock.json ] || npm ci; } && npx playwright install chromium && \
 		STUDIO_URL=$(STUDIO_URL) npx playwright test && echo "UI OK"
 
 # Waits until both groups have committed past the record (so it can no longer be
@@ -215,5 +215,5 @@ verify: up verify-studio verify-ui ## End-to-end check: studio API, studio UI, t
 test: ## Static checks and unit tests, no running stack needed: go vet, gofmt, go test, UI build (tsc), UI tests type-check, compose config
 	cd producer && go vet ./... && test -z "$$(gofmt -l . | tee /dev/stderr)"
 	cd studio && go vet ./... && test -z "$$(gofmt -l . | tee /dev/stderr)" && go test ./...
-	cd studio/ui && { [ -d node_modules ] || npm ci; } && npm run build && npx tsc -p e2e
+	cd studio/ui && { [ node_modules/.package-lock.json -nt package-lock.json ] || npm ci; } && npm run build && npx tsc -p e2e
 	$(COMPOSE) config --quiet

@@ -1,7 +1,8 @@
 // The UI tests' fixture and helpers. Flows are set up and removed through the
 // studio's API; tests that stop the studio or pause a node call docker on the
 // host. Every name a test makes is unique (studio-ui-<label>-<time>), and the
-// fixture removes what the test made, by exact name, even when the test fails.
+// fixture removes what the test made (its flows by id or name; the topics and
+// groups those flows name, if studio-ui-…), even when the test fails.
 import { test as base, expect, type Locator, type Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -76,8 +77,10 @@ async function healthy() {
 }
 
 export const test = base.extend<{ studio: Studio }>({
-  studio: async ({}, use) => {
+  // Its own timeout: a test-scoped fixture's teardown would otherwise share the test's budget.
+  studio: [async ({}, use) => {
     const names = new Set<string>()
+    const ids = new Set<string>()
     const paused = new Set<string>()
     let stopped = false
     const studio: Studio = {
@@ -88,7 +91,9 @@ export const test = base.extend<{ studio: Studio }>({
       },
       async create(flow) {
         names.add(flow.name)
-        return (await api<{ id: string }>('POST', '/api/flows', flow)).id
+        const id = (await api<{ id: string }>('POST', '/api/flows', flow)).id
+        ids.add(id)
+        return id
       },
       async deploy(id) {
         await api('POST', `/api/flows/${id}/deploy`)
@@ -99,6 +104,7 @@ export const test = base.extend<{ studio: Studio }>({
       async idOf(name) {
         const f = (await api<{ id: string; name: string }[]>('GET', '/api/flows')).find((f) => f.name === name)
         if (!f) throw new Error(`no flow named ${name}`)
+        ids.add(f.id)
         return f.id
       },
       async open(page, name) {
@@ -127,6 +133,7 @@ export const test = base.extend<{ studio: Studio }>({
     await use(studio)
 
     // Teardown, even after a failure: resume, restart, then remove what the test made.
+    // Every step runs whatever an earlier one did, and nothing is rethrown.
     for (const c of paused) {
       try {
         docker('kill', '-s', 'CONT', c)
@@ -134,33 +141,55 @@ export const test = base.extend<{ studio: Studio }>({
         // gone already
       }
     }
-    if (stopped) await studio.startStudio()
+    try {
+      if (stopped) await studio.startStudio()
+    } catch {
+      // the flows below cannot be reached; the topics and groups still can
+    }
     const topics: string[] = []
     const groups: string[] = []
-    for (const f of await api<{ id: string; name: string }[]>('GET', '/api/flows')) {
-      if (!names.has(f.name)) continue
-      const file = await api<Flow>('GET', `/api/flows/${f.id}`)
-      for (const n of file.nodes) {
-        if (n.type === 'topic' && n.data.name) topics.push(String(n.data.name))
-        if (n.type === 'consumer' && n.data.group) groups.push(String(n.data.group))
-      }
-      await studio.remove(f.id) // stops its containers first
-    }
+    let listed: { id: string; name: string }[] = []
     try {
-      if (topics.length) kafka('kafka-topics.sh', '--delete', '--topic', topics.join('|'))
+      listed = await api('GET', '/api/flows')
+    } catch {
+      // only the ids recorded so far
+    }
+    const doomed = new Set([...ids, ...listed.filter((f) => names.has(f.name)).map((f) => f.id)])
+    for (const id of doomed) {
+      try {
+        const file = await api<Flow>('GET', `/api/flows/${id}`)
+        for (const n of file.nodes) {
+          if (n.type === 'topic' && n.data.name) topics.push(String(n.data.name))
+          if (n.type === 'consumer' && n.data.group) groups.push(String(n.data.group))
+        }
+      } catch {
+        // already gone, or unreadable: still try to delete it
+      }
+      try {
+        await studio.remove(id) // stops its containers first
+      } catch {
+        // already gone
+      }
+    }
+    // Only names this suite makes: a test that wires a shared topic such as orders never deletes it.
+    const ours = (xs: string[]) => [...new Set(xs.filter((x) => x.startsWith('studio-ui-')))]
+    const ourTopics = ours(topics)
+    const ourGroups = ours(groups)
+    try {
+      if (ourTopics.length) kafka('kafka-topics.sh', '--delete', '--topic', ourTopics.join('|'))
     } catch {
       // a topic the test never deployed does not exist
     }
     for (const attempt of [1, 2]) {
       try {
-        if (groups.length) kafka('kafka-consumer-groups.sh', '--delete', ...groups.flatMap((g) => ['--group', g]))
+        if (ourGroups.length) kafka('kafka-consumer-groups.sh', '--delete', ...ourGroups.flatMap((g) => ['--group', g]))
         break
       } catch {
         // a group still has a member leaving, or never existed: try once more
         if (attempt === 1) await new Promise((r) => setTimeout(r, 3000))
       }
     }
-  },
+  }, { timeout: 60_000 }],
 })
 export { expect }
 

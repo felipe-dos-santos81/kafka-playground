@@ -72,6 +72,7 @@ test('a wire the edge table refuses is not drawn', async ({ page, studio }) => {
     edges: [],
   })
   await studio.open(page, name)
+  // The first test's two edges prove connect works, so a count of 0 here means the wire was refused.
   await connect(page, 'producer-1', 'consumer-1')
   await expect(page.locator('.react-flow__edge')).toHaveCount(0)
 })
