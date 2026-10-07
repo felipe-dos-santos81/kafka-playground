@@ -1,6 +1,7 @@
 // Docker Engine access: the health check's version, and the node containers
 // that deployed flows run in. Every node container carries the labels
-// studio.flow and studio.node; nothing else about it is stored.
+// studio.flow and studio.node (and studio.instance for one of a consumer's
+// instances); nothing else about it is stored.
 package main
 
 import (
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
@@ -16,8 +18,9 @@ import (
 )
 
 const (
-	labelFlow = "studio.flow"
-	labelNode = "studio.node"
+	labelFlow     = "studio.flow"
+	labelNode     = "studio.node"
+	labelInstance = "studio.instance" // only on a consumer's instances 1..n
 )
 
 // newDocker builds a client from DOCKER_HOST etc.; the default is the socket
@@ -80,14 +83,18 @@ func startNode(ctx context.Context, cli *client.Client, me self, brokers string,
 	if err != nil {
 		return err
 	}
-	name := containerName(spec.Flow, spec.Node)
+	name := containerName(spec.Flow, spec.Node, spec.Instance)
+	labels := map[string]string{labelFlow: spec.Flow, labelNode: spec.Node}
+	if spec.Instance > 0 {
+		labels[labelInstance] = strconv.Itoa(spec.Instance)
+	}
 	res, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Name: name,
 		Config: &container.Config{
 			Image:  me.image,
 			Cmd:    []string{"node"},
 			Env:    []string{"STUDIO_NODE=" + string(env), "KAFKA_BROKERS=" + brokers},
-			Labels: map[string]string{labelFlow: spec.Flow, labelNode: spec.Node},
+			Labels: labels,
 		},
 		HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode(me.network)},
 		NetworkingConfig: &network.NetworkingConfig{

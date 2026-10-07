@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/moby/moby/client"
@@ -218,16 +219,19 @@ func (s *server) events(w http.ResponseWriter, r *http.Request) {
 	}, time.Second)
 }
 
-// nodeProxy forwards to path on the node's own container once it runs;
-// otherwise it answers 409 naming the node's state.
+// nodeProxy forwards to path on the node's own container once it runs (for a
+// consumer with instances, the one ?instance= names, else its first); otherwise
+// it answers 409 naming the state.
 func (s *server) nodeProxy(path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, node := r.PathValue("id"), r.PathValue("node")
-		if err := s.engine.NodeRunning(r.Context(), id, node); err != nil {
+		asked, _ := strconv.Atoi(r.URL.Query().Get("instance")) // absent or not a number: the default
+		instance, err := s.engine.NodeRunning(r.Context(), id, node, asked)
+		if err != nil {
 			engineErr(w, err)
 			return
 		}
-		proxy(w, r, nodeURL(id, node, path+"?"+r.URL.RawQuery))
+		proxy(w, r, nodeURL(id, node, instance, path+"?"+r.URL.RawQuery))
 	}
 }
 

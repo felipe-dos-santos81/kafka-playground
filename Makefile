@@ -72,7 +72,7 @@ scale: ## [STEP 4] Set the number of orders-workers group members (usage: make s
 
 # ── Studio ───────────────────────────────────────────────────────────────────
 
-verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail, lag, live ticks, chained flows, stop, delete
+verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail, lag, live ticks, chained flows, instances, stop, delete
 	@health=$$(curl -sS --fail-with-body $(STUDIO_URL)/api/health) || { echo "STUDIO FAILED: health: $$health"; exit 1; }; \
 	echo "studio health: $$health"; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows -H 'Sec-Fetch-Site: cross-site' --data '{"name":"x"}'); \
@@ -142,6 +142,22 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	done; \
 	echo "studio chain: $$rec went through flow B's http sink into flow A and was forwarded"; \
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$bid && curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$aid || { echo "STUDIO FAILED: delete the chain flows"; exit 1; }; \
+	c='{"name":"verify-instances","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":{"source":"manual","key":"","value":"{}"}},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"studio-verify-instances","partitions":3,"replication_factor":1}},{"id":"consumer-1","type":"consumer","position":{"x":400,"y":0},"data":{"group":"studio-verify-instances","auto_offset_reset":"earliest","instances":3,"sink":{"kind":"log"}}}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"},{"id":"e2","source":"topic-1","target":"consumer-1"}]}'; \
+	created=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$c") || { echo "STUDIO FAILED: create the instances flow: $$created"; exit 1; }; \
+	cid=$$(echo "$$created" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'); \
+	trap "for f in $$id $$tid $$aid $$bid $$cid; do curl -sS -X DELETE $(STUDIO_URL)/api/flows/\$$f >/dev/null 2>&1; done; docker rm -f studio-$$id-consumer-1 >/dev/null 2>&1" EXIT; \
+	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$cid/deploy >/dev/null || { echo "STUDIO FAILED: deploy the instances flow"; exit 1; }; \
+	[ "$$(docker ps -q -f label=studio.flow=$$cid -f label=studio.node=consumer-1 | wc -l | tr -d ' ')" = 3 ] || { echo "STUDIO FAILED: want 3 consumer-1 containers"; exit 1; }; \
+	for i in $$(seq 45); do \
+		[ "$$(curl -sS $(STUDIO_URL)/api/flows/$$cid/state | grep -o '"assigned":{"studio-verify-instances":\[[0-2]\]}' | wc -l | tr -d ' ')" = 3 ] && break; \
+		[ "$$i" = 45 ] && { echo "STUDIO FAILED: the 3 instances never held one partition each: $$(curl -sS $(STUDIO_URL)/api/flows/$$cid/state)"; exit 1; }; sleep 1; \
+	done; \
+	echo "studio instances: $$(curl -sS $(STUDIO_URL)/api/flows/$$cid/state)"; \
+	code=$$(curl -sS -o /dev/null -w '%{http_code}' "$(STUDIO_URL)/api/flows/$$cid/nodes/consumer-1/tail?since=0&instance=3"); \
+	[ "$$code" = 200 ] || { echo "STUDIO FAILED: tail of instance 3: $$code, want 200"; exit 1; }; \
+	code=$$(curl -sS -o /dev/null -w '%{http_code}' "$(STUDIO_URL)/api/flows/$$cid/nodes/consumer-1/tail?since=0&instance=4"); \
+	[ "$$code" = 409 ] || { echo "STUDIO FAILED: tail of a fourth instance: $$code, want 409"; exit 1; }; \
+	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$cid || { echo "STUDIO FAILED: delete the instances flow"; exit 1; }; \
 	echo "STUDIO OK ($$id)"
 
 # ── Verify ───────────────────────────────────────────────────────────────────

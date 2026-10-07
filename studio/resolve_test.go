@@ -21,7 +21,7 @@ func TestResolve(t *testing.T) {
 	if want := []TopicData{{Name: "orders", Partitions: 3, ReplicationFactor: 1}}; !reflect.DeepEqual(topics, want) {
 		t.Fatalf("topics: got %+v, want %+v", topics, want)
 	}
-	if got := containerName("0a1b2c3d", "consumer-1"); got != "studio-0a1b2c3d-consumer-1" {
+	if got := containerName("0a1b2c3d", "consumer-1", 0); got != "studio-0a1b2c3d-consumer-1" {
 		t.Fatalf("containerName: %s", got)
 	}
 }
@@ -42,6 +42,41 @@ func TestResolveConsumerSinkAndForward(t *testing.T) {
 	}
 }
 
+func TestResolveInstances(t *testing.T) {
+	f := clone(good)
+	f.ID = "0a1b2c3d"
+	f.Nodes[2].Data = json.RawMessage(`{"group":"g","instances":3,"sink":{"kind":"log"}}`)
+	specs, _ := Resolve(f)
+	if len(specs) != 4 {
+		t.Fatalf("want the producer and three consumer instances, got %+v", specs)
+	}
+	for i, s := range specs[1:] {
+		want := NodeSpec{Flow: "0a1b2c3d", Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "g", Instance: i + 1}
+		if !reflect.DeepEqual(s, want) {
+			t.Fatalf("instance %d:\n got %+v\nwant %+v", i+1, s, want)
+		}
+	}
+	if got := containerName("0a1b2c3d", "consumer-1", 2); got != "studio-0a1b2c3d-consumer-1-2" {
+		t.Fatalf("containerName of instance 2: %s", got)
+	}
+}
+
+func TestClashes(t *testing.T) {
+	specs := []NodeSpec{
+		{Flow: "f", Node: "consumer-1", Instance: 1},
+		{Flow: "f", Node: "consumer-1", Instance: 2},
+		{Flow: "f", Node: "consumer-1-2"},
+		{Flow: "f", Node: "consumer-2"},
+	}
+	ps := clashes(specs)
+	if len(ps) != 1 || ps[0].Node != "consumer-1-2" || !strings.Contains(ps[0].Message, "studio-f-consumer-1-2") {
+		t.Fatalf("want one clash on consumer-1-2 naming the container, got %v", ps)
+	}
+	if ps := clashes(specs[:2]); ps != nil {
+		t.Fatalf("a node's own instances do not clash, got %v", ps)
+	}
+}
+
 func TestNotYetRunnable(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -55,9 +90,9 @@ func TestNotYetRunnable(t *testing.T) {
 		{"http sink runs", func(f *Flow) {
 			f.Nodes[2].Data = json.RawMessage(`{"group":"g","sink":{"kind":"http","url":"http://x"}}`)
 		}, ""},
-		{"two instances", func(f *Flow) {
+		{"two instances run", func(f *Flow) {
 			f.Nodes[2].Data = json.RawMessage(`{"group":"g","instances":2,"sink":{"kind":"log"}}`)
-		}, "consumer-1"},
+		}, ""},
 		{"forward to a topic runs", func(f *Flow) {
 			f.Nodes = append(f.Nodes, node("topic-2", "topic", `{"name":"archive","partitions":1,"replication_factor":1}`))
 			f.Edges = append(f.Edges, edge("consumer-1", "topic-2"))

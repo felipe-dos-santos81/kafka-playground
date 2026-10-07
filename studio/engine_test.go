@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/moby/moby/api/types/container"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
 )
@@ -29,6 +32,114 @@ func TestDeployNothingToRun(t *testing.T) {
 	}
 }
 
+// A container-name clash is refused like any other problem, before Docker or
+// Kafka (both nil here) are touched.
+func TestDeployRefusesNameClash(t *testing.T) {
+	e := &Engine{store: Store{dir: t.TempDir()}}
+	f := clone(good)
+	f.ID = "0123abcd"
+	f.Nodes[2].Data = json.RawMessage(`{"group":"g","instances":2,"sink":{"kind":"log"}}`)
+	f.Nodes = append(f.Nodes, node("consumer-1-2", "consumer", `{"group":"h","sink":{"kind":"log"}}`))
+	f.Edges = append(f.Edges, edge("topic-1", "consumer-1-2"))
+	if err := e.store.Put(f); err != nil {
+		t.Fatal(err)
+	}
+	var ps Problems
+	if err := e.Deploy(context.Background(), f.ID); !errors.As(err, &ps) || len(ps) != 1 || ps[0].Node != "consumer-1-2" {
+		t.Fatalf("want one problem on consumer-1-2, got %v", err)
+	}
+}
+
+func TestNodeStates(t *testing.T) {
+	ctr := func(node string, instance int, state container.ContainerState) container.Summary {
+		labels := map[string]string{labelFlow: "f", labelNode: node}
+		if instance > 0 {
+			labels[labelInstance] = strconv.Itoa(instance)
+		}
+		return container.Summary{Labels: labels, State: state}
+	}
+	f := clone(good)
+	f.Nodes[2].Data = json.RawMessage(`{"group":"g","instances":3,"sink":{"kind":"log"}}`)
+
+	// Instance 1 runs, 2 exited, 3 was removed by hand; the producer has no container.
+	got := nodeStates(f, []container.Summary{ctr("consumer-1", 1, container.StateRunning), ctr("consumer-1", 2, container.StateExited)})
+	want := map[string]NodeState{
+		"producer-1": {State: "missing"},
+		"consumer-1": {State: "exited", Instances: []NodeState{{Instance: 1, State: "running"}, {Instance: 2, State: "exited"}, {Instance: 3, State: "missing"}}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("instances:\n got %+v\nwant %+v", got, want)
+	}
+
+	// Deployed with one consumer, file edited to three since: what runs is what counts.
+	got = nodeStates(f, []container.Summary{ctr("producer-1", 0, container.StateRunning), ctr("consumer-1", 0, container.StateRunning)})
+	if c := got["consumer-1"]; c.State != "running" || c.Instances != nil {
+		t.Fatalf("deployed single, file says 3: want running with no instances, got %+v", c)
+	}
+
+	// Deployed with three, file edited to one since.
+	f.Nodes[2].Data = json.RawMessage(`{"group":"g","sink":{"kind":"log"}}`)
+	got = nodeStates(f, []container.Summary{ctr("consumer-1", 1, container.StateRunning), ctr("consumer-1", 2, container.StateRunning)})
+	if c := got["consumer-1"]; c.State != "running" || len(c.Instances) != 2 {
+		t.Fatalf("deployed 2, file says 1: want running with its 2 instances, got %+v", c)
+	}
+}
+
+func TestPickInstance(t *testing.T) {
+	single := NodeState{State: "running"}
+	multi := NodeState{State: "exited", Instances: []NodeState{{Instance: 1, State: "running"}, {Instance: 2, State: "exited"}}}
+	for _, c := range []struct {
+		name   string
+		ns     NodeState
+		asked  int
+		want   int
+		errHas string // "" means no error
+	}{
+		{"single", single, 0, 0, ""},
+		{"single asked for an instance", single, 2, 0, "no instance 2"},
+		{"single exited", NodeState{State: "exited"}, 0, 0, "is exited"},
+		{"multi defaults to its first", multi, 0, 1, ""},
+		{"multi, a stopped instance", multi, 2, 0, "instance 2 is exited"},
+		{"multi, no such instance", multi, 7, 0, "no instance 7"},
+	} {
+		got, err := pickInstance("consumer-1", c.ns, c.asked)
+		if c.errHas == "" && (err != nil || got != c.want) {
+			t.Errorf("%s: got %d, %v; want %d", c.name, got, err, c.want)
+		}
+		if c.errHas != "" && (err == nil || !errors.Is(err, ErrNotRunning) || !strings.Contains(err.Error(), c.errHas)) {
+			t.Errorf("%s: want ErrNotRunning naming %q, got %v", c.name, c.errHas, err)
+		}
+	}
+}
+
+func TestApplyKafkaInstances(t *testing.T) {
+	st := FlowState{Status: "running", Nodes: map[string]NodeState{
+		"consumer-1": {State: "running", Instances: []NodeState{{Instance: 1, State: "running"}, {Instance: 2, State: "running"}}},
+	}}
+	specs := []NodeSpec{
+		{Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "g", Instance: 1},
+		{Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "g", Instance: 2},
+	}
+	one := &kadm.DescribedGroupMember{ClientID: containerName("f", "consumer-1", 1)}
+	two := &kadm.DescribedGroupMember{ClientID: containerName("f", "consumer-1", 2)}
+	lags := kadm.DescribedGroupLags{"g": {Group: "g", Lag: kadm.GroupLag{"orders": {
+		0: {Topic: "orders", Partition: 0, Lag: 1, Member: two},
+		1: {Topic: "orders", Partition: 1, Lag: 2, Member: one},
+		2: {Topic: "orders", Partition: 2, Lag: 3, Member: two},
+	}}}}
+	applyKafka(&st, "f", specs, nil, lags, nil)
+	c := st.Nodes["consumer-1"]
+	if c.Lag == nil || *c.Lag != 6 || c.Assigned != nil {
+		t.Fatalf("node: want the group's lag 6 and no node-level assignment, got %+v", c)
+	}
+	if a := c.Instances[0].Assigned; !reflect.DeepEqual(a, map[string][]int32{"orders": {1}}) {
+		t.Fatalf("instance 1: want [1], got %v", a)
+	}
+	if a := c.Instances[1].Assigned; !reflect.DeepEqual(a, map[string][]int32{"orders": {0, 2}}) {
+		t.Fatalf("instance 2: want [0 2], got %v", a)
+	}
+}
+
 func TestApplyKafka(t *testing.T) {
 	st := FlowState{Status: "running", Nodes: map[string]NodeState{
 		"producer-1": {State: "running", Total: 9},
@@ -41,8 +152,8 @@ func TestApplyKafka(t *testing.T) {
 		{Node: "consumer-2", Type: "consumer", Topic: "orders", Group: "g"},
 	}
 	topics := map[string]TopicData{"topic-1": {Name: "orders", Partitions: 2}, "topic-2": {Name: "gone", Partitions: 1}}
-	one := &kadm.DescribedGroupMember{ClientID: containerName("f", "consumer-1")}
-	two := &kadm.DescribedGroupMember{ClientID: containerName("f", "consumer-2")}
+	one := &kadm.DescribedGroupMember{ClientID: containerName("f", "consumer-1", 0)}
+	two := &kadm.DescribedGroupMember{ClientID: containerName("f", "consumer-2", 0)}
 	lags := kadm.DescribedGroupLags{"g": {Group: "g", Lag: kadm.GroupLag{"orders": {
 		0: {Topic: "orders", Partition: 0, Lag: 2, Member: one},
 		1: {Topic: "orders", Partition: 1, Lag: 3, Member: two},
@@ -118,6 +229,15 @@ func TestWithRates(t *testing.T) {
 		if got := cur.Nodes[node].Rate; got != want {
 			t.Errorf("%s: rate %v, want %v", node, got, want)
 		}
+	}
+
+	// A node with instances: each instance against its own previous sample, the node their sum.
+	prev = FlowState{Nodes: map[string]NodeState{"c": {Instances: []NodeState{{Instance: 1, Boot: "a", Total: 10}, {Instance: 2, Boot: "a", Total: 4}}}}}
+	cur = FlowState{Nodes: map[string]NodeState{"c": {Total: 26, Instances: []NodeState{{Instance: 1, Boot: "a", Total: 20}, {Instance: 2, Boot: "b", Total: 1}, {Instance: 3, Boot: "a", Total: 5}}}}}
+	withRates(&cur, prev, 2)
+	c := cur.Nodes["c"]
+	if c.Rate != 5 || c.Instances[0].Rate != 5 || c.Instances[1].Rate != 0 || c.Instances[2].Rate != 0 {
+		t.Fatalf("want instance 1 at 5/s, the restarted and the new one without a rate, the node at 5/s; got %+v", c)
 	}
 }
 

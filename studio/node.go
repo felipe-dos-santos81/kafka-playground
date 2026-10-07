@@ -306,7 +306,7 @@ func runNode() {
 	if brokers == "" {
 		log.Fatal("KAFKA_BROKERS is required")
 	}
-	opts := []kgo.Opt{kgo.SeedBrokers(brokers), kgo.ClientID(containerName(spec.Flow, spec.Node))}
+	opts := []kgo.Opt{kgo.SeedBrokers(brokers), kgo.ClientID(containerName(spec.Flow, spec.Node, spec.Instance))}
 	if spec.Type == "consumer" {
 		reset := kgo.NewOffset().AtStart()
 		if spec.AutoOffsetReset == "latest" {
