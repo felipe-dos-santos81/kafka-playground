@@ -216,6 +216,38 @@ func TestCrossOriginWritesRefused(t *testing.T) {
 	}
 }
 
+// A DNS-rebinding page is same-origin to the browser but carries its own Host.
+func TestBrowserWriteNeedsLocalHost(t *testing.T) {
+	ts := newTestServer(t)
+	for _, c := range []struct {
+		host, site string
+		want       int
+	}{
+		{"evil.example:8082", "same-origin", 403},
+		{"localhost:8082", "same-origin", 201},
+		{"studio:8082", "", 201}, // node containers and webhooks send no browser headers
+	} {
+		req, err := http.NewRequest("POST", ts.URL+"/api/flows", strings.NewReader(`{"name":"x"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = c.host
+		if c.site != "" {
+			req.Header.Set("Sec-Fetch-Site", c.site)
+		}
+		res, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var e struct{ Error string }
+		json.NewDecoder(res.Body).Decode(&e)
+		res.Body.Close()
+		if res.StatusCode != c.want || (c.want == 403 && e.Error == "") {
+			t.Errorf("Host %q, Sec-Fetch-Site %q: want %d, got %d %+v", c.host, c.site, c.want, res.StatusCode, e)
+		}
+	}
+}
+
 func TestEngineErrStatus(t *testing.T) {
 	notDeployable := Problems{{Node: "producer-1", Message: "value is required"}}
 	for _, c := range []struct {

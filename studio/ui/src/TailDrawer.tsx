@@ -26,8 +26,9 @@ export default function TailDrawer({ flowId, node }: Props) {
             if (!live) return
             setError('')
             if (got.length === 0) return
+            const restarted = got[0].seq <= since // the node restarted and counts from 1 again
             since = got[got.length - 1].seq
-            setEntries((es) => [...es, ...got].slice(-100))
+            setEntries((es) => (restarted ? got : [...es, ...got]).slice(-100))
           },
           (e) => live && setError(describe(e)),
         )

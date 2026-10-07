@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"time"
 
@@ -67,7 +68,23 @@ func newMux(s *server, ui fs.FS) http.Handler {
 	csrf.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, "cross-origin write refused")
 	}))
-	return csrf.Handler(mux)
+	// DNS rebinding reaches 127.0.0.1 as same-origin under an attacker's Host, so
+	// a browser write must also name this machine.
+	guard := csrf.Handler(mux)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions &&
+			(r.Header.Get("Sec-Fetch-Site") != "" || r.Header.Get("Origin") != "") {
+			host, _, err := net.SplitHostPort(r.Host)
+			if err != nil {
+				host = r.Host
+			}
+			if host != "localhost" && host != "127.0.0.1" && host != "::1" && host != "[::1]" {
+				fail(w, http.StatusForbidden, "cross-origin write refused")
+				return
+			}
+		}
+		guard.ServeHTTP(w, r)
+	})
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {

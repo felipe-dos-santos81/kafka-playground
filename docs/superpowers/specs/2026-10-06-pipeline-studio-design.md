@@ -251,7 +251,7 @@ Inside a node container:
 - **Consumer:** one `kgo.Client` with `ConsumerGroup`, `ConsumeTopics`,
   `ConsumeResetOffset`, `OnPartitionsAssigned/Revoked` recording the
   assignment; a `PollFetches` loop; per record: append to the tail, then the
-  sink — `log` (nothing more), `http` (POST the value, 5 s timeout, non-2xx
+  sink — `log` (each record also goes to the container's stdout, so `docker logs` shows it), `http` (POST the value, 5 s timeout, non-2xx
   counts as an error), and if the node has a forward edge, `Produce` to that
   topic with the same key (through the same client). Default autocommit; on
   SIGTERM the client is closed, which commits and leaves the group. `docker

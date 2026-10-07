@@ -38,4 +38,4 @@ html, body, #root { margin: 0; height: 100%; }
 .drawer header { display: flex; gap: 8px; align-items: center; }
 .drawer ol { list-style: none; margin: 6px 0 0; padding: 0; }
 .drawer li { padding: 2px 0; }
-.drawer code { margin-right: 6px; }
+.drawer code { margin-right: 6px; white-space: pre-wrap; word-break: break-all; }

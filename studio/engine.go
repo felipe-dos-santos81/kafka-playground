@@ -62,6 +62,10 @@ func (e *Engine) Deploy(ctx context.Context, id string) error {
 	if ps := notYetRunnable(f); ps != nil {
 		return Problems(ps)
 	}
+	specs, topics := Resolve(f)
+	if len(specs) == 0 {
+		return Problems{{Message: "nothing to run: add a producer or a consumer"}}
+	}
 	cs, err := flowContainers(ctx, e.docker, id)
 	if err != nil {
 		return err
@@ -76,7 +80,6 @@ func (e *Engine) Deploy(ctx context.Context, id string) error {
 		}
 		e.me = me
 	}
-	specs, topics := Resolve(f)
 	if err := createTopics(ctx, e.adm, topics); err != nil {
 		return err
 	}

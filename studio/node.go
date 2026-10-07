@@ -140,7 +140,10 @@ func consume(ctx context.Context, cl *kgo.Client, t *tail) {
 		fs.EachError(func(topic string, partition int32, err error) {
 			log.Printf("fetch %s[%d]: %v", topic, partition, err)
 		})
-		fs.EachRecord(t.push)
+		fs.EachRecord(func(r *kgo.Record) {
+			t.push(r)
+			log.Printf("%s[%d]@%d key=%s %s", r.Topic, r.Partition, r.Offset, r.Key, r.Value)
+		})
 	}
 }
 

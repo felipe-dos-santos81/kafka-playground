@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
@@ -22,7 +23,7 @@ const (
 // newDocker builds a client from DOCKER_HOST etc.; the default is the socket
 // at /var/run/docker.sock, which compose mounts into the studio container.
 func newDocker() (*client.Client, error) {
-	return client.New(client.FromEnv, client.WithAPIVersionNegotiation())
+	return client.New(client.FromEnv)
 }
 
 // dockerVersion returns the engine version; the client negotiates the API
@@ -118,12 +119,12 @@ func flowContainers(ctx context.Context, cli *client.Client, flow string) ([]con
 
 // removeContainers stops each running container (SIGTERM, 5 s grace so a
 // consumer commits and leaves its group) and removes it. It tries every
-// container and returns the first error.
+// container and returns the first error other than not-found.
 func removeContainers(ctx context.Context, cli *client.Client, cs []container.Summary) error {
 	grace := 5
 	var first error
 	keep := func(err error) {
-		if err != nil && first == nil {
+		if err != nil && !cerrdefs.IsNotFound(err) && first == nil { // a container removed by hand is already gone
 			first = err
 		}
 	}
