@@ -131,7 +131,7 @@ export default function Inspector({ node, flowId, onChange }: Props) {
         <>
           <label>Expression</label>
           <textarea value={node.data.expr} onChange={(e) => set({ expr: e.target.value })} />
-          <p className="hint">An expr-lang expression over msg; it runs once deploy lands (M5).</p>
+          <p className="hint">An expr-lang expression over msg, the record's value decoded from JSON, e.g. {'{id: msg.id, total: msg.qty * msg.price}'}. Its result is forwarded with the same key; nil drops the record. Deploy checks that it compiles.</p>
         </>
       )}
     </div>

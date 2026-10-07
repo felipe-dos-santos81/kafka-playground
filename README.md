@@ -80,7 +80,7 @@ Try it: a Producer with source `timer`, a Topic and a Consumer; wire them, Save,
 
 ### Flows
 
-- Edges: Producer → Topic, Topic → Consumer, Consumer → Topic (a forward). The editor refuses other wires and the server rejects them on save. Transform (Consumer → Transform → Topic) arrives in M5: it shows and edits in a flow file, but the palette doesn't offer it and a deploy refuses it.
+- Edges: Producer → Topic, Topic → Consumer, then Consumer → Topic (a forward) or Consumer → Transform → Topic. The editor refuses other wires and the server rejects them on save.
 - Each flow is a file, `flows/<id>.json`: React Flow's nodes and edges plus `id`, `name` and `viewport`. Edit, copy or commit them; a file that doesn't parse is skipped and logged, and missing node fields are filled in on open (the flow shows unsaved).
 - A deploy also refuses forwards that loop back to a topic they read (records would circulate forever) and node ids whose container names would clash (a consumer `consumer-1` with two instances next to a node `consumer-1-2`), naming the node (422).
 
@@ -89,6 +89,7 @@ Try it: a Producer with source `timer`, a Topic and a Consumer; wire them, Save,
 - **Producer**: sends by hand (Send in its tail, or the webhook `curl` line in the Inspector) or on a timer (`interval_ms`, at least 10). Key and value are templates with `{{.Seq}}`, `{{.Now}}` and `{{.Rand}}`. `curl -X POST 'localhost:8082/api/flows/<id>/nodes/producer-1/send?key=k1' --data '{"id": 1}'` sends that body as the value.
 - **Topic**: created on deploy; one that exists is used as it is, with a warning when its partition count differs.
 - **Consumer**: a group, `earliest` or `latest`, a sink, and optionally a forward to a topic with the same key. The sink is `log` (its tail and `docker logs`) or `http` (POST each value as JSON within 5 s; any answer but 2xx is an error). Sink and forward are independent; a failure is counted and logged, not retried, and the record still commits, so a failed forward is lost (at-most-once). `instances` (1–10) runs that many containers in the group, splitting the partitions.
+- **Transform**: an [expr-lang](https://expr-lang.org) expression over `msg`, the record's value decoded from JSON, e.g. `{id: msg.id, total: msg.qty * msg.price}`. It runs in its consumer's containers, after the sink and before the forward: its result is forwarded with the record's key, and `nil` drops the record (a filter: `msg.qty > 0 ? msg : nil`). A deploy refuses an expression that does not compile (422, naming the node). A value that is not JSON, a failing expression (a missing field gives `invalid operation: <nil> * <nil>`) or a result JSON cannot hold is counted on the Transform node, and that record is not forwarded. The node shows its consumer's state and its own counts.
 - Flows feed each other through an http sink pointed at another flow's producer `send` URL; node containers reach the studio as `http://studio:8082`.
 - Studio consumers (franz-go) cannot share a group with the compose kcat consumers (librdkafka): their assignors differ, so the broker refuses the join with `INCONSISTENT_GROUP_PROTOCOL`, shown as the node's errors. Give them their own groups.
 
