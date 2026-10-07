@@ -441,3 +441,33 @@ func TestWithStats(t *testing.T) {
 		t.Fatalf("instances: want their sum and the first warning with its instance, got %+v", ns)
 	}
 }
+
+func TestRewindTarget(t *testing.T) {
+	spec, err := rewindTarget(clone(good), "consumer-1", "earliest")
+	if err != nil || spec.Group != "orders-workers" || spec.Topic != "orders" {
+		t.Fatalf("a wired consumer: want group orders-workers on orders, got %+v, %v", spec, err)
+	}
+	unwired := clone(good)
+	unwired.Edges = unwired.Edges[:1] // the consumer reads no topic
+	for _, c := range []struct {
+		name, node, to string
+		flow           Flow
+		want           string // in the problem's message; "" means ErrNoNode
+	}{
+		{"bad to", "consumer-1", "middle", good, `to must be "earliest" or "latest"`},
+		{"not a consumer", "producer-1", "earliest", good, "only a consumer has a group to rewind"},
+		{"unwired", "consumer-1", "latest", unwired, "wire it to a topic first"},
+		{"unknown node", "consumer-9", "earliest", good, ""},
+	} {
+		_, err := rewindTarget(clone(c.flow), c.node, c.to)
+		var ps Problems
+		switch {
+		case c.want == "":
+			if !errors.Is(err, ErrNoNode) {
+				t.Errorf("%s: want ErrNoNode, got %v", c.name, err)
+			}
+		case !errors.As(err, &ps) || len(ps) != 1 || ps[0].Node != c.node || !strings.Contains(ps[0].Message, c.want):
+			t.Errorf("%s: want one problem on %s containing %q, got %v", c.name, c.node, c.want, err)
+		}
+	}
+}

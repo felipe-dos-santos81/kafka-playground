@@ -216,7 +216,7 @@ function Studio() {
         )}
       </main>
       <aside className="inspector">
-        <Inspector node={node} flowId={current?.id} onChange={updateData} />
+        <Inspector node={node} flowId={current?.id} running={running} dirty={dirty} onChange={updateData} />
       </aside>
       {current && running && node && (node.type === 'producer' || node.type === 'consumer') && (
         <TailDrawer

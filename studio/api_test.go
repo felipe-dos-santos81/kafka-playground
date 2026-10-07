@@ -259,6 +259,8 @@ func TestEngineErrStatus(t *testing.T) {
 		{notDeployable, 422},
 		{ErrRunning, 409},
 		{ErrNotRunning, 409},
+		{fmt.Errorf("consumer-9: %w", ErrNoNode), 404},
+		{ErrNoTopic, 409},
 		{fmt.Errorf("node consumer-1 is exited: %w", ErrNotRunning), 409},
 		{errors.New("Error response from daemon: Conflict"), 502},
 	} {

@@ -45,6 +45,7 @@ func newMux(s *server, ui fs.FS) http.Handler {
 	mux.HandleFunc("GET /api/flows/{id}/events", s.events)
 	mux.HandleFunc("POST /api/flows/{id}/nodes/{node}/send", s.nodeProxy("/send"))
 	mux.HandleFunc("GET /api/flows/{id}/nodes/{node}/tail", s.nodeProxy("/tail"))
+	mux.HandleFunc("POST /api/flows/{id}/nodes/{node}/rewind", s.rewind)
 	// Method-less fallbacks keep every /api/ answer JSON: a known path with
 	// the wrong method is 405, anything else under /api/ is 404.
 	for _, path := range []string{"/api/health", "/api/flows", "/api/flows/{id}", "/api/flows/{id}/deploy", "/api/flows/{id}/stop", "/api/flows/{id}/state", "/api/flows/{id}/nodes/{node}/send", "/api/flows/{id}/nodes/{node}/tail", "/api/flows/{id}/events"} {
@@ -196,6 +197,24 @@ func (s *server) stopFlow(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusOK, map[string]string{"status": "stopped"})
 }
 
+// rewind sets a stopped consumer's group to the start or the end of its topic:
+// body {"to": "earliest" | "latest"}.
+func (s *server) rewind(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		To string `json:"to"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil {
+		fail(w, http.StatusBadRequest, "body: "+err.Error())
+		return
+	}
+	done, err := s.engine.Rewind(r.Context(), r.PathValue("id"), r.PathValue("node"), body.To)
+	if err != nil {
+		engineErr(w, err)
+		return
+	}
+	reply(w, http.StatusOK, done)
+}
+
 func (s *server) flowState(w http.ResponseWriter, r *http.Request) {
 	st, err := s.engine.Snapshot(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -262,16 +281,17 @@ func proxy(w http.ResponseWriter, r *http.Request, url string) {
 	io.Copy(w, res.Body)
 }
 
-// engineErr answers an engine error: 404 unknown flow, 422 not deployable,
-// 409 already running or not running, 502 Docker, Kafka or a node.
+// engineErr answers an engine error: 404 unknown flow or node, 422 not
+// deployable (or not rewindable), 409 already running, not running, or a topic
+// not created yet, 502 Docker, Kafka or a node.
 func engineErr(w http.ResponseWriter, err error) {
 	var ps Problems
 	switch {
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrNoNode):
 		fail(w, http.StatusNotFound, err.Error())
 	case errors.As(err, &ps):
 		reply(w, http.StatusUnprocessableEntity, map[string]any{"errors": []Problem(ps)})
-	case errors.Is(err, ErrRunning), errors.Is(err, ErrNotRunning):
+	case errors.Is(err, ErrRunning), errors.Is(err, ErrNotRunning), errors.Is(err, ErrNoTopic):
 		fail(w, http.StatusConflict, err.Error())
 	default:
 		fail(w, http.StatusBadGateway, err.Error())

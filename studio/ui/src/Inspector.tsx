@@ -1,15 +1,33 @@
+import { useState } from 'react'
+import { api, describe } from './flow/api'
 import { DEFAULT_INTERVAL_MS } from './flow/schema'
 import type { StudioNode } from './nodes/types'
 
 type Props = {
   node: StudioNode | null
-  flowId?: string // the open flow, for the producer's webhook line
+  flowId?: string // the open flow, for the producer's webhook line and a consumer's rewind
+  running: boolean // the open flow runs: a consumer's group cannot be rewound
+  dirty: boolean // unsaved edits: a rewind uses the saved group and topic
   onChange: (id: string, patch: Record<string, unknown>) => void
 }
 
-export default function Inspector({ node, flowId, onChange }: Props) {
+export default function Inspector({ node, flowId, running, dirty, onChange }: Props) {
+  const [rewound, setRewound] = useState({ node: '', text: '' }) // the last rewind's outcome, for the node it was on
   if (!node) return <p className="hint">Select a node to edit it.</p>
   const set = (patch: Record<string, unknown>) => onChange(node.id, patch)
+  const rewind = (to: 'earliest' | 'latest') =>
+    flowId &&
+    api.rewind(flowId, node.id, to).then(
+      (r) => setRewound({ node: node.id, text: `${r.group} on ${r.topic}: ${r.partitions} partition${r.partitions === 1 ? '' : 's'} rewound to ${r.to}` }),
+      (e) => setRewound({ node: node.id, text: describe(e) }),
+    )
+  const rewindHint = running
+    ? 'Stop the flow to rewind its group.'
+    : dirty
+      ? 'Save first: a rewind uses the saved group and topic.'
+      : rewound.node === node.id && rewound.text
+        ? rewound.text
+        : 'Sets where the next deploy starts reading, whatever auto.offset.reset says.'
 
   return (
     <div>
@@ -125,6 +143,20 @@ export default function Inspector({ node, flowId, onChange }: Props) {
             </>
           )}
           <p className="hint">Wire it to a topic to forward every record there with the same key, or through a Transform to reshape or drop records first.</p>
+          {flowId && (
+            <>
+              <label id="inspector-rewind">Rewind group</label>
+              <div role="group" aria-labelledby="inspector-rewind" className="buttons">
+                <button disabled={running || dirty} onClick={() => rewind('earliest')}>
+                  to earliest
+                </button>
+                <button disabled={running || dirty} onClick={() => rewind('latest')}>
+                  to latest
+                </button>
+              </div>
+              <p className="hint">{rewindHint}</p>
+            </>
+          )}
         </>
       )}
       {node.type === 'transform' && (

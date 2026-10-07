@@ -140,6 +140,7 @@ patterns, `embed` + `http.FileServerFS` for the UI, `encoding/json`, `os`.
 | `POST /api/flows/{id}/stop` | stop + remove the flow's containers | 404, 409 not running |
 | `POST /api/flows/{id}/nodes/{node}/send?key=` | body = JSON value (key from `?key=`), or empty to render the node's own key and value templates with the next `.Seq` (the UI's Send button); proxied to the producer container's `/send`; returns `{partition, offset}`. The body form is the webhook URL | 400 invalid JSON, 409 not running, 502 |
 | `GET /api/flows/{id}/nodes/{node}/tail?since=N&instance=I` | last ≤ 100 records with `seq > N`, proxied from the node; `instance` (M4, default 1) picks one of a consumer's instances; a node with one container is its own instance 1 | 409 |
+| `POST /api/flows/{id}/nodes/{node}/rewind` | body `{"to": "earliest" \| "latest"}`: sets a consumer node's group to the start or the end of its topic (`kadm.ListStartOffsets`/`ListEndOffsets`, then `CommitAllOffsets`), so the next deploy reads from there whatever `auto_offset_reset` says; answers `{group, topic, partitions, to}`. 409 while the flow runs (the broker refuses commits for a group with members) or before its topic exists; 422 for a node that is not a wired consumer; 404 for an unknown node |
 | `GET /api/flows/{id}/state` | the flow's snapshot, as an SSE tick carries it but without rates: container states, each running node's counters, consumer lag and partitions, topic partitions and end offsets | 404 |
 | `GET /api/flows/{id}/events` | SSE stream of `tick` snapshots (section 3.6) | 404 |
 
@@ -679,8 +680,7 @@ The M3 review leftovers, after M4 and M5.
 
 ### Not planned
 
-A "reset group" action (open question 2), a choice of partitioner (open
-question 3), a separate webhook node with a stable path and secret
+A choice of partitioner (open question 3), a separate webhook node with a stable path and secret
 (assumption 5), auth (section 3.7), and the browser's six-connections-per-host
 limit with many studio tabs open. Each is its own request later.
 
@@ -732,8 +732,9 @@ Open questions to answer before M2 starts (defaults in bold):
 1. Studio port `8082`, directory `studio/`, service name `studio`, image
    `kafka-playground/studio:0.1.0` — **keep**.
 2. Should Stop also delete the consumer groups (`kadm.DeleteGroups`) so a
-   redeploy starts from `auto_offset_reset` again? **No; add a "reset
-   group" action in M3 if the lag demo needs it.**
+   redeploy starts from `auto_offset_reset` again? **No.** Built later as a
+   rewind instead: a stopped consumer's group can be set to the start or the
+   end of its topic from the Inspector (`…/nodes/{node}/rewind`).
 3. Expose the partitioner (`default` sticky vs `round_robin`) on producer
    nodes? **Not in M2; revisit after the M3 demo.**
 4. Keep the existing `producer/` page? **Yes, untouched; the studio's manual

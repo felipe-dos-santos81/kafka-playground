@@ -1,5 +1,5 @@
 // Node types and the tail drawer, on flows created through the API.
-import { chain, consumer, deployFlow, edge, expect, node, nodeOf, runtimeOf, tail, test, timer, topBar, topic } from './studio'
+import { chain, consumer, deployFlow, edge, expect, node, nodeOf, runtimeOf, simple, tail, test, timer, topBar, topic } from './studio'
 
 // The producer's records: the first has qty and price, the second neither, so
 // the transform cannot multiply them.
@@ -68,4 +68,20 @@ test('a consumer with instances shows each one and tails the one picked', async 
   const records = tail(page).getByRole('listitem')
   await expect(records.first()).toBeVisible({ timeout: 10_000 })
   for (const text of await records.allTextContents()) expect(text.startsWith(`p${partitionOf['2']}@`)).toBe(true)
+})
+
+test("a consumer's group rewinds from the Inspector once the flow is stopped", async ({ page, studio }) => {
+  const name = studio.unique('rewind')
+  await deployFlow(await studio.create(simple(name))) // a deploy creates the topic
+  await studio.open(page, name)
+  await nodeOf(page, 'consumer-1').click()
+  const inspector = page.locator('.inspector')
+  const earliest = page.getByRole('group', { name: 'Rewind group' }).getByRole('button', { name: 'to earliest' })
+  await expect(earliest).toBeDisabled()
+  await expect(inspector).toContainText('Stop the flow to rewind its group.')
+
+  await page.getByRole('button', { name: 'Stop' }).click()
+  await expect(topBar(page).getByText('stopped', { exact: true })).toBeVisible({ timeout: 15_000 })
+  await earliest.click()
+  await expect(inspector).toContainText(`${name} on ${name}: 1 partition rewound to earliest`)
 })

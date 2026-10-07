@@ -35,3 +35,25 @@ func topicErr(rs kadm.CreateTopicResponses) error {
 	}
 	return nil
 }
+
+// rewindGroup commits, for every partition of topic, its start (earliest) or end
+// (latest) offset as group's position, and says how many partitions it set.
+func rewindGroup(ctx context.Context, adm *kadm.Client, group, topic, to string) (int, error) {
+	list := adm.ListStartOffsets
+	if to == "latest" {
+		list = adm.ListEndOffsets
+	}
+	listed, err := list(ctx, topic)
+	if err != nil {
+		return 0, err
+	}
+	if err := listed.Error(); errors.Is(err, kerr.UnknownTopicOrPartition) {
+		return 0, ErrNoTopic
+	} else if err != nil {
+		return 0, err
+	}
+	if err := adm.CommitAllOffsets(ctx, group, listed.Offsets()); err != nil {
+		return 0, fmt.Errorf("commit %s: %w", group, err)
+	}
+	return len(listed[topic]), nil
+}

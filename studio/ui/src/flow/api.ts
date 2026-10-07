@@ -120,6 +120,12 @@ export const api = {
   remove: (id: string) => call<void>(`/api/flows/${id}`, { method: 'DELETE' }),
   deploy: (id: string) => call<{ status: string }>(`/api/flows/${id}/deploy`, { method: 'POST' }),
   stop: (id: string) => call<{ status: string }>(`/api/flows/${id}/stop`, { method: 'POST' }),
+  // Sets a stopped consumer's group to the start or the end of its topic.
+  rewind: (id: string, node: string, to: 'earliest' | 'latest') =>
+    call<{ group: string; topic: string; partitions: number; to: string }>(`/api/flows/${id}/nodes/${node}/rewind`, {
+      method: 'POST',
+      body: JSON.stringify({ to }),
+    }),
   // An empty body makes the producer render its own key and value templates.
   send: (id: string, node: string) =>
     call<{ partition: number; offset: number }>(`/api/flows/${id}/nodes/${node}/send`, { method: 'POST' }),
