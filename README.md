@@ -75,9 +75,11 @@ Consumers sharing a `GROUP_ID` split the partitions; without one, each container
 
 On http://localhost:8082: drag Producer, Topic and Consumer nodes from the palette, wire them, edit the selected node on the right, Save, Deploy.
 
+Try it: a Producer with source `timer`, a Topic, a Consumer; wire them, Save, Deploy. Every node's numbers move once a second; select the consumer to watch its tail. Stop removes the containers.
+
 - Allowed edges: Producer → Topic, Topic → Consumer, Consumer → Topic. Consumer → Transform → Topic is reserved for a later milestone: a Transform node in a flow file shows and edits, but the palette doesn't offer it yet. The editor refuses other wires; the server rejects them on save.
 - Opening a flow file that lacks some node fields fills in the defaults and marks the flow unsaved; the file changes only when you Save.
-- Each flow is `flows/<id>.json`: React Flow's nodes and edges (each edge with a unique `id`) plus `id`, `name` and `viewport`. Edit, copy or commit them; a file that does not parse is skipped and logged. `flows/0a1b2c3d.json` is an example.
+- Each flow is `flows/<id>.json`: React Flow's nodes and edges (each edge with a unique `id`) plus `id`, `name` and `viewport`. Edit, copy or commit them; a file that does not parse is skipped and logged. `flows/0a1b2c3d.json` is an example that uses M4 features (two consumer instances, forwarding), so Deploy refuses it for now.
 - **Deploy** runs the saved flow: it creates the topics (a topic that exists is used as it is) and starts one container per producer and consumer, named `studio-<flow>-<node>` and labelled `studio.flow`. `make nodes` lists them; `docker logs`, `docker stop` and `docker rm -f` work on them, and the node's badge turns `exited` or `missing`. **Stop** removes them. Topics and committed offsets stay, so a redeployed consumer carries on where its group left off.
 - Select a deployed producer or consumer to open its tail: its last 100 records, fetched whenever the node's count moves and started over when its container restarts. A producer's tail has **Send**, which renders its key and value templates. From the command line, `curl -X POST 'localhost:8082/api/flows/<id>/nodes/producer-1/send?key=k1' --data '{"id": 1}'` sends that JSON body as the value.
 - Producers send by hand or on a timer (`interval_ms`, at least 10, rendering the key and value templates with `{{.Seq}}`, `{{.Now}}` and `{{.Rand}}`). A deploy still refuses the http sink, consumer forwarding and more than one instance (M4), and transforms (M5), naming the node.

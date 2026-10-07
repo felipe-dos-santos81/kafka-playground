@@ -72,7 +72,7 @@ scale: ## [STEP 4] Set the number of orders-workers group members (usage: make s
 
 # ── Studio ───────────────────────────────────────────────────────────────────
 
-verify-studio: up ## Check the studio end to end: health, cross-site refusal, save rules, deploy (rollback, 409, restart), send, tail, lag, live ticks, stop, delete
+verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail, lag, live ticks, stop, delete
 	@health=$$(curl -sS --fail-with-body $(STUDIO_URL)/api/health) || { echo "STUDIO FAILED: health: $$health"; exit 1; }; \
 	echo "studio health: $$health"; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows -H 'Sec-Fetch-Site: cross-site' --data '{"name":"x"}'); \
@@ -118,7 +118,8 @@ verify-studio: up ## Check the studio end to end: health, cross-site refusal, sa
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$id || { echo "STUDIO FAILED: delete"; exit 1; }; \
 	[ "$$(nodes)" = 0 ] && [ ! -f "flows/$$id.json" ] || { echo "STUDIO FAILED: delete left $$(nodes) containers or flows/$$id.json"; exit 1; }; \
 	tflow='{"name":"verify-timer","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":{"source":"timer","interval_ms":100,"key":"","value":"{\"n\": {{.Seq}}}"}},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"studio-verify-timer","partitions":1,"replication_factor":1}},{"id":"consumer-1","type":"consumer","position":{"x":400,"y":0},"data":{"group":"studio-verify-timer","auto_offset_reset":"latest","sink":{"kind":"log"}}}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"},{"id":"e2","source":"topic-1","target":"consumer-1"}]}'; \
-	tid=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$tflow" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'); \
+	created=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$tflow") || { echo "STUDIO FAILED: create the timer flow: $$created"; exit 1; }; \
+	tid=$$(echo "$$created" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'); \
 	trap "curl -sS -X DELETE $(STUDIO_URL)/api/flows/$$id >/dev/null 2>&1; curl -sS -X DELETE $(STUDIO_URL)/api/flows/$$tid >/dev/null 2>&1; docker rm -f studio-$$id-consumer-1 >/dev/null 2>&1" EXIT; \
 	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$tid/deploy >/dev/null || { echo "STUDIO FAILED: timer deploy"; exit 1; }; \
 	tick=$$(curl -sN --max-time 20 $(STUDIO_URL)/api/flows/$$tid/events | grep -m1 '"consumer-1":{[^}]*"rate":.*"producer-1":{[^}]*"rate":'); \

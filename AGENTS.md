@@ -30,6 +30,7 @@ make down
 - YAML merge (`<<:`) is shallow: a service that overrides `depends_on` must merge `*after-kafka` back in.
 - Every new topic job also goes under `producer.depends_on`, or `docker compose up --wait` fails on the exited job.
 - `studio/flow.go` defines node ids, node data fields and the allowed-edge table; `studio/ui/src/flow/schema.ts` and `studio/ui/src/nodes/types.ts` mirror them. Change all three together. Every other validation rule lives only in `flow.go`: the server is the authority.
+- The live snapshot's JSON is `NodeState` in `studio/engine.go`, mirrored by `NodeRuntime` in `studio/ui/src/flow/api.ts`; change both. `verify-studio` greps that JSON and relies on its field order (`lag` before `assigned`, node ids sorted).
 - One `.gitignore`, at the root; don't add nested ones (a nested `dist` rule would hide `studio/ui/dist/.gitkeep`).
 - Studio node containers are not compose services: they carry the `studio.flow` label, and `make down` removes them before `docker compose down` (the network cannot go while they are attached). Keep that line in `down`; use `make nodes` to see them.
 - Makefile: GNU make 3.81 on macOS with BSD tools (no `timeout`, no `base64 -w0`, no `sed -i` without `''`). Recipes use real tabs. Follow the existing style: `SERVICE`, `## ` help comments, `# ── Section ──` rules, lower-case `arg ?= default`. Pass user text to the shell as `$(call shq,$(value var))`.
