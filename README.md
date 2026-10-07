@@ -77,7 +77,8 @@ On http://localhost:8082: drag Producer, Topic and Consumer nodes from the palet
 
 - Allowed edges: Producer → Topic, Topic → Consumer, Consumer → Topic. Consumer → Transform → Topic is reserved for a later milestone: a Transform node in a flow file shows and edits, but the palette doesn't offer it yet. The editor refuses other wires; the server rejects them on save.
 - Opening a flow file that lacks some node fields fills in the defaults and marks the flow unsaved; the file changes only when you Save.
-- Each flow is `flows/<id>.json`: React Flow's nodes and edges plus `id`, `name` and `viewport`. Edit, copy or commit them; a file that does not parse is skipped and logged. `flows/0a1b2c3d.json` is an example.
+- Each flow is `flows/<id>.json`: React Flow's nodes and edges (each edge with a unique `id`) plus `id`, `name` and `viewport`. Edit, copy or commit them; a file that does not parse is skipped and logged. `flows/0a1b2c3d.json` is an example.
+- The API lives under `/api` and always answers JSON: an unknown path is 404, a wrong method 405, errors are `{"error": "..."}`.
 - Deploy is not built yet. `GET /api/health` reports the Docker Engine version reachable through the mounted `/var/run/docker.sock`; deploy will run each node as a container. That socket is root-equivalent on the host, another reason the studio stays on `127.0.0.1`.
 - Native Linux: the setup assumes Docker Desktop. There the socket is `root:docker 0660`, so `/api/health` stays 503 and `make up` fails. Add `user: "0"` to the `studio` service (the socket already grants root), or `group_add` the host's docker gid and make `./flows` writable by that user.
 - UI development: `cd studio/ui && npm install && npm run dev` serves http://localhost:5173 and proxies `/api` to the running `studio` container. Go changes need `make up` (rebuilds the image).

@@ -29,7 +29,7 @@ make down
 - Inside compose `command`/`entrypoint` strings, write a shell `$` as `$$`.
 - YAML merge (`<<:`) is shallow: a service that overrides `depends_on` must merge `*after-kafka` back in.
 - Every new topic job also goes under `producer.depends_on`, or `docker compose up --wait` fails on the exited job.
-- `studio/flow.go` defines node ids, node data fields and the allowed-edge table; `studio/ui/src/flow/schema.ts` and `studio/ui/src/nodes/types.ts` mirror them. Change all three together.
+- `studio/flow.go` defines node ids, node data fields and the allowed-edge table; `studio/ui/src/flow/schema.ts` and `studio/ui/src/nodes/types.ts` mirror them. Change all three together. Every other validation rule lives only in `flow.go`: the server is the authority.
 - One `.gitignore`, at the root; don't add nested ones (a nested `dist` rule would hide `studio/ui/dist/.gitkeep`).
 - Makefile: GNU make 3.81 on macOS with BSD tools (no `timeout`, no `base64 -w0`, no `sed -i` without `''`). Recipes use real tabs. Follow the existing style: `SERVICE`, `## ` help comments, `# ── Section ──` rules, lower-case `arg ?= default`. Pass user text to the shell as `$(call shq,$(value var))`.
 - Keep README.md in sync with any behaviour change.

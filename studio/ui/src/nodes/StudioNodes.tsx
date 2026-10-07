@@ -1,24 +1,24 @@
 import type { ReactNode } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { DEFAULT_INTERVAL_MS, type NodeType } from '../flow/schema'
+import { DEFAULT_INTERVAL_MS, hasInput, hasOutput, type NodeType } from '../flow/schema'
 import type { ConsumerNode, ProducerNode, TopicNode, TransformNode } from './types'
 
-// The frame every node shares: type as title, a one-line summary, an input
-// handle on the left (producers have none) and an output handle on the right.
-function Shell({ type, selected, input = true, children }: { type: NodeType; selected?: boolean; input?: boolean; children: ReactNode }) {
+// The frame every node shares: type as title, a one-line summary, and the
+// input/output handles the allowed-edge table gives its type.
+function Shell({ type, selected, children }: { type: NodeType; selected?: boolean; children: ReactNode }) {
   return (
     <div className={`node ${type}${selected ? ' selected' : ''}`}>
       <div className="node-title">{type}</div>
       <div className="node-summary">{children}</div>
-      {input && <Handle type="target" position={Position.Left} />}
-      <Handle type="source" position={Position.Right} />
+      {hasInput(type) && <Handle type="target" position={Position.Left} />}
+      {hasOutput(type) && <Handle type="source" position={Position.Right} />}
     </div>
   )
 }
 
 export const nodeTypes = {
   producer: ({ data, selected }: NodeProps<ProducerNode>) => (
-    <Shell type="producer" selected={selected} input={false}>
+    <Shell type="producer" selected={selected}>
       {data.source === 'timer' ? `timer · every ${data.interval_ms ?? DEFAULT_INTERVAL_MS} ms` : 'manual'}
     </Shell>
   ),

@@ -40,14 +40,17 @@ func newMux(s *server, ui fs.FS) *http.ServeMux {
 			fail(w, http.StatusMethodNotAllowed, r.Method+" is not allowed on "+r.URL.Path)
 		})
 	}
-	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
-		fail(w, http.StatusNotFound, "no such endpoint: "+r.URL.Path)
-	})
+	for _, path := range []string{"/api", "/api/"} {
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			fail(w, http.StatusNotFound, "no such endpoint: "+r.URL.Path)
+		})
+	}
 	// The UI is index.html plus Vite's assets/; narrower than "GET /" so it
 	// cannot collide with the method-less /api/ routes above.
 	files := http.FileServerFS(ui)
-	mux.Handle("GET /{$}", files)
-	mux.Handle("GET /assets/", files)
+	for _, path := range []string{"GET /{$}", "GET /index.html", "GET /assets/"} {
+		mux.Handle(path, files)
+	}
 	return mux
 }
 

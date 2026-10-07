@@ -5,7 +5,7 @@ import FlowList from './FlowList'
 import Inspector from './Inspector'
 import Palette from './Palette'
 import { api, ApiError, type FlowSummary } from './flow/api'
-import { withDefaults, type FlowFile } from './flow/schema'
+import { fillDefaults, type FlowFile } from './flow/schema'
 import type { StudioNode } from './nodes/types'
 
 function describe(e: unknown): string {
@@ -27,7 +27,7 @@ function Studio() {
   }, [refresh])
 
   // Runs an API action, showing any failure in the top bar.
-  const attempt = async (action: () => Promise<void>) => {
+  const withTopBarError = async (action: () => Promise<void>) => {
     try {
       await action()
     } catch (e) {
@@ -36,12 +36,12 @@ function Studio() {
   }
 
   const load = (id: string) =>
-    attempt(async () => {
+    withTopBarError(async () => {
       const f = await api.get(id)
       // Hand-edited files may omit data fields: fill them from the defaults so the node
       // components never crash, and mark the flow unsaved so the difference is visible.
-      const loaded = f.nodes.map((n) => ({ node: n, ...withDefaults(n.type, n.data) }))
-      setNodes(loaded.map(({ node, data }) => ({ ...node, data })) as unknown as StudioNode[])
+      const loaded = f.nodes.map(fillDefaults)
+      setNodes(loaded.map((l) => l.node) as unknown as StudioNode[])
       setEdges(f.edges)
       setCurrent({ id: f.id, name: f.name, viewport: f.viewport ?? undefined }) // Canvas mounts per flow and reads it as defaultViewport
       setDirty(loaded.some((l) => l.filled))
@@ -58,7 +58,7 @@ function Studio() {
   })
 
   const save = () =>
-    attempt(async () => {
+    withTopBarError(async () => {
       if (!current) return
       await api.save(toFile(current.id, current.name))
       setDirty(false)
@@ -76,7 +76,7 @@ function Studio() {
     if (!discard()) return
     const name = window.prompt('Flow name')?.trim()
     if (!name) return
-    await attempt(async () => {
+    await withTopBarError(async () => {
       const f = await api.create({ name, nodes: [], edges: [] })
       await refresh()
       await load(f.id)
@@ -85,7 +85,7 @@ function Studio() {
 
   const remove = async (id: string) => {
     if (!window.confirm('Delete this flow?')) return
-    await attempt(async () => {
+    await withTopBarError(async () => {
       await api.remove(id)
       if (current?.id === id) {
         setCurrent(null)
@@ -107,7 +107,9 @@ function Studio() {
     setDirty(true)
   }
 
-  const node = nodes.find((n) => n.selected) ?? null // React Flow tracks selection on the nodes
+  // React Flow tracks selection on the nodes; the inspector edits exactly one.
+  const picked = nodes.filter((n) => n.selected)
+  const node = picked.length === 1 ? picked[0] : null
 
   return (
     <div className="studio">

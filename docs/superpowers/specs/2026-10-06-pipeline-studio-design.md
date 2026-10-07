@@ -118,7 +118,7 @@ studio/ui/src/
   main.tsx, App.tsx          layout, flow selection, deploy/stop buttons
   flow/schema.ts             Zod schema + allowed-edge table (mirrors Go)
   flow/api.ts                fetch wrappers; useEvents(flowId) over EventSource
-  nodes/ProducerNode.tsx, TopicNode.tsx, ConsumerNode.tsx, TransformNode.tsx (M5)
+  nodes/StudioNodes.tsx      one shared frame for every node type; handles follow the edge table
   Palette.tsx, Inspector.tsx, TailDrawer.tsx
 ```
 
@@ -141,8 +141,10 @@ patterns, `embed` + `http.FileServerFS` for the UI, `encoding/json`, `os`.
 | `GET /api/flows/{id}/nodes/{node}/tail?since=N` | last ≤ 100 records with `seq > N`, proxied from the node | 409 |
 | `GET /api/flows/{id}/events` | SSE stream of `tick` snapshots (section 3.6) | |
 
-Request bodies are capped at 1 MiB (`http.MaxBytesReader`); every response is
-JSON; errors are `{"error": "..."}` as in `producer/main.go`.
+Request bodies are capped at 1 MiB (`http.MaxBytesReader`); every `/api`
+response is JSON (an unknown path is 404, a known path with the wrong method
+405); errors are `{"error": "..."}` as in `producer/main.go`. Everything
+outside `/api` is the embedded UI.
 
 Files, ~900 lines:
 
@@ -155,7 +157,8 @@ studio/
   engine.go      Deploy/Stop/Reconcile; runs map; per-run poller; snapshots
   docker.go      thin wrapper over moby client: self-inspect, create, start, list, stop, remove
   node.go        `studio node`: producer and consumer loops; /stats /tail /send
-  flow_test.go   table test for Validate (the one unit test)
+  flow_test.go   table test for Validate
+  store_test.go, api_test.go   file store and HTTP API through httptest
   ui/            Vite project
   Dockerfile     node → golang:1.27.1-alpine → scratch
 ```
@@ -417,6 +420,10 @@ record and forward it to `orders-archive`.
 | | `instances` | M4 | integer 1–10, default 1 |
 | transform | `expr` | M5 | an `expr-lang/expr` program over `msg` (the decoded JSON value) returning the new value; must compile on deploy |
 
+"From" is the milestone whose runtime first uses a field. Save accepts every
+field from M1, so the editor shows and edits the ones it has a form for (the
+timer interval, a transform's `expr`); the palette offers Transform from M5.
+
 Template data for producers: `.Seq` (1-based counter), `.Now` (RFC 3339),
 `.Rand` (0–999). Node ids match `^[a-z0-9][a-z0-9-]{0,30}$` because they
 become part of container names; the editor generates `<type>-<n>`.
@@ -439,7 +446,7 @@ flowchart LR
 | consumer: exactly one incoming edge; at most one outgoing edge in total, to either a topic or a transform | Go, deploy |
 | transform: exactly one incoming (from a consumer) and one outgoing (to a topic) | Go, deploy |
 | topic: any number of edges; a topic feeding no consumer or fed by nothing is fine (warning in the UI, not an error) | Go, deploy |
-| no self edges, no duplicate edges, every edge endpoint exists | Go, save |
+| no self edges, no duplicate edges, every edge endpoint exists, every edge id present and unique | Go, save |
 
 Save validates shape and edge pairs so a half-built flow can be saved;
 deploy validates everything.
@@ -662,7 +669,8 @@ Open questions to answer before M2 starts (defaults in bold):
 ## 9. Verification
 
 - Unit: `flow_test.go` table test over `Validate` (every rule in 4.2 and 4.3,
-  one failing input each). Nothing else is unit-tested; the rest is I/O.
+  one failing input each); `store_test.go` and `api_test.go` drive the file
+  store and the HTTP API through `httptest`. The rest is I/O.
 - End to end: `make verify-studio`, an API round trip from M1 and deploy as
   described in M2; extended in
   M3 with a timer flow asserting `rate > 0` and `lag == 0` from a `tick`, and

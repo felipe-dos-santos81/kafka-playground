@@ -15,6 +15,11 @@ export function canConnect(source: string | undefined, target: string | undefine
   return (ALLOWED[source as NodeType] ?? []).includes(target as NodeType)
 }
 
+// Which handles a node shows follows from the table: an input if anything may
+// connect to it, an output if it may connect to anything.
+export const hasInput = (type: NodeType) => NODE_TYPES.some((s) => canConnect(s, type))
+export const hasOutput = (type: NodeType) => ALLOWED[type].length > 0
+
 // The file format is React Flow's own shape plus id and name (spec 4.1).
 export const FlowSchema = z.object({
   id: z.string(),
@@ -50,12 +55,14 @@ export function defaultData(type: NodeType): Record<string, unknown> {
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
-// data with every missing default field filled in (one level into objects such as
-// sink); filled reports whether anything was added, i.e. whether the file lacked it.
-export function withDefaults(type: NodeType, data: Record<string, unknown>) {
-  const out = { ...data }
+type FileNode = FlowFile['nodes'][number]
+
+// The node with every missing default data field filled in (one level into objects
+// such as sink); filled reports whether anything was added, i.e. the file lacked it.
+export function fillDefaults(node: FileNode): { node: FileNode; filled: boolean } {
+  const out = { ...node.data }
   let filled = false
-  for (const [k, v] of Object.entries(defaultData(type))) {
+  for (const [k, v] of Object.entries(defaultData(node.type))) {
     if (!(k in out)) {
       out[k] = v
       filled = true
@@ -67,7 +74,7 @@ export function withDefaults(type: NodeType, data: Record<string, unknown>) {
       }
     }
   }
-  return { data: out, filled }
+  return { node: { ...node, data: out }, filled }
 }
 
 // Smallest unused "<type>-<n>"; ids must match the Go nodeIDRe.

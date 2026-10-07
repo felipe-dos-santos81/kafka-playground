@@ -110,8 +110,10 @@ func TestFlowsAPI(t *testing.T) {
 		t.Fatalf("after delete: want 404, got %d", code)
 	}
 
-	if code, body = call(t, ts, "GET", "/", nil); code != 200 || !strings.Contains(string(body), "studio") {
-		t.Fatalf("ui: %d %s", code, body)
+	for _, path := range []string{"/", "/index.html"} {
+		if code, body = call(t, ts, "GET", path, nil); code != 200 || !strings.Contains(string(body), "studio") {
+			t.Fatalf("ui %s: %d %s", path, code, body)
+		}
 	}
 }
 
@@ -164,6 +166,7 @@ func TestUnroutedAPIAnswersJSON(t *testing.T) {
 		method, path string
 		want         int
 	}{
+		{"GET", "/api", 404},
 		{"GET", "/api/typo", 404},
 		{"POST", "/api/typo", 404},
 		{"POST", "/api/health", 405},
