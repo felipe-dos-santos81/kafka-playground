@@ -267,7 +267,7 @@ Inside a node container:
   grace), commits what is marked, and closes the client, which leaves the
   group. `docker rm -f` (SIGKILL) skips that, so unmarked and uncommitted
   records are redelivered — at-least-once, on purpose, worth a README line.
-- **Stats:** counters count records where they pass — produced by a producer, fetched by a consumer — with fetch and produce errors and the last error; `/stats` returns `{boot, total, errors, lastError, tailSeq}` (from M5 also `steps: {<transform id>: {total, errors, lastError}}` on a consumer that runs a transform), where `boot` is random per process so a restarted container starts over visibly. `/tail?since=` returns records from a 100-entry ring buffer (values truncated to 4 KiB). The control plane adds the container state from Docker and lag and partitions from the broker. The HTTP server listens on `:9000` inside the compose network only.
+- **Stats:** counters count records where they pass — produced by a producer, fetched by a consumer — with fetch and produce errors and the last error; `/stats` returns `{boot, total, errors, lastError, tailSeq}` (from M5 also `step: {total, errors, lastError}` on a consumer that runs a transform), where `boot` is random per process so a restarted container starts over visibly. `/tail?since=` returns records from a 100-entry ring buffer (values truncated to 4 KiB). The control plane adds the container state from Docker and lag and partitions from the broker. The HTTP server listens on `:9000` inside the compose network only.
 
 ### 3.5 State store
 
@@ -283,7 +283,7 @@ Inside a node container:
 
 ### 3.6 Live status to the browser: SSE
 
-One `EventSource` per open flow on `GET /api/flows/{id}/events`. Each open stream runs its own loop: every second it takes a snapshot — `ContainerList` by label (container states), `GET /stats` on every running node container, `adm.Lag` for the flow's groups and `adm.ListEndOffsets` for its topics — computes `rate = Δtotal / Δt` against its previous snapshot (none when a node's `boot` changed), and sends it as a `tick`. The loop ends when `r.Context()` is done. One tab is one loop; a poller shared between streams is an optimisation for many viewers. A consumer node's `assigned` partitions come from the group description in `adm.Lag`, whose members carry the node's container name as their client id. From M4, a consumer with `instances` > 1 also carries `instances: [{instance, state, total, rate, errors, lastError, tailSeq, boot, assigned}]`, one entry per container; its node-level `total`, `rate` and `errors` are the sums, `lag` stays the group's, and its `state` is `running` only when every instance runs (otherwise the first instance's state that is not); its `lastError` is the first instance's that has one, prefixed `#<i>: `. From M5 a transform node carries its consumer's state (`missing` while no container reports it) and the counters the consumer reports for it under `steps`.
+One `EventSource` per open flow on `GET /api/flows/{id}/events`. Each open stream runs its own loop: every second it takes a snapshot — `ContainerList` by label (container states), `GET /stats` on every running node container, `adm.Lag` for the flow's groups and `adm.ListEndOffsets` for its topics — computes `rate = Δtotal / Δt` against its previous snapshot (none when a node's `boot` changed), and sends it as a `tick`. The loop ends when `r.Context()` is done. One tab is one loop; a poller shared between streams is an optimisation for many viewers. A consumer node's `assigned` partitions come from the group description in `adm.Lag`, whose members carry the node's container name as their client id. From M4, a consumer with `instances` > 1 also carries `instances: [{instance, state, total, rate, errors, lastError, tailSeq, boot, assigned}]`, one entry per container; its node-level `total`, `rate` and `errors` are the sums, `lag` stays the group's, and its `state` is `running` only when every instance runs (otherwise the first instance's state that is not); its `lastError` is the first instance's that has one, prefixed `#<i>: `. From M5 a transform node carries its consumer's state (`missing` while no container reports it) and the counters the consumer reports for it under `step`.
 
 ```
 event: tick
@@ -632,7 +632,7 @@ open; it runs last, by the user's choice, so M4 lands on M3's snapshot loop.
   (key unchanged); `nil` drops the record quietly (a filter). A value that is
   not JSON, a runtime error or a result that cannot be encoded counts as an
   error on the transform, and the record is not forwarded.
-- The consumer's `/stats` gains `steps` under the transform's node id; the
+- The consumer's `/stats` gains `step` with the transform's counters; the
   snapshot reports them on the Transform node with the consumer's container
   state (summed across instances).
 - The palette offers Transform; the "from M5" hints go; a consumer →

@@ -74,7 +74,7 @@ type NodeState struct {
 	Warning    string             `json:"warning,omitempty"`
 	Instances  []NodeState        `json:"instances,omitempty"`
 
-	steps map[string]stepStats // a consumer container's transform counts, by node id; applySteps moves them to the transform node
+	step *stepStats // a consumer container's transform counts; applySteps puts them on the transform node
 }
 
 // Deploy validates the saved flow, creates its topics and starts one container
@@ -296,16 +296,15 @@ func withStats(ctx context.Context, r nodeRef, ns NodeState) NodeState {
 		return ns
 	}
 	ns.Total, ns.Errors, ns.LastError, ns.TailSeq, ns.Boot = s.Total, s.Errors, s.LastError, s.TailSeq, s.Boot
-	ns.steps = s.Steps
+	ns.step = s.Step
 	return ns
 }
 
 // applySteps gives each transform node its consumer node's state and the counts
-// the consumer's containers report for it, summed (a last error is the first
-// container's that has one, prefixed with its instance). Its boot joins theirs,
-// so a container that restarted gives the transform no rate rather than a wrong one.
-// A transform whose consumer runs but that no container reports (added or renamed
-// after deploy) is "missing" until one does.
+// the consumer's containers report for it, summed as sumCounts sums instances. Its
+// boot joins theirs, so a container that restarted gives the transform no rate
+// rather than a wrong one. A transform whose consumer runs but that no container
+// reports (added after deploy) is "missing" until one does.
 func applySteps(st *FlowState, specs []NodeSpec) {
 	for _, s := range specs {
 		if s.TransformNode == "" || s.Instance > 1 {
@@ -313,19 +312,15 @@ func applySteps(st *FlowState, specs []NodeSpec) {
 		}
 		consumer := st.Nodes[s.Node]
 		t := NodeState{State: consumer.State}
+		var steps []NodeState
 		var boots []string
 		for _, c := range consumer.containers() {
-			step, ok := c.steps[s.TransformNode]
-			if !ok {
-				continue
+			if c.step != nil {
+				steps = append(steps, NodeState{Instance: c.Instance, Total: c.step.Total, Errors: c.step.Errors, LastError: c.step.LastError})
+				boots = append(boots, c.Boot)
 			}
-			t.Total += step.Total
-			t.Errors += step.Errors
-			if t.LastError == "" && step.LastError != "" {
-				t.LastError = instanceError(c.Instance, step.LastError)
-			}
-			boots = append(boots, c.Boot)
 		}
+		t.sumCounts(steps)
 		t.Boot = strings.Join(boots, ",")
 		if len(boots) == 0 && (t.State == "running" || t.State == "") {
 			t.State = "missing"
@@ -553,15 +548,19 @@ func (ns *NodeState) container(i int) *NodeState {
 	return nil
 }
 
-// sumInstances gives a node with instances the sums of their counters and rates,
-// and the first of their last errors, prefixed with its instance; a node with one
-// container is its container already.
+// sumInstances gives a node with instances the sums of their counters and rates;
+// a node with one container is its container already.
 func (ns *NodeState) sumInstances() {
-	if len(ns.Instances) == 0 {
-		return
+	if len(ns.Instances) > 0 {
+		ns.sumCounts(ns.Instances)
 	}
+}
+
+// sumCounts gives ns the sums of cs's counters and rates, and the first of their
+// last errors, prefixed with its instance.
+func (ns *NodeState) sumCounts(cs []NodeState) {
 	ns.Total, ns.Errors, ns.Rate, ns.LastError = 0, 0, 0, ""
-	for _, in := range ns.Instances {
+	for _, in := range cs {
 		ns.Total += in.Total
 		ns.Errors += in.Errors
 		ns.Rate += in.Rate

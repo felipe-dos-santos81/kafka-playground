@@ -233,36 +233,34 @@ func TestPostJSONDoesNotFollowRedirects(t *testing.T) {
 
 func TestConsumerTransform(t *testing.T) {
 	var forwarded []string
-	p, err := compileTransform(`msg.qty > 0 ? {id: msg.id, total: msg.qty * msg.price} : nil`)
+	tr, err := newTransform(`msg.qty > 0 ? {id: msg.id, total: msg.qty * msg.price} : nil`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	c := &consumer{
-		spec:      NodeSpec{Topic: "orders", Forward: "totals", TransformNode: "transform-1"},
+		spec:      NodeSpec{Topic: "orders", Forward: "totals"},
 		tail:      &tail{},
 		counts:    &counters{},
-		transform: p,
-		steps:     &counters{},
+		transform: tr,
 		produce: func(_ context.Context, r *kgo.Record) error {
 			forwarded = append(forwarded, string(r.Key)+"="+string(r.Value))
 			return nil
 		},
 	}
-	for _, v := range []string{`{"id":1,"qty":2,"price":3}`, `{"id":2,"qty":0}`, `{"id":3,"qty":1}`, `{`} {
+	for _, v := range []string{`{"id":3,"qty":1}`, `{"id":1,"qty":2,"price":3}`, `{"id":2,"qty":0}`} {
 		if !c.handle(context.Background(), &kgo.Record{Topic: "orders", Key: []byte("k"), Value: []byte(v)}) {
 			t.Fatalf("%s: a transform outcome never holds back the commit", v)
 		}
 	}
-	// Only the first is forwarded, transformed and with its key: the second is
-	// dropped (nil), the third fails (no price: 1 * nil), the fourth is not JSON.
+	// The first fails (no price: 1 * nil), and the VM it ran on still runs the
+	// second, forwarded transformed and with its key; the third is dropped (nil).
 	if len(forwarded) != 1 || forwarded[0] != `k={"id":1,"total":6}` {
 		t.Fatalf("want only k={\"id\":1,\"total\":6} forwarded, got %q", forwarded)
 	}
-	step := c.steps.step()
-	if step.Total != 4 || step.Errors != 2 || !strings.Contains(step.LastError, "not valid JSON") {
-		t.Fatalf("the transform got 4 records and failed on 2, the last not JSON; got %+v", step)
+	if step := tr.counts.step(); step.Total != 3 || step.Errors != 1 {
+		t.Fatalf("the transform got 3 records and failed on 1; got %+v", step)
 	}
-	if s := c.counts.stats("b", c.tail.last()); s.Total != 4 || s.Errors != 2 || s.TailSeq != 4 || !strings.HasPrefix(s.LastError, "transform: ") {
-		t.Fatalf("the consumer still counts and tails every record, and counts the transform's failures as its own; got %+v", s)
+	if s := c.counts.stats("b", c.tail.last()); s.Total != 3 || s.Errors != 1 || s.TailSeq != 3 || !strings.HasPrefix(s.LastError, "transform: ") {
+		t.Fatalf("the consumer still counts and tails every record, and counts the transform's failure as its own; got %+v", s)
 	}
 }

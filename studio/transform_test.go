@@ -36,11 +36,11 @@ func TestRunTransform(t *testing.T) {
 		{`msg`, `{} {}`, "", "not valid JSON"},
 		{`msg.a / 0`, `{"a":1}`, "", "result:"},
 	} {
-		p, err := compileTransform(c.src)
+		tr, err := newTransform(c.src)
 		if err != nil {
 			t.Fatalf("%q: %v", c.src, err)
 		}
-		out, err := runTransform(p, []byte(c.value))
+		out, err := tr.run([]byte(c.value))
 		if c.errHas != "" {
 			if err == nil || !strings.Contains(err.Error(), c.errHas) || strings.Contains(err.Error(), "\n") {
 				t.Errorf("%q on %s: want a one-line error containing %q, got %v", c.src, c.value, c.errHas, err)

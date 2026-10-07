@@ -23,7 +23,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/expr-lang/expr/vm"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -101,10 +100,10 @@ func (t *tail) last() int64 {
 
 // nodeStats is what GET /stats answers; the control plane adds the container state.
 type nodeStats struct {
-	Boot      string               `json:"boot"` // random per process: a restarted container starts its counters and tail over
-	stepStats                      // records produced (producers) or fetched (consumers), the failures, the last one
-	TailSeq   int64                `json:"tailSeq"`         // seq of the newest tail record; the drawer fetches when it moves
-	Steps     map[string]stepStats `json:"steps,omitempty"` // a consumer's transform, by its node id
+	Boot      string     `json:"boot"` // random per process: a restarted container starts its counters and tail over
+	stepStats            // records produced (producers) or fetched (consumers), the failures, the last one
+	TailSeq   int64      `json:"tailSeq"`        // seq of the newest tail record; the drawer fetches when it moves
+	Step      *stepStats `json:"step,omitempty"` // a consumer's transform, when it runs one
 }
 
 // stepStats is what a counters reports: every record counted, the ones that
@@ -246,8 +245,7 @@ type consumer struct {
 	spec      NodeSpec
 	tail      *tail
 	counts    *counters
-	transform *vm.Program                                              // nil without a transform
-	steps     *counters                                                // the transform's own counts
+	transform *transform                                               // nil without one
 	post      func(ctx context.Context, url string, body []byte) error // the http sink
 	produce   func(context.Context, *kgo.Record) error                 // the forward
 }
@@ -269,10 +267,8 @@ func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
 	}
 	value := r.Value
 	if c.transform != nil {
-		c.steps.ok()
-		out, err := runTransform(c.transform, value)
+		out, err := c.transform.run(value)
 		if err != nil {
-			c.steps.fail(err)
 			c.counts.fail(fmt.Errorf("transform: %w", err))
 			log.Printf("transform: %v", err)
 		}
@@ -368,7 +364,7 @@ func runNode() {
 	defer stop()
 
 	t, counts, boot := &tail{}, &counters{}, NewID()
-	var steps *counters         // a consumer's transform counts; nil without one
+	var tr *transform           // a consumer's transform; nil without one
 	var consuming chan struct{} // closed when a consumer's poll loop has returned; nil for a producer
 	produce := func(ctx context.Context, rec *kgo.Record) error {
 		return cl.ProduceSync(ctx, rec).FirstErr()
@@ -380,8 +376,9 @@ func runNode() {
 	})
 	mux.HandleFunc("GET /stats", func(w http.ResponseWriter, r *http.Request) {
 		s := counts.stats(boot, t.last())
-		if steps != nil {
-			s.Steps = map[string]stepStats{spec.TransformNode: steps.step()}
+		if tr != nil {
+			step := tr.counts.step()
+			s.Step = &step
 		}
 		reply(w, http.StatusOK, s)
 	})
@@ -397,12 +394,10 @@ func runNode() {
 		})
 		c := &consumer{spec: spec, tail: t, counts: counts, post: postJSON, produce: produce}
 		if spec.Transform != "" {
-			p, err := compileTransform(spec.Transform)
-			if err != nil {
+			if tr, err = newTransform(spec.Transform); err != nil {
 				log.Fatal("transform: ", err) // Validate compiled the same source on deploy
 			}
-			steps = &counters{}
-			c.transform, c.steps = p, steps
+			c.transform = tr
 		}
 		consuming = make(chan struct{})
 		go func() {

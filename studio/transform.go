@@ -23,7 +23,7 @@ type transformEnv struct {
 	Msg any `expr:"msg"`
 }
 
-// compileTransform compiles src for runTransform.
+// compileTransform compiles src; Validate calls it on deploy, newTransform when a consumer starts.
 func compileTransform(src string) (*vm.Program, error) {
 	p, err := expr.Compile(src, expr.Env(transformEnv{}))
 	if err != nil {
@@ -32,9 +32,35 @@ func compileTransform(src string) (*vm.Program, error) {
 	return p, nil
 }
 
-// runTransform runs p over a record's value. A nil out with no error means the
-// program returned nil: the record is dropped, which is not an error.
-func runTransform(p *vm.Program, value []byte) (out []byte, err error) {
+// transform is one consumer's compiled expression, the VM it runs on (a consumer
+// handles one record at a time, so one VM serves them all) and its own counts.
+type transform struct {
+	program *vm.Program
+	vm      vm.VM
+	counts  counters
+}
+
+func newTransform(src string) (*transform, error) {
+	p, err := compileTransform(src)
+	if err != nil {
+		return nil, err
+	}
+	return &transform{program: p}, nil
+}
+
+// run runs the expression over a record's value and counts the outcome. A nil
+// out with no error means the program returned nil: the record is dropped,
+// which is not an error.
+func (t *transform) run(value []byte) ([]byte, error) {
+	t.counts.ok()
+	out, err := t.eval(value)
+	if err != nil {
+		t.counts.fail(err)
+	}
+	return out, err
+}
+
+func (t *transform) eval(value []byte) (out []byte, err error) {
 	d := json.NewDecoder(bytes.NewReader(value))
 	d.UseNumber()
 	var msg any
@@ -44,7 +70,7 @@ func runTransform(p *vm.Program, value []byte) (out []byte, err error) {
 	if _, err := d.Token(); err != io.EOF {
 		return nil, errInvalidJSON // trailing data after the value
 	}
-	res, err := expr.Run(p, transformEnv{Msg: numbers(msg)})
+	res, err := t.vm.Run(t.program, transformEnv{Msg: numbers(msg)})
 	if err != nil {
 		return nil, firstLine(err)
 	}

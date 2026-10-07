@@ -324,14 +324,14 @@ func TestApplySteps(t *testing.T) {
 	}
 	st := FlowState{Status: "running", Nodes: map[string]NodeState{
 		"consumer-1": {State: "exited", Instances: []NodeState{
-			{Instance: 1, State: "running", Boot: "a", steps: map[string]stepStats{"transform-1": {Total: 5, Errors: 1, LastError: "invalid operation"}}},
+			{Instance: 1, State: "running", Boot: "a", step: &stepStats{Total: 5, Errors: 1, LastError: "invalid operation"}},
 			{Instance: 2, State: "exited"},
 		}},
-		"consumer-2": {State: "running", Boot: "c", steps: map[string]stepStats{"transform-2": {Total: 3}}},
+		"consumer-2": {State: "running", Boot: "c", step: &stepStats{Total: 3}},
 		"consumer-3": {State: "running"},
 		"consumer-4": {State: "running", Instances: []NodeState{
-			{Instance: 1, State: "running", Boot: "a", steps: map[string]stepStats{"transform-3": {Total: 5, Errors: 1, LastError: "first"}}},
-			{Instance: 2, State: "running", Boot: "b", steps: map[string]stepStats{"transform-3": {Total: 3, LastError: "second"}}},
+			{Instance: 1, State: "running", Boot: "a", step: &stepStats{Total: 5, Errors: 1, LastError: "first"}},
+			{Instance: 2, State: "running", Boot: "b", step: &stepStats{Total: 3, LastError: "second"}},
 		}},
 		"consumer-5": {State: "running", Boot: "d"}, // runs, but no container reports transform-4
 	}}
