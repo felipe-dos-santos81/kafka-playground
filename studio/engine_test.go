@@ -241,21 +241,29 @@ func TestApplyKafka(t *testing.T) {
 		t.Fatalf("topic-1 is unaffected by topic-3's failure, got %+v", n)
 	}
 
-	// Lag counts only the partitions the group has committed (kadm says At -1 for
-	// the others, with a lag from the partition's start); none committed, no lag.
+	// A group with no commit yet shows no lag. Once it has one, a committed
+	// partition counts from its commit; one without (kadm says At -1, with a lag
+	// from the partition's start) counts from where auto_offset_reset starts: the
+	// start for earliest, nothing for latest.
 	uncommitted := kadm.GroupMemberLag{Topic: "orders", Partition: 0, Lag: 7, Commit: kadm.Offset{At: -1}}
 	committed := kadm.GroupMemberLag{Topic: "orders", Partition: 1, Lag: 2, Commit: kadm.Offset{At: 3}}
+	lagOf := func(n int64) *int64 { return &n }
 	for _, c := range []struct {
-		lag  map[int32]kadm.GroupMemberLag
-		want *int64
+		reset string
+		lag   map[int32]kadm.GroupMemberLag
+		want  *int64
 	}{
-		{map[int32]kadm.GroupMemberLag{0: uncommitted}, nil},
-		{map[int32]kadm.GroupMemberLag{0: uncommitted, 1: committed}, &committed.Lag},
+		{"earliest", map[int32]kadm.GroupMemberLag{0: uncommitted}, nil},
+		{"latest", map[int32]kadm.GroupMemberLag{0: uncommitted}, nil},
+		{"earliest", map[int32]kadm.GroupMemberLag{0: uncommitted, 1: committed}, lagOf(9)},
+		{"latest", map[int32]kadm.GroupMemberLag{0: uncommitted, 1: committed}, lagOf(2)},
 	} {
 		fresh := FlowState{Status: "running", Nodes: map[string]NodeState{"consumer-1": {State: "running"}}}
-		applyKafka(&fresh, "f", specs[1:2], nil, kadm.DescribedGroupLags{"g": {Group: "g", Lag: kadm.GroupLag{"orders": c.lag}}}, nil)
+		spec := specs[1]
+		spec.AutoOffsetReset = c.reset
+		applyKafka(&fresh, "f", []NodeSpec{spec}, nil, kadm.DescribedGroupLags{"g": {Group: "g", Lag: kadm.GroupLag{"orders": c.lag}}}, nil)
 		if got := fresh.Nodes["consumer-1"].Lag; (got == nil) != (c.want == nil) || got != nil && *got != *c.want {
-			t.Fatalf("lag over %v: got %v, want %v", c.lag, got, c.want)
+			t.Fatalf("%s lag over %v: got %v, want %v", c.reset, c.lag, got, c.want)
 		}
 	}
 
@@ -358,8 +366,8 @@ func TestApplySteps(t *testing.T) {
 			{Instance: 1, State: "running", Boot: "a", step: &tally{Total: 5, Errors: 1, LastError: "first"}},
 			{Instance: 2, State: "running", Boot: "b", step: &tally{Total: 3, LastError: "second"}},
 		}},
-		"consumer-5": {State: "running", Boot: "d"}, // runs, but no container reports transform-4
-		"consumer-6": {State: "running"},            // runs, but its /stats did not answer this tick
+		"consumer-5": {State: "running", Boot: "d", answered: true}, // answers, but no container reports transform-4
+		"consumer-6": {State: "running"},                            // runs, but its /stats did not answer this tick
 	}}
 	applySteps(&st, specs)
 	want := map[string]NodeState{
@@ -389,7 +397,7 @@ func TestStreamTicksEnds(t *testing.T) {
 		{"a failed flush", func(context.Context) (FlowState, error) { return FlowState{Status: "stopped"}, nil },
 			func() error { return errors.New("broken pipe") }, "event: tick\ndata: {\"status\":\"stopped\",\"nodes\":null}\n\n"},
 		{"the flow deleted", func(context.Context) (FlowState, error) { return FlowState{}, ErrNotFound },
-			func() error { return nil }, ""},
+			func() error { return nil }, "event: gone\ndata: {}\n\n"},
 	} {
 		var out bytes.Buffer
 		done := make(chan struct{})
@@ -415,18 +423,16 @@ func TestWithStats(t *testing.T) {
 		fmt.Fprint(w, `{"boot":"b","total":7,"errors":1,"lastError":"x","tailSeq":7}`)
 	}))
 	defer ts.Close()
-	old := time.Now().Add(-time.Minute).Unix()
-
-	got := withStats(context.Background(), ts.URL, NodeState{State: "running", created: old})
-	if got.Total != 7 || got.Errors != 1 || got.LastError != "x" || got.TailSeq != 7 || got.Boot != "b" || got.Warning != "" {
+	got := withStats(context.Background(), ts.URL, NodeState{State: "running"}, false)
+	if got.Total != 7 || got.Errors != 1 || got.LastError != "x" || got.TailSeq != 7 || got.Boot != "b" || got.Warning != "" || !got.answered {
 		t.Fatalf("a 200: want its counters, got %+v", got)
 	}
 	status = http.StatusInternalServerError
-	got = withStats(context.Background(), ts.URL, NodeState{State: "running", created: old})
-	if got.Total != 0 || got.LastError != "" || got.Warning != "stats: 500 Internal Server Error" {
+	got = withStats(context.Background(), ts.URL, NodeState{State: "running"}, false)
+	if got.Total != 0 || got.LastError != "" || got.Warning != "stats: 500 Internal Server Error" || got.answered {
 		t.Fatalf("a 500: want no numbers and the reason as a warning, got %+v", got)
 	}
-	if got = withStats(context.Background(), ts.URL, NodeState{State: "running", created: time.Now().Unix()}); got.Warning != "" {
+	if got = withStats(context.Background(), ts.URL, NodeState{State: "running"}, true); got.Warning != "" {
 		t.Fatalf("a container younger than statsGrace: want nothing said yet, got %+v", got)
 	}
 

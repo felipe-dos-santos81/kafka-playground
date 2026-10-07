@@ -36,9 +36,10 @@ export type LiveStatus = { kind: 'live' } | { kind: 'paused'; why: string } | { 
 // watch opens the flow's event stream: onTick gets a snapshot once a second, and
 // onStatus hears whenever the numbers stop being live. A `problem` event or a
 // dropped connection pauses them until the next tick (EventSource reconnects by
-// itself). A stream the server refused is either gone (the flow answers 404) or
-// reopened every 2 s (Vite's proxy answers 502 while studio is down). The
-// returned function closes the stream.
+// itself). The server ends a deleted flow's stream with a `gone` event. A stream
+// the server refused is either gone too (the flow answers 404: deleted while the
+// studio was down) or reopened every 2 s (Vite's proxy answers 502 while studio
+// is down). The returned function closes the stream.
 export function watch(id: string, onTick: (s: FlowState) => void, onStatus: (s: LiveStatus) => void): () => void {
   let es: EventSource
   let retry: ReturnType<typeof setTimeout> | undefined
@@ -56,6 +57,10 @@ export function watch(id: string, onTick: (s: FlowState) => void, onStatus: (s: 
       onTick(data(e))
     })
     es.addEventListener('problem', (e) => onStatus({ kind: 'paused', why: data(e).error }))
+    es.addEventListener('gone', () => {
+      es.close()
+      onStatus({ kind: 'gone' })
+    })
     es.onerror = () => {
       if (es.readyState !== EventSource.CLOSED) return onStatus({ kind: 'paused', why: 'connection lost, reconnecting' })
       api.get(id).then(

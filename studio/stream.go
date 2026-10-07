@@ -47,8 +47,8 @@ func rate(cur NodeState, prev *NodeState, dt float64) float64 {
 // the flow's snapshot as an SSE `tick` event with rates against the previous
 // tick (Δt between the two snapshots' starts); a failed snapshot is a `problem`
 // event and the stream goes on. It returns when ctx ends (the browser went
-// away), a flush fails, or the flow is gone: the browser's reconnect then gets
-// a 404. Each open stream polls on its own: one tab, one loop.
+// away), a flush fails, or the flow is gone: it then sends a `gone` event first,
+// and a reconnect would get a 404. Each open stream polls on its own: one tab, one loop.
 func streamTicks(ctx context.Context, w io.Writer, flush func() error, snap func(context.Context) (FlowState, error), every time.Duration) {
 	var prev FlowState
 	last := time.Now()
@@ -57,7 +57,12 @@ func streamTicks(ctx context.Context, w io.Writer, flush func() error, snap func
 	for {
 		start := time.Now()
 		st, err := snap(ctx)
-		if ctx.Err() != nil || errors.Is(err, ErrNotFound) {
+		if ctx.Err() != nil {
+			return
+		}
+		if errors.Is(err, ErrNotFound) { // the flow is gone: say so, and end the stream
+			fmt.Fprint(w, "event: gone\ndata: {}\n\n")
+			flush()
 			return
 		}
 		if err != nil {

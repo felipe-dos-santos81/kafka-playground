@@ -73,8 +73,8 @@ type NodeState struct {
 	Warning    string             `json:"warning,omitempty"`
 	Instances  []NodeState        `json:"instances,omitempty"`
 
-	step    *tally // a consumer container's transform counts; applySteps puts them on the transform node
-	created int64  // when the container was created (Unix seconds): withStats gives it statsGrace
+	step     *tally // a consumer container's transform counts; applySteps puts them on the transform node
+	answered bool   // its container's /stats answered in this snapshot
 }
 
 // A snapshot asks every running container for /stats in parallel and the broker
@@ -154,17 +154,23 @@ func (e *Engine) stop(ctx context.Context, id string) error {
 
 // stateOf is State for a flow already read from the store.
 func (e *Engine) stateOf(ctx context.Context, f Flow) (FlowState, error) {
+	st, _, err := e.stateAndContainers(ctx, f)
+	return st, err
+}
+
+// stateAndContainers is stateOf plus the flow's containers it was read from.
+func (e *Engine) stateAndContainers(ctx context.Context, f Flow) (FlowState, []container.Summary, error) {
 	cs, err := flowContainers(ctx, e.docker, f.ID)
 	if err != nil {
-		return FlowState{}, err
+		return FlowState{}, nil, err
 	}
 	st := FlowState{Status: "stopped", Nodes: map[string]NodeState{}}
 	if len(cs) == 0 {
-		return st, nil
+		return st, cs, nil
 	}
 	st.Status = "running"
 	st.Nodes = nodeStates(f, cs)
-	return st, nil
+	return st, cs, nil
 }
 
 // nodeStates is each producer and consumer node's state in a running flow: one
@@ -173,12 +179,12 @@ func (e *Engine) stateOf(ctx context.Context, f Flow) (FlowState, error) {
 // deploy, what the deploy ran decides between one container and instances: the
 // other kind's empty slots are dropped.
 func nodeStates(f Flow, cs []container.Summary) map[string]NodeState {
-	slots := map[string]map[int]container.Summary{} // node id → instance → its container
+	slots := map[string]map[int]string{} // node id → instance → container state
 	for _, n := range f.Nodes {
 		if n.Type == "producer" || n.Type == "consumer" {
-			slots[n.ID] = map[int]container.Summary{}
+			slots[n.ID] = map[int]string{}
 			for _, i := range instancesOf(n) {
-				slots[n.ID][i] = container.Summary{State: "missing"}
+				slots[n.ID][i] = "missing"
 			}
 		}
 	}
@@ -187,17 +193,17 @@ func nodeStates(f Flow, cs []container.Summary) map[string]NodeState {
 		node := c.Labels[labelNode]
 		i, _ := strconv.Atoi(c.Labels[labelInstance]) // no label: a node's only container, 0
 		if slots[node] == nil {
-			slots[node] = map[int]container.Summary{}
+			slots[node] = map[int]string{}
 		}
-		slots[node][i] = c
+		slots[node][i] = string(c.State)
 		ranInstances[node] = i > 0
 	}
 	nodes := map[string]NodeState{}
 	for node, insts := range slots {
 		if asInstances, deployed := ranInstances[node]; deployed {
-			for i, c := range insts {
+			for i, state := range insts {
 				isInstance := i > 0
-				if c.State == "missing" && isInstance != asInstances {
+				if state == "missing" && isInstance != asInstances {
 					delete(insts, i)
 				}
 			}
@@ -207,19 +213,19 @@ func nodeStates(f Flow, cs []container.Summary) map[string]NodeState {
 	return nodes
 }
 
-// nodeOf folds a node's containers into one NodeState: a lone instance 0 is the
-// node itself; otherwise every instance is an entry of Instances, in order, and
-// the node runs only when all of them run (else it takes the first other state).
-func nodeOf(insts map[int]container.Summary) NodeState {
-	if c, ok := insts[0]; ok && len(insts) == 1 {
-		return NodeState{State: string(c.State), created: c.Created}
+// nodeOf folds a node's container states into one NodeState: a lone instance 0
+// is the node itself; otherwise every instance is an entry of Instances, in
+// order, and the node runs only when all of them run (else it takes the first
+// other state).
+func nodeOf(insts map[int]string) NodeState {
+	if s, ok := insts[0]; ok && len(insts) == 1 {
+		return NodeState{State: s}
 	}
 	ns := NodeState{State: "running"}
 	for _, i := range slices.Sorted(maps.Keys(insts)) {
-		c := insts[i]
-		ns.Instances = append(ns.Instances, NodeState{Instance: i, State: string(c.State), created: c.Created})
-		if ns.State == "running" && c.State != "running" {
-			ns.State = string(c.State)
+		ns.Instances = append(ns.Instances, NodeState{Instance: i, State: insts[i]})
+		if ns.State == "running" && insts[i] != "running" {
+			ns.State = insts[i]
 		}
 	}
 	return ns
@@ -244,9 +250,15 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 	if err != nil {
 		return FlowState{}, err
 	}
-	st, err := e.stateOf(ctx, f)
+	st, cs, err := e.stateAndContainers(ctx, f)
 	if err != nil || st.Status != "running" {
 		return st, err
+	}
+	created := map[string]time.Time{} // container name → when it was created
+	for _, c := range cs {
+		if len(c.Names) > 0 {
+			created[strings.TrimPrefix(c.Names[0], "/")] = time.Unix(c.Created, 0)
+		}
 	}
 	// Every running container's /stats and the broker's end offsets at once, while
 	// this goroutine asks for lag, all under one budget; each goroutine writes only
@@ -259,7 +271,9 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 		nodes[node] = &ns
 		for _, c := range ns.containers() {
 			if c.State == "running" {
-				wg.Go(func() { *c = withStats(bctx, nodeRef{id, node, c.Instance}.url("/stats"), *c) })
+				r := nodeRef{id, node, c.Instance}
+				starting := time.Since(created[r.name()]) < statsGrace
+				wg.Go(func() { *c = withStats(bctx, r.url("/stats"), *c, starting) })
 			}
 		}
 	}
@@ -309,18 +323,23 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 
 // withStats is ns (a node, or one of its instances) with the counters its
 // container reports at url. A container that does not answer keeps no numbers,
-// and its warning says why once it is older than statsGrace.
-func withStats(ctx context.Context, url string, ns NodeState) NodeState {
+// and its warning says why unless it is starting (created less than statsGrace ago).
+func withStats(ctx context.Context, url string, ns NodeState, starting bool) NodeState {
 	s, err := nodeStatsOf(ctx, url)
 	if err != nil {
-		if time.Since(time.Unix(ns.created, 0)) >= statsGrace {
+		if !starting {
 			ns.Warning = "stats: " + err.Error()
 		}
 		return ns
 	}
-	ns.Total, ns.Errors, ns.LastError, ns.TailSeq, ns.Boot = s.Total, s.Errors, s.LastError, s.TailSeq, s.Boot
-	ns.step = s.Step
+	ns.setCounts(s.tally)
+	ns.TailSeq, ns.Boot, ns.step, ns.answered = s.TailSeq, s.Boot, s.Step, true
 	return ns
+}
+
+// setCounts puts a container's tally into ns.
+func (ns *NodeState) setCounts(t tally) {
+	ns.Total, ns.Errors, ns.LastError = t.Total, t.Errors, t.LastError
 }
 
 // applySteps gives each transform node its consumer node's state and the counts
@@ -338,11 +357,13 @@ func applySteps(st *FlowState, specs []NodeSpec) {
 		t := NodeState{State: consumer.State}
 		var steps []NodeState
 		var boots []string
-		answered := false // a container's /stats answered (it has a boot)
+		answered := false
 		for _, c := range consumer.containers() {
-			answered = answered || c.Boot != ""
+			answered = answered || c.answered
 			if c.step != nil {
-				steps = append(steps, NodeState{Instance: c.Instance, Total: c.step.Total, Errors: c.step.Errors, LastError: c.step.LastError})
+				step := NodeState{Instance: c.Instance}
+				step.setCounts(*c.step)
+				steps = append(steps, step)
 				boots = append(boots, c.Boot)
 			}
 		}
@@ -378,8 +399,10 @@ func nodeStatsOf(ctx context.Context, url string) (nodeStats, error) {
 // applyKafka adds the broker's view to a running flow's snapshot: for each topic
 // node its partition count and end offset summed over partitions (with a warning
 // when the count is not the flow's; a topic with a failed partition is left out),
-// for each consumer node its group's lag on its topic (over the partitions the
-// group has committed; none committed yet, no lag) and the partitions whose
+// for each consumer node its group's lag on its topic (none until the group has
+// committed; then committed partitions from their commit, the others from where
+// auto_offset_reset starts: the beginning for earliest, nothing for latest) and
+// the partitions whose
 // group member is this node's client (or, for a node whose snapshot state lists
 // instances, each instance's client: the containers that run, not what the file
 // now says). Whatever the broker did not answer is left out.
@@ -421,13 +444,17 @@ func applyKafka(st *FlowState, flow string, specs []NodeSpec, topics map[string]
 		for _, c := range ns.containers() {
 			client[nodeRef{flow, s.Node, c.Instance}.name()] = c
 		}
-		var lag int64
+		var lag, fromReset int64 // over committed partitions; over the others, by auto_offset_reset
 		committed := false
 		held := map[*NodeState][]int32{} // container → partitions its client holds
 		for _, ml := range gl.Lag[s.Topic] {
-			if ml.Err == nil && ml.Commit.At >= 0 { // At -1: no commit, so kadm's lag runs from the start
+			switch {
+			case ml.Err != nil:
+			case ml.Commit.At >= 0:
 				committed = true
 				lag += max(ml.Lag, 0)
+			case s.AutoOffsetReset != "latest": // no commit: kadm's lag runs from the partition's start
+				fromReset += max(ml.Lag, 0)
 			}
 			if ml.Member != nil {
 				if c, ok := client[ml.Member.ClientID]; ok {
@@ -435,7 +462,8 @@ func applyKafka(st *FlowState, flow string, specs []NodeSpec, topics map[string]
 				}
 			}
 		}
-		if committed {
+		if committed { // a group with no commit yet shows no lag at all
+			lag += fromReset
 			ns.Lag = &lag
 		}
 		for c, ps := range held {

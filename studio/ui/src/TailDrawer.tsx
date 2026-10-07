@@ -12,28 +12,23 @@ type Props = {
   boot?: string
 }
 
-// The selected node's last records. It fetches only when the node's tailSeq (from
-// the SSE tick) moves past what it has, one fetch at a time (when one ends, it
-// keeps fetching until it has caught up with the newest tailSeq; a failed one is
-// retried a second later), and starts over when boot changes: the container restarted and numbers
-// its records from 1 again. It follows the newest record only while scrolled to
-// the bottom. A producer's drawer also has Send, which renders the node's own key
-// and value templates. A consumer with instances tails one of them, picked in the
-// header.
-export default function TailDrawer({ flowId, node, instance, instances, onInstance, tailSeq = 0, boot = '' }: Props) {
+// useTail keeps the last 100 records of one node container. It fetches only when
+// tailSeq (from the SSE tick) moves past what it has, one fetch loop at a time
+// that keeps going until it has caught up with the newest tailSeq; a failed fetch
+// is retried a second later. It starts over when boot changes: the container
+// restarted and numbers its records from 1 again (a tick without stats carries
+// boot "", which is no restart).
+function useTail(flowId: string, nodeId: string, instance: number, tailSeq: number, boot: string) {
   const [entries, setEntries] = useState<TailEntry[]>([])
   const [error, setError] = useState('')
-  const [sent, setSent] = useState('')
   const [retry, setRetry] = useState(0) // bumped a second after a failed fetch, to fetch again
   const since = useRef(0)
   const latest = useRef(tailSeq) // the newest tailSeq a tick brought, read by a fetch in flight
   const fetching = useRef(false)
   const generation = useRef(0) // bumped on a restart: a fetch from before it is dropped
-  const atBottom = useRef(true)
-  const box = useRef<HTMLElement>(null)
-
-  // A tick without stats carries boot "": only a different non-empty boot is a restart.
   const lastBoot = useRef('')
+  const behind = () => since.current < latest.current
+
   useEffect(() => {
     if (!boot || boot === lastBoot.current) return
     lastBoot.current = boot
@@ -46,17 +41,14 @@ export default function TailDrawer({ flowId, node, instance, instances, onInstan
     latest.current = tailSeq
   }, [tailSeq])
 
-  // One fetch loop at a time, until it has caught up with the newest tailSeq; it
-  // stops early when the container restarts (the next tick starts it again from 0)
-  // or a fetch fails (retried a second later).
   useEffect(() => {
-    if (fetching.current || tailSeq <= since.current) return
+    if (fetching.current || !behind()) return
     fetching.current = true
     const gen = generation.current
     const catchUp = async () => {
       try {
-        while (gen === generation.current && since.current < latest.current) {
-          const got = await api.tail(flowId, node.id, since.current, instance)
+        while (gen === generation.current && behind()) {
+          const got = await api.tail(flowId, nodeId, since.current, instance)
           if (gen !== generation.current || got.length === 0) return
           setError('')
           since.current = got[got.length - 1].seq
@@ -71,7 +63,20 @@ export default function TailDrawer({ flowId, node, instance, instances, onInstan
       }
     }
     catchUp()
-  }, [flowId, node.id, instance, tailSeq, retry])
+  }, [flowId, nodeId, instance, tailSeq, retry])
+
+  return { entries, error }
+}
+
+// The selected node's last records (useTail), following the newest only while
+// scrolled to the bottom. A producer's drawer also has Send, which renders the
+// node's own key and value templates. A consumer with instances tails one of
+// them, picked in the header.
+export default function TailDrawer({ flowId, node, instance, instances, onInstance, tailSeq = 0, boot = '' }: Props) {
+  const { entries, error } = useTail(flowId, node.id, instance, tailSeq, boot)
+  const [sent, setSent] = useState('')
+  const atBottom = useRef(true)
+  const box = useRef<HTMLElement>(null)
 
   // Follow the newest record, unless scrolled up to read an older one.
   useEffect(() => {
