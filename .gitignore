@@ -8,3 +8,9 @@
 .DS_Store
 .idea/
 .vscode/
+
+# Studio build output and dependencies
+/studio/studio
+/studio/ui/node_modules/
+/studio/ui/dist/*
+!/studio/ui/dist/.gitkeep

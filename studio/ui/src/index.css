@@ -1,0 +1,31 @@
+:root { font-family: system-ui, sans-serif; font-size: 14px; color: #222; }
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; }
+.studio {
+  display: grid; height: 100%;
+  grid-template-rows: 44px 1fr;
+  grid-template-columns: 220px 1fr 320px;
+  grid-template-areas: "top top top" "side canvas inspector";
+}
+.topbar { grid-area: top; display: flex; gap: 8px; align-items: center; padding: 0 12px; border-bottom: 1px solid #ddd; }
+.topbar input { font: inherit; padding: 4px 6px; width: 240px; }
+.topbar .error { color: #b00020; margin-left: auto; }
+.side { grid-area: side; padding: 12px; border-right: 1px solid #ddd; overflow: auto; }
+.side h2, .inspector h2 { font-size: 14px; margin: 0 0 8px; text-transform: capitalize; }
+.canvas { grid-area: canvas; }
+.inspector { grid-area: inspector; padding: 12px; border-left: 1px solid #ddd; overflow: auto; }
+.inspector label { display: block; margin: 8px 0 2px; font-weight: 600; }
+.inspector input, .inspector select, .inspector textarea { width: 100%; padding: 4px 6px; font: inherit; }
+.inspector textarea { font-family: ui-monospace, monospace; min-height: 80px; }
+.flows { list-style: none; padding: 0; margin: 0 0 16px; }
+.flows li { display: flex; justify-content: space-between; padding: 4px 0; cursor: pointer; }
+.flows li.current { font-weight: 600; }
+.palette-item { padding: 8px; margin: 6px 0; border: 2px solid #999; border-radius: 4px; cursor: grab; background: #fff; }
+.hint { color: #666; font-size: 12px; }
+.node { min-width: 160px; padding: 6px 10px; border: 2px solid #999; border-radius: 6px; background: #fff; }
+.node.selected { box-shadow: 0 0 0 2px #1976d2; }
+.node-title { font-weight: 600; }
+.node-summary { color: #555; font-size: 12px; }
+.producer { border-color: #2e7d32; }
+.topic { border-color: #ef6c00; }
+.consumer { border-color: #1565c0; }
