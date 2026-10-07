@@ -1,6 +1,6 @@
 import { createContext, useContext, type ReactNode } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import type { NodeRuntime } from '../flow/api'
+import { containersOf, type NodeRuntime } from '../flow/api'
 import { DEFAULT_INTERVAL_MS, hasInput, hasOutput, type NodeType } from '../flow/schema'
 import type { ConsumerNode, ProducerNode, TopicNode, TransformNode } from './types'
 
@@ -15,13 +15,9 @@ function runtimeLine(type: NodeType, rt: NodeRuntime): string {
   const parts = [`${rt.total ?? 0} msgs`, `${(rt.rate ?? 0).toFixed(1)}/s`]
   if (rt.errors) parts.push(`${rt.errors} errors`)
   if (rt.lag !== undefined) parts.push(`lag ${rt.lag}`)
-  const held = (a?: Record<string, number[]>) => Object.values(a ?? {}).flat()
-  if (rt.instances) {
-    for (const i of rt.instances) {
-      if (held(i.assigned).length > 0) parts.push(`#${i.instance} p${held(i.assigned).join(',')}`)
-    }
-  } else if (held(rt.assigned).length > 0) {
-    parts.push(`p${held(rt.assigned).join(',')}`)
+  for (const c of containersOf(rt)) {
+    const held = Object.values(c.assigned ?? {}).flat() // partitions this container's client holds
+    if (held.length > 0) parts.push(`${c.instance ? `#${c.instance} ` : ''}p${held.join(',')}`)
   }
   return parts.join(' · ')
 }
@@ -32,16 +28,17 @@ function runtimeLine(type: NodeType, rt: NodeRuntime): string {
 // allowed-edge table gives its type.
 function Shell({ id, type, selected, children }: { id: string; type: NodeType; selected?: boolean; children: ReactNode }) {
   const rt = useContext(RuntimeContext)[id]
-  const up = rt?.instances?.filter((i) => i.state === 'running').length ?? 0
-  const badge = rt?.instances ? `${up}/${rt.instances.length} running` : rt?.state
-  const badgeClass = rt?.instances ? (up === rt.instances.length ? 'running' : 'exited') : rt?.state
+  const containers = rt ? containersOf(rt) : []
+  const runningCount = containers.filter((c) => c.state === 'running').length
+  const badge = rt?.instances ? `${runningCount}/${containers.length} running` : rt?.state
+  const badgeClass = rt?.instances ? (runningCount === containers.length ? 'running' : 'exited') : rt?.state
   return (
     <div className={`node ${type}${selected ? ' selected' : ''}`} title={rt?.lastError || undefined}>
       <div className="node-title">
         {type} {rt && <span className={`node-state ${badgeClass}`}>{badge}</span>}
       </div>
       <div className="node-summary">{children}</div>
-      {rt && (type === 'topic' || rt.state === 'running' || up > 0) && <div className="node-runtime">{runtimeLine(type, rt)}</div>}
+      {rt && (type === 'topic' || runningCount > 0) && <div className="node-runtime">{runtimeLine(type, rt)}</div>}
       {hasInput(type) && <Handle type="target" position={Position.Left} />}
       {hasOutput(type) && <Handle type="source" position={Position.Right} />}
     </div>

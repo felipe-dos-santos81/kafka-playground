@@ -96,7 +96,8 @@ func TestPickInstance(t *testing.T) {
 		errHas string // "" means no error
 	}{
 		{"single", single, 0, 0, ""},
-		{"single asked for an instance", single, 2, 0, "no instance 2"},
+		{"single is its own instance 1", single, 1, 0, ""},
+		{"single asked for another instance", single, 2, 0, "no instance 2"},
 		{"single exited", NodeState{State: "exited"}, 0, 0, "is exited"},
 		{"multi defaults to its first", multi, 0, 1, ""},
 		{"multi, a stopped instance", multi, 2, 0, "instance 2 is exited"},
@@ -120,8 +121,8 @@ func TestApplyKafkaInstances(t *testing.T) {
 		{Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "g", Instance: 1},
 		{Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "g", Instance: 2},
 	}
-	one := &kadm.DescribedGroupMember{ClientID: containerName("f", "consumer-1", 1)}
-	two := &kadm.DescribedGroupMember{ClientID: containerName("f", "consumer-1", 2)}
+	one := &kadm.DescribedGroupMember{ClientID: nodeRef{"f", "consumer-1", 1}.name()}
+	two := &kadm.DescribedGroupMember{ClientID: nodeRef{"f", "consumer-1", 2}.name()}
 	lags := kadm.DescribedGroupLags{"g": {Group: "g", Lag: kadm.GroupLag{"orders": {
 		0: {Topic: "orders", Partition: 0, Lag: 1, Member: two},
 		1: {Topic: "orders", Partition: 1, Lag: 2, Member: one},
@@ -155,7 +156,7 @@ func TestApplyKafkaFollowsWhatRuns(t *testing.T) {
 
 	// Deployed with one container, file edited to two instances since.
 	st := FlowState{Status: "running", Nodes: map[string]NodeState{"consumer-1": {State: "running"}}}
-	applyKafka(&st, "f", []NodeSpec{spec(1), spec(2)}, nil, lags(containerName("f", "consumer-1", 0)), nil)
+	applyKafka(&st, "f", []NodeSpec{spec(1), spec(2)}, nil, lags(nodeRef{"f", "consumer-1", 0}.name()), nil)
 	if a := st.Nodes["consumer-1"].Assigned; !reflect.DeepEqual(a, map[string][]int32{"orders": {0}}) {
 		t.Fatalf("single container, file says 2: want [0] on the node, got %v", a)
 	}
@@ -163,7 +164,7 @@ func TestApplyKafkaFollowsWhatRuns(t *testing.T) {
 	// Deployed with three instances, file edited to one since.
 	st = FlowState{Status: "running", Nodes: map[string]NodeState{"consumer-1": {State: "running", Instances: []NodeState{
 		{Instance: 1, State: "running"}, {Instance: 2, State: "running"}, {Instance: 3, State: "running"}}}}}
-	applyKafka(&st, "f", []NodeSpec{spec(0)}, nil, lags(containerName("f", "consumer-1", 2), containerName("f", "consumer-1", 3), containerName("f", "consumer-1", 1)), nil)
+	applyKafka(&st, "f", []NodeSpec{spec(0)}, nil, lags(nodeRef{"f", "consumer-1", 2}.name(), nodeRef{"f", "consumer-1", 3}.name(), nodeRef{"f", "consumer-1", 1}.name()), nil)
 	c := st.Nodes["consumer-1"]
 	if c.Assigned != nil {
 		t.Fatalf("instances: want no node-level assignment, got %v", c.Assigned)
@@ -187,8 +188,8 @@ func TestApplyKafka(t *testing.T) {
 		{Node: "consumer-2", Type: "consumer", Topic: "orders", Group: "g"},
 	}
 	topics := map[string]TopicData{"topic-1": {Name: "orders", Partitions: 2}, "topic-2": {Name: "gone", Partitions: 1}}
-	one := &kadm.DescribedGroupMember{ClientID: containerName("f", "consumer-1", 0)}
-	two := &kadm.DescribedGroupMember{ClientID: containerName("f", "consumer-2", 0)}
+	one := &kadm.DescribedGroupMember{ClientID: nodeRef{"f", "consumer-1", 0}.name()}
+	two := &kadm.DescribedGroupMember{ClientID: nodeRef{"f", "consumer-2", 0}.name()}
 	lags := kadm.DescribedGroupLags{"g": {Group: "g", Lag: kadm.GroupLag{"orders": {
 		0: {Topic: "orders", Partition: 0, Lag: 2, Member: one},
 		1: {Topic: "orders", Partition: 1, Lag: 3, Member: two},

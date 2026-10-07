@@ -21,8 +21,8 @@ func TestResolve(t *testing.T) {
 	if want := []TopicData{{Name: "orders", Partitions: 3, ReplicationFactor: 1}}; !reflect.DeepEqual(topics, want) {
 		t.Fatalf("topics: got %+v, want %+v", topics, want)
 	}
-	if got := containerName("0a1b2c3d", "consumer-1", 0); got != "studio-0a1b2c3d-consumer-1" {
-		t.Fatalf("containerName: %s", got)
+	if got := (nodeRef{"0a1b2c3d", "consumer-1", 0}).name(); got != "studio-0a1b2c3d-consumer-1" {
+		t.Fatalf("container name: %s", got)
 	}
 }
 
@@ -56,24 +56,8 @@ func TestResolveInstances(t *testing.T) {
 			t.Fatalf("instance %d:\n got %+v\nwant %+v", i+1, s, want)
 		}
 	}
-	if got := containerName("0a1b2c3d", "consumer-1", 2); got != "studio-0a1b2c3d-consumer-1-2" {
-		t.Fatalf("containerName of instance 2: %s", got)
-	}
-}
-
-func TestClashes(t *testing.T) {
-	specs := []NodeSpec{
-		{Flow: "f", Node: "consumer-1", Instance: 1},
-		{Flow: "f", Node: "consumer-1", Instance: 2},
-		{Flow: "f", Node: "consumer-1-2"},
-		{Flow: "f", Node: "consumer-2"},
-	}
-	ps := clashes(specs)
-	if len(ps) != 1 || ps[0].Node != "consumer-1-2" || !strings.Contains(ps[0].Message, "studio-f-consumer-1-2") {
-		t.Fatalf("want one clash on consumer-1-2 naming the container, got %v", ps)
-	}
-	if ps := clashes(specs[:2]); ps != nil {
-		t.Fatalf("a node's own instances do not clash, got %v", ps)
+	if got := (nodeRef{"0a1b2c3d", "consumer-1", 2}).name(); got != "studio-0a1b2c3d-consumer-1-2" {
+		t.Fatalf("container name of instance 2: %s", got)
 	}
 }
 

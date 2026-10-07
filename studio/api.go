@@ -231,7 +231,7 @@ func (s *server) nodeProxy(path string) http.HandlerFunc {
 			engineErr(w, err)
 			return
 		}
-		proxy(w, r, nodeURL(id, node, instance, path+"?"+r.URL.RawQuery))
+		proxy(w, r, nodeRef{id, node, instance}.url(path+"?"+r.URL.RawQuery))
 	}
 }
 

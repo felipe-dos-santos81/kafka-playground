@@ -30,6 +30,12 @@ const (
 	nodeAddr     = ":9000"
 	tailSize     = 100     // records a node keeps for the tail
 	tailValueMax = 4 << 10 // bytes of a value the tail keeps
+
+	// Stop budgets, inside the stopGraceSeconds a stopped container gets: the batch
+	// in hand, then the commit, then the HTTP server, with Close left the rest.
+	batchWait      = (stopGraceSeconds - 2) * time.Second
+	commitBudget   = time.Second
+	shutdownBudget = time.Second
 )
 
 var errInvalidJSON = errors.New("value is not valid JSON")
@@ -317,7 +323,7 @@ func runNode() {
 	if brokers == "" {
 		log.Fatal("KAFKA_BROKERS is required")
 	}
-	opts := []kgo.Opt{kgo.SeedBrokers(brokers), kgo.ClientID(containerName(spec.Flow, spec.Node, spec.Instance))}
+	opts := []kgo.Opt{kgo.SeedBrokers(brokers), kgo.ClientID(spec.ref().name())}
 	if spec.Type == "consumer" {
 		reset := kgo.NewOffset().AtStart()
 		if spec.AutoOffsetReset == "latest" {
@@ -371,19 +377,19 @@ func runNode() {
 	log.Printf("node %s (%s) on topic %s, boot %s", spec.Node, spec.Type, spec.Topic, boot)
 
 	<-ctx.Done()
-	if consuming != nil { // let the batch in hand finish its sink and forward (Stop gives 5 s)
+	if consuming != nil { // let the batch in hand finish its sink and forward
 		select {
 		case <-consuming:
-		case <-time.After(3 * time.Second):
-			log.Print("stop: the batch in hand did not finish in 3 s; its unhandled records stay uncommitted")
+		case <-time.After(batchWait):
+			log.Printf("stop: the batch in hand did not finish in %s; its unhandled records stay uncommitted", batchWait)
 		}
-		commit, cancel := context.WithTimeout(context.Background(), time.Second)
+		commit, cancel := context.WithTimeout(context.Background(), commitBudget)
 		if err := cl.CommitMarkedOffsets(commit); err != nil {
 			log.Printf("stop: commit: %v", err)
 		}
 		cancel()
 	}
-	shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
+	shutdown, cancel := context.WithTimeout(context.Background(), shutdownBudget)
 	defer cancel()
 	srv.Shutdown(shutdown)
 	cl.Close()

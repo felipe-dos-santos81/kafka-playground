@@ -119,6 +119,20 @@ func TestValidate(t *testing.T) {
 			f.Nodes = append(f.Nodes, node("transform-1", "transform", `{"expr":"msg"}`))
 			f.Edges = append(f.Edges, edge("consumer-1", "transform-1"), edge("transform-1", "topic-1"))
 		}, `forwarding loops back to topic "orders"`},
+		{"loop names the topic its consumer reads", Deploy, func(f *Flow) {
+			// consumer-2 comes first, so the loop is found starting from it: it reads
+			// topic-2 ("archive") and forwards to topic-1 ("orders").
+			f.Nodes = append([]Node{node("consumer-2", "consumer", `{"group":"g2"}`), node("topic-2", "topic", topic("archive"))}, f.Nodes...)
+			f.Edges = append(f.Edges, edge("consumer-1", "topic-2"), edge("topic-2", "consumer-2"), edge("consumer-2", "topic-1"))
+		}, `forwarding loops back to topic "archive", which it reads`},
+		{"instances valid", Deploy, func(f *Flow) {
+			f.Nodes[2].Data = json.RawMessage(`{"group":"g","instances":3}`)
+		}, ""},
+		{"instance container name clash", Deploy, func(f *Flow) {
+			f.Nodes[2].Data = json.RawMessage(`{"group":"g","instances":2}`)
+			f.Nodes = append(f.Nodes, node("consumer-1-2", "consumer", `{"group":"h"}`))
+			f.Edges = append(f.Edges, edge("topic-1", "consumer-1-2"))
+		}, "-consumer-1-2 is also node consumer-1's"},
 		{"forward chain valid", Deploy, func(f *Flow) {
 			f.Nodes = append(f.Nodes, node("topic-2", "topic", topic("archive")), node("consumer-2", "consumer", `{"group":"g2"}`))
 			f.Edges = append(f.Edges, edge("consumer-1", "topic-2"), edge("topic-2", "consumer-2"))

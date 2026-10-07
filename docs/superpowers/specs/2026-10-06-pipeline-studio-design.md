@@ -139,7 +139,7 @@ patterns, `embed` + `http.FileServerFS` for the UI, `encoding/json`, `os`.
 | `POST /api/flows/{id}/deploy` | validate → create topics → start containers | 422 `{errors:[{node, message}]}`, 409 already running, 502 Docker/Kafka failure (after rollback) |
 | `POST /api/flows/{id}/stop` | stop + remove the flow's containers | 404, 409 not running |
 | `POST /api/flows/{id}/nodes/{node}/send?key=` | body = JSON value (key from `?key=`), or empty to render the node's own key and value templates with the next `.Seq` (the UI's Send button); proxied to the producer container's `/send`; returns `{partition, offset}`. The body form is the webhook URL | 400 invalid JSON, 409 not running, 502 |
-| `GET /api/flows/{id}/nodes/{node}/tail?since=N&instance=I` | last ≤ 100 records with `seq > N`, proxied from the node; `instance` (M4, default 1) picks one of a consumer's instances | 409 |
+| `GET /api/flows/{id}/nodes/{node}/tail?since=N&instance=I` | last ≤ 100 records with `seq > N`, proxied from the node; `instance` (M4, default 1) picks one of a consumer's instances; a node with one container is its own instance 1 | 409 |
 | `GET /api/flows/{id}/state` | the flow's snapshot, as an SSE tick carries it but without rates: container states, each running node's counters, consumer lag and partitions, topic partitions and end offsets | 404 |
 | `GET /api/flows/{id}/events` | SSE stream of `tick` snapshots (section 3.6) | 404 |
 
@@ -250,17 +250,23 @@ Inside a node container:
   with `.Seq`, `.Now`, `.Rand`) and calls `Produce` with a callback that
   updates counters and the tail. `/send` is accepted in both modes.
 - **Consumer:** one `kgo.Client` with `ConsumerGroup`, `ConsumeTopics`,
-  `ConsumeResetOffset`; a `PollFetches` loop; per record: append to the tail, then the
-  sink — `log` (each record also goes to the container's stdout, so `docker logs` shows it), `http` (POST the value, 5 s timeout, non-2xx
-  counts as an error), then the transform if any (M5), and if the node forwards, `ProduceSync` to that
-  topic with the same key (through the same client). A failed sink, transform
-  or forward counts as an error and is not retried; the offset still commits,
-  so a failed forward loses that record (at-most-once for forwards). The
-  `http` sink sends `Content-Type: application/json`; the image carries a CA
-  bundle from M4 so `https` works. Default autocommit; on
-  SIGTERM the client is closed, which commits and leaves the group. `docker
-  rm -f` (SIGKILL) skips that, so uncommitted records are redelivered —
-  at-least-once, on purpose, worth a README line.
+  `ConsumeResetOffset` and `AutoCommitMarks`; a `PollFetches` loop; per record:
+  append to the tail, then the sink — `log` (each record also goes to the
+  container's stdout, so `docker logs` shows it), `http` (POST the value with
+  `Content-Type: application/json`, 5 s timeout, redirects not followed, any
+  answer but 2xx counts as an error) — then the transform if any (M5), and if the
+  node forwards, `ProduceSync` to that topic with the same key (through the same
+  client, 10 s timeout). The sink and the forward are independent: a failed sink
+  does not stop the forward. A failed sink, transform or forward counts as an
+  error and is not retried. Once handled, the record is marked, and only marked
+  records are committed (autocommit of marks): a failed forward is still marked,
+  so that record is lost to the next topic (at-most-once for forwards), except
+  when it failed because the client was closing, which leaves it unmarked and
+  redelivered. The image carries a CA bundle from M4 so `https` sinks work. On
+  SIGTERM the node finishes the batch in hand (up to 3 s of the 5 s stop
+  grace), commits what is marked, and closes the client, which leaves the
+  group. `docker rm -f` (SIGKILL) skips that, so unmarked and uncommitted
+  records are redelivered — at-least-once, on purpose, worth a README line.
 - **Stats:** counters count records where they pass — produced by a producer, fetched by a consumer — with fetch and produce errors and the last error; `/stats` returns `{boot, total, errors, lastError, tailSeq}` (from M5 also `steps: {<transform id>: {total, errors, lastError}}` on a consumer that runs a transform), where `boot` is random per process so a restarted container starts over visibly. `/tail?since=` returns records from a 100-entry ring buffer (values truncated to 4 KiB). The control plane adds the container state from Docker and lag and partitions from the broker. The HTTP server listens on `:9000` inside the compose network only.
 
 ### 3.5 State store
@@ -277,7 +283,7 @@ Inside a node container:
 
 ### 3.6 Live status to the browser: SSE
 
-One `EventSource` per open flow on `GET /api/flows/{id}/events`. Each open stream runs its own loop: every second it takes a snapshot — `ContainerList` by label (container states), `GET /stats` on every running node container, `adm.Lag` for the flow's groups and `adm.ListEndOffsets` for its topics — computes `rate = Δtotal / Δt` against its previous snapshot (none when a node's `boot` changed), and sends it as a `tick`. The loop ends when `r.Context()` is done. One tab is one loop; a poller shared between streams is an optimisation for many viewers. A consumer node's `assigned` partitions come from the group description in `adm.Lag`, whose members carry the node's container name as their client id. From M4, a consumer with `instances` > 1 also carries `instances: [{instance, state, total, rate, errors, lastError, tailSeq, boot, assigned}]`, one entry per container; its node-level `total`, `rate` and `errors` are the sums, `lag` stays the group's, and its `state` is `running` only when every instance runs (otherwise the first instance's state that is not). From M5 a transform node carries its consumer's state and the counters the consumer reports for it under `steps`.
+One `EventSource` per open flow on `GET /api/flows/{id}/events`. Each open stream runs its own loop: every second it takes a snapshot — `ContainerList` by label (container states), `GET /stats` on every running node container, `adm.Lag` for the flow's groups and `adm.ListEndOffsets` for its topics — computes `rate = Δtotal / Δt` against its previous snapshot (none when a node's `boot` changed), and sends it as a `tick`. The loop ends when `r.Context()` is done. One tab is one loop; a poller shared between streams is an optimisation for many viewers. A consumer node's `assigned` partitions come from the group description in `adm.Lag`, whose members carry the node's container name as their client id. From M4, a consumer with `instances` > 1 also carries `instances: [{instance, state, total, rate, errors, lastError, tailSeq, boot, assigned}]`, one entry per container; its node-level `total`, `rate` and `errors` are the sums, `lag` stays the group's, and its `state` is `running` only when every instance runs (otherwise the first instance's state that is not); its `lastError` is the first instance's that has one, prefixed `#<i>: `. From M5 a transform node carries its consumer's state and the counters the consumer reports for it under `steps`.
 
 ```
 event: tick
@@ -410,7 +416,7 @@ record and forward it to `orders-archive`.
 | consumer | `group` | M2 | non-empty, ≤ 255 chars |
 | | `auto_offset_reset` | M2 | `earliest` (default) or `latest` |
 | | `sink` | M2 | `{"kind":"log"}` (M2) or `{"kind":"http","url":"…"}` (M4), `url` must parse with scheme `http` or `https` |
-| | `instances` | M4 | integer 1–10, default 1 |
+| | `instances` | M4 | integer 1–10; absent or 0 means 1 |
 | transform | `expr` | M5 | an `expr-lang/expr` program over `msg` (the decoded JSON value) returning the new value, or `nil` to drop the record; must compile on deploy |
 
 "From" is the milestone whose runtime first uses a field. Save accepts every
@@ -439,7 +445,8 @@ flowchart LR
 | consumer: exactly one incoming edge; at most one outgoing edge in total, to either a topic or a transform | Go, deploy |
 | transform: exactly one incoming (from a consumer) and one outgoing (to a topic) | Go, deploy |
 | topic: any number of edges; a topic feeding no consumer or fed by nothing is fine (warning in the UI, not an error) | Go, deploy |
-| no cycle through forwards (a consumer forwarding, directly or through other consumers, back to a topic it reads from) | Go, deploy |
+| no cycle through forwards (a consumer forwarding, directly or through other consumers, back to a topic it reads from); the problem names the topic that consumer reads | Go, deploy |
+| every container a deploy starts has a name of its own (a consumer `consumer-1` with two instances runs `…-consumer-1-2`, which a node `consumer-1-2` would also take) | Go, deploy |
 | no self edges, no duplicate edges, every edge endpoint exists, every edge id present and unique | Go, save |
 
 Save validates shape and edge pairs so a half-built flow can be saved;
@@ -607,7 +614,7 @@ open; it runs last, by the user's choice, so M4 lands on M3's snapshot loop.
 - Snapshot cost stays as M3 built it until M6: with several instances a tick
   can take longer than 1 s; rates stay correct because Δt is measured.
 - `make verify-studio` grows the chain demo below and the instances check.
-- Built as decided in its plan: a single-container node keeps its M2 name and no `studio.instance` label, so flows deployed before M4 stay recognised; clashing container names are a 422; after a file edit, what the deploy ran decides between one container and instances; a node's `lastError` is its first instance's, prefixed `#<i>: `; the example flow's group is `orders-studio`, because franz-go's and kcat's assignors share no protocol and the broker refuses a mixed group. A deploy refuses a forward loop (a cycle of topics and consumers, §4.3). A consumer commits only the records it handled (franz-go `AutoCommitMarks`) and, on Stop, finishes its batch within the grace before committing. Partitions are matched to the containers that run, not to the edited file.
+- Built as decided in its plan: a single-container node keeps its M2 name and no `studio.instance` label, so flows deployed before M4 stay recognised; clashing container names are a 422 (§4.3); after a file edit, what the deploy ran decides between one container and instances; a node's `lastError` is the first instance's that has one, prefixed `#<i>: `; the example flow's group is `orders-studio`, because franz-go's and kcat's assignors share no protocol and the broker refuses a mixed group. A deploy refuses a forward loop (a cycle of topics and consumers, §4.3). A consumer commits only the records it handled (franz-go `AutoCommitMarks`; §3.4) and, on Stop, finishes its batch within the grace before committing. Partitions are matched to the containers that run, not to the edited file.
 - **Demo:** flow A `timer → orders → consumer(forward) → orders-archive`;
   flow B `producer(manual) → audit → consumer(http → http://studio:8082/api/flows/<A>/nodes/producer-1/send)`
   — flow B's consumer feeds flow A's producer with no extra image (and node

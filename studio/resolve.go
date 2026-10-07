@@ -5,7 +5,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"strconv"
 )
 
@@ -26,21 +25,29 @@ type NodeSpec struct {
 	Instance        int    `json:"instance,omitempty"`    // consumer: 1..n when it runs n > 1 instances, else 0
 }
 
-// containerName is a node container's name and, on the compose network, its host
-// name; instance 0 is a node's only container, 1..n one of its instances.
-func containerName(flow, node string, instance int) string {
-	name := "studio-" + flow + "-" + node
-	if instance > 0 {
-		name += "-" + strconv.Itoa(instance)
+// nodeRef names one node container: instance 0 is a node's only container, 1..n
+// one of a consumer's instances.
+type nodeRef struct {
+	flow, node string
+	instance   int
+}
+
+// name is the container's name and, on the compose network, its host name.
+func (r nodeRef) name() string {
+	name := "studio-" + r.flow + "-" + r.node
+	if r.instance > 0 {
+		name += "-" + strconv.Itoa(r.instance)
 	}
 	return name
 }
 
-// nodeURL is path on a node container's own API, reached by container name on
-// the compose network.
-func nodeURL(flow, node string, instance int, path string) string {
-	return "http://" + containerName(flow, node, instance) + nodeAddr + path
+// url is path on the container's own API, reached by name on the compose network.
+func (r nodeRef) url(path string) string {
+	return "http://" + r.name() + nodeAddr + path
 }
+
+// ref is the container this spec runs in.
+func (s NodeSpec) ref() nodeRef { return nodeRef{s.Flow, s.Node, s.Instance} }
 
 // instancesOf is the instance numbers of a node's containers: [0] for a node
 // with one container, 1..n for a consumer with instances: n > 1.
@@ -53,11 +60,11 @@ func instancesOf(n Node) []int {
 	if d.Instances <= 1 {
 		return []int{0}
 	}
-	is := make([]int, d.Instances)
-	for i := range is {
-		is[i] = i + 1
+	nums := make([]int, d.Instances)
+	for i := range nums {
+		nums[i] = i + 1
 	}
-	return is
+	return nums
 }
 
 // Resolve assumes Validate(&f, Deploy) passed: every data field decodes and every
@@ -104,23 +111,6 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 		}
 	}
 	return specs, topics
-}
-
-// clashes names each node whose container would take a name another node's
-// container already has: a consumer "consumer-1" with two instances runs
-// studio-<flow>-consumer-1-2, which is also a node "consumer-1-2"'s name.
-func clashes(specs []NodeSpec) []Problem {
-	var ps []Problem
-	owner := map[string]string{} // container name → node id
-	for _, s := range specs {
-		name := containerName(s.Flow, s.Node, s.Instance)
-		if other, ok := owner[name]; ok && other != s.Node {
-			ps = append(ps, Problem{Node: s.Node, Message: fmt.Sprintf("its container name %s is also node %s's; rename one of them", name, other)})
-			continue
-		}
-		owner[name] = s.Node
-	}
-	return ps
 }
 
 // notYetRunnable lists what a deployable flow uses that this milestone's runtime

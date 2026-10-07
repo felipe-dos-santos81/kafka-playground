@@ -83,7 +83,7 @@ func startNode(ctx context.Context, cli *client.Client, me self, brokers string,
 	if err != nil {
 		return err
 	}
-	name := containerName(spec.Flow, spec.Node, spec.Instance)
+	name := spec.ref().name()
 	labels := map[string]string{labelFlow: spec.Flow, labelNode: spec.Node}
 	if spec.Instance > 0 {
 		labels[labelInstance] = strconv.Itoa(spec.Instance)
@@ -124,11 +124,15 @@ func flowContainers(ctx context.Context, cli *client.Client, flow string) ([]con
 	return res.Items, nil
 }
 
-// removeContainers stops each running container (SIGTERM, 5 s grace so a
+// stopGraceSeconds is how long a node container gets between SIGTERM and SIGKILL;
+// a node's own shutdown (node.go) is budgeted to fit inside it.
+const stopGraceSeconds = 5
+
+// removeContainers stops each running container (SIGTERM, stopGraceSeconds so a
 // consumer commits and leaves its group) and removes it. It tries every
 // container and returns the first error other than not-found.
 func removeContainers(ctx context.Context, cli *client.Client, cs []container.Summary) error {
-	grace := 5
+	grace := stopGraceSeconds
 	var first error
 	keep := func(err error) {
 		if err != nil && !cerrdefs.IsNotFound(err) && first == nil { // a container removed by hand is already gone

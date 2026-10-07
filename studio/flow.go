@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -178,12 +179,11 @@ func Validate(f *Flow, level Level) []Problem {
 		return ps
 	}
 	topicNames := map[string]string{} // topic name → node id
-	nodeByID := map[string]Node{}
+	topicOf := map[string]string{}    // topic node id → its name
 	for _, n := range f.Nodes {
 		if types[n.ID] == "" {
 			continue // already reported
 		}
-		nodeByID[n.ID] = n
 		switch n.Type {
 		case "producer":
 			var d ProducerData
@@ -220,6 +220,7 @@ func Validate(f *Flow, level Level) []Problem {
 			default:
 				topicNames[d.Name] = n.ID
 			}
+			topicOf[n.ID] = d.Name
 			if d.Partitions < 1 {
 				add(n.ID, "", "partitions must be at least 1")
 			}
@@ -268,8 +269,31 @@ func Validate(f *Flow, level Level) []Problem {
 			}
 		}
 	}
-	// A forward loop (topic → consumer → … → the same topic) makes records circulate
-	// forever: one problem per cycle, on its first consumer.
+	// Every container a deploy starts needs a name of its own: a consumer
+	// "consumer-1" with two instances runs …-consumer-1-2, which is also a node
+	// "consumer-1-2"'s container.
+	owner := map[string]string{} // container name → node id
+	for _, n := range f.Nodes {
+		if types[n.ID] != "producer" && types[n.ID] != "consumer" {
+			continue
+		}
+		for _, i := range instancesOf(n) {
+			name := nodeRef{f.ID, n.ID, i}.name()
+			if other, taken := owner[name]; taken {
+				add(n.ID, "", "its container name %s is also node %s's; rename one of them", name, other)
+				break
+			}
+			owner[name] = n.ID
+		}
+	}
+	return append(ps, forwardLoops(f.Nodes, types, next, topicOf)...)
+}
+
+// forwardLoops finds every forward loop (topic → consumer → … → the same topic),
+// whose records would circulate forever: one problem per loop, on its first
+// consumer, naming the topic that consumer reads.
+func forwardLoops(nodes []Node, types map[string]string, next map[string][]string, topicOf map[string]string) []Problem {
+	var ps []Problem
 	state := map[string]int{} // 0 new, 1 on the path, 2 done
 	var path []string
 	var visit func(id string)
@@ -281,24 +305,21 @@ func Validate(f *Flow, level Level) []Problem {
 			case 0:
 				visit(to)
 			case 1:
-				var consumer, topic string
-				for _, c := range path[slices.Index(path, to):] {
-					if types[c] == "consumer" && consumer == "" {
-						consumer = c
-					}
-					if types[c] == "topic" && topic == "" {
-						topic = c
+				loop := path[slices.Index(path, to):] // closed by the edge id → to
+				for k, c := range loop {
+					if types[c] == "consumer" {
+						reads := loop[(k+len(loop)-1)%len(loop)] // only a topic feeds a consumer
+						name := cmp.Or(topicOf[reads], reads)
+						ps = append(ps, Problem{Node: c, Message: fmt.Sprintf("forwarding loops back to topic %q, which it reads: records would circulate forever", name)})
+						break
 					}
 				}
-				var d TopicData
-				json.Unmarshal(nodeByID[topic].Data, &d)
-				add(consumer, "", "forwarding loops back to topic %q: records would circulate forever", d.Name)
 			}
 		}
 		path = path[:len(path)-1]
 		state[id] = 2
 	}
-	for _, n := range f.Nodes {
+	for _, n := range nodes {
 		if types[n.ID] != "" && state[n.ID] == 0 {
 			visit(n.ID)
 		}

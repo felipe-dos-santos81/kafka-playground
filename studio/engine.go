@@ -93,9 +93,6 @@ func (e *Engine) Deploy(ctx context.Context, id string) error {
 	if len(specs) == 0 {
 		return Problems{{Message: "nothing to run: add a producer or a consumer"}}
 	}
-	if ps := clashes(specs); ps != nil {
-		return Problems(ps)
-	}
 	cs, err := flowContainers(ctx, e.docker, id)
 	if err != nil {
 		return err
@@ -176,7 +173,7 @@ func nodeStates(f Flow, cs []container.Summary) map[string]NodeState {
 			}
 		}
 	}
-	multi := map[string]bool{} // node id → whether its containers are instances 1..n
+	ranInstances := map[string]bool{} // node id → whether the deploy ran it as instances 1..n
 	for _, c := range cs {
 		node := c.Labels[labelNode]
 		i, _ := strconv.Atoi(c.Labels[labelInstance]) // no label: a node's only container, 0
@@ -184,13 +181,14 @@ func nodeStates(f Flow, cs []container.Summary) map[string]NodeState {
 			slots[node] = map[int]string{}
 		}
 		slots[node][i] = string(c.State)
-		multi[node] = i > 0
+		ranInstances[node] = i > 0
 	}
 	nodes := map[string]NodeState{}
 	for node, insts := range slots {
-		if m, deployed := multi[node]; deployed {
+		if asInstances, deployed := ranInstances[node]; deployed {
 			for i, state := range insts {
-				if state == "missing" && (i > 0) != m {
+				isInstance := i > 0
+				if state == "missing" && isInstance != asInstances {
 					delete(insts, i)
 				}
 			}
@@ -242,23 +240,12 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 		return st, err
 	}
 	for node, ns := range st.Nodes {
-		if len(ns.Instances) == 0 {
-			if ns.State == "running" {
-				st.Nodes[node] = withStats(ctx, id, node, ns)
-			}
-			continue
-		}
-		for k, in := range ns.Instances {
-			if in.State == "running" {
-				in = withStats(ctx, id, node, in)
-			}
-			ns.Instances[k] = in
-			ns.Total += in.Total
-			ns.Errors += in.Errors
-			if ns.LastError == "" && in.LastError != "" {
-				ns.LastError = fmt.Sprintf("#%d: %s", in.Instance, in.LastError)
+		for _, c := range ns.containers() {
+			if c.State == "running" {
+				*c = withStats(ctx, nodeRef{id, node, c.Instance}, *c)
 			}
 		}
+		ns.sumInstances()
 		st.Nodes[node] = ns
 	}
 
@@ -301,9 +288,9 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 }
 
 // withStats is ns (a node, or one of its instances) with the counters its
-// container reports on /stats.
-func withStats(ctx context.Context, flow, node string, ns NodeState) NodeState {
-	s, err := nodeStatsOf(ctx, flow, node, ns.Instance)
+// container r reports on /stats.
+func withStats(ctx context.Context, r nodeRef, ns NodeState) NodeState {
+	s, err := nodeStatsOf(ctx, r)
 	if err != nil {
 		ns.LastError = "stats: " + err.Error()
 		return ns
@@ -313,11 +300,11 @@ func withStats(ctx context.Context, flow, node string, ns NodeState) NodeState {
 }
 
 // nodeStatsOf asks a running node container for its counters (1 s budget).
-func nodeStatsOf(ctx context.Context, flow, node string, instance int) (nodeStats, error) {
+func nodeStatsOf(ctx context.Context, r nodeRef) (nodeStats, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	var s nodeStats
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, nodeURL(flow, node, instance, "/stats"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.url("/stats"), nil)
 	if err != nil {
 		return s, err
 	}
@@ -375,37 +362,26 @@ func applyKafka(st *FlowState, flow string, specs []NodeSpec, topics map[string]
 		done[s.Node] = true
 		ns := st.Nodes[s.Node]
 		// What runs, not the file, says whose clients to look for.
-		client := map[string]int{} // client id → instance
-		if len(ns.Instances) == 0 {
-			client[containerName(flow, s.Node, 0)] = 0
-		}
-		for _, in := range ns.Instances {
-			client[containerName(flow, s.Node, in.Instance)] = in.Instance
+		client := map[string]*NodeState{} // client id → its container's state
+		for _, c := range ns.containers() {
+			client[nodeRef{flow, s.Node, c.Instance}.name()] = c
 		}
 		var lag int64
-		held := map[int][]int32{} // instance → partitions its client holds
+		held := map[*NodeState][]int32{} // container → partitions its client holds
 		for _, ml := range gl.Lag[s.Topic] {
 			if ml.Err == nil && ml.Lag > 0 {
 				lag += ml.Lag
 			}
 			if ml.Member != nil {
-				if i, ok := client[ml.Member.ClientID]; ok {
-					held[i] = append(held[i], ml.Partition)
+				if c, ok := client[ml.Member.ClientID]; ok {
+					held[c] = append(held[c], ml.Partition)
 				}
 			}
 		}
 		ns.Lag = &lag
-		for i, ps := range held {
+		for c, ps := range held {
 			slices.Sort(ps)
-			assigned := map[string][]int32{s.Topic: ps}
-			if len(ns.Instances) == 0 {
-				ns.Assigned = assigned
-			}
-			for k := range ns.Instances {
-				if ns.Instances[k].Instance == i {
-					ns.Instances[k].Assigned = assigned
-				}
-			}
+			c.Assigned = map[string][]int32{s.Topic: ps}
 		}
 		st.Nodes[s.Node] = ns
 	}
@@ -462,29 +438,29 @@ func (e *Engine) NodeRunning(ctx context.Context, id, node string, instance int)
 	return pickInstance(node, ns, instance)
 }
 
-// pickInstance is NodeRunning's choice within one node's state.
+// pickInstance is NodeRunning's choice within one node's state. A node with one
+// container is its own instance 1 too, so ?instance=1 (the documented default)
+// works on every node.
 func pickInstance(node string, ns NodeState, instance int) (int, error) {
-	if len(ns.Instances) == 0 {
-		if instance > 0 {
-			return 0, fmt.Errorf("node %s has no instance %d: %w", node, instance, ErrNotRunning)
-		}
-		if ns.State != "running" {
-			return 0, fmt.Errorf("node %s is %s: %w", node, ns.State, ErrNotRunning)
-		}
-		return 0, nil
+	single := len(ns.Instances) == 0
+	switch {
+	case instance == 0:
+		instance = ns.containers()[0].Instance
+	case instance == 1 && single:
+		instance = 0
 	}
-	if instance == 0 {
-		instance = ns.Instances[0].Instance
+	c := ns.container(instance)
+	if c == nil {
+		return 0, fmt.Errorf("node %s has no instance %d: %w", node, instance, ErrNotRunning)
 	}
-	for _, in := range ns.Instances {
-		if in.Instance == instance {
-			if in.State != "running" {
-				return 0, fmt.Errorf("node %s instance %d is %s: %w", node, instance, in.State, ErrNotRunning)
-			}
-			return instance, nil
+	if c.State != "running" {
+		what := "node " + node
+		if !single {
+			what += fmt.Sprintf(" instance %d", instance)
 		}
+		return 0, fmt.Errorf("%s is %s: %w", what, c.State, ErrNotRunning)
 	}
-	return 0, fmt.Errorf("node %s has no instance %d: %w", node, instance, ErrNotRunning)
+	return instance, nil
 }
 
 // withRates sets each node's records per second against the previous snapshot,
@@ -496,39 +472,69 @@ func withRates(cur *FlowState, prev FlowState, dt float64) {
 		return
 	}
 	for id, ns := range cur.Nodes {
-		p, seen := prev.Nodes[id]
-		if len(ns.Instances) == 0 {
-			ns.Rate = rate(ns, p, seen, dt)
-		} else {
-			var sum float64
-			for k, in := range ns.Instances {
-				pi, ok := instanceOf(p, in.Instance)
-				ns.Instances[k].Rate = rate(in, pi, ok, dt)
-				sum += ns.Instances[k].Rate
+		before, seen := prev.Nodes[id]
+		for _, c := range ns.containers() {
+			var p *NodeState
+			if seen {
+				p = before.container(c.Instance)
 			}
-			ns.Rate = math.Round(sum*10) / 10
+			c.Rate = rate(*c, p, dt)
 		}
+		ns.sumInstances()
 		cur.Nodes[id] = ns
 	}
 }
 
 // rate is cur's records per second against prev, taken dt seconds earlier, rounded
-// to 0.1; 0 when there was no prev or cur's container restarted since.
-func rate(cur, prev NodeState, seen bool, dt float64) float64 {
-	if !seen || prev.Boot != cur.Boot || cur.Total < prev.Total {
+// to 0.1; 0 when there is no prev or cur's container restarted since.
+func rate(cur NodeState, prev *NodeState, dt float64) float64 {
+	if prev == nil || prev.Boot != cur.Boot || cur.Total < prev.Total {
 		return 0
 	}
 	return math.Round(float64(cur.Total-prev.Total)/dt*10) / 10
 }
 
-// instanceOf finds instance i among ns's instances.
-func instanceOf(ns NodeState, i int) (NodeState, bool) {
-	for _, in := range ns.Instances {
-		if in.Instance == i {
-			return in, true
+// containers is the states of ns's containers: ns itself when the node has one
+// container, else each entry of Instances. Changes through them land in ns.
+func (ns *NodeState) containers() []*NodeState {
+	if len(ns.Instances) == 0 {
+		return []*NodeState{ns}
+	}
+	cs := make([]*NodeState, len(ns.Instances))
+	for k := range ns.Instances {
+		cs[k] = &ns.Instances[k]
+	}
+	return cs
+}
+
+// container is the state of ns's container numbered i (0 for a node's only
+// container), or nil.
+func (ns *NodeState) container(i int) *NodeState {
+	for _, c := range ns.containers() {
+		if c.Instance == i {
+			return c
 		}
 	}
-	return NodeState{}, false
+	return nil
+}
+
+// sumInstances gives a node with instances the sums of their counters and rates,
+// and the first of their last errors, prefixed with its instance; a node with one
+// container is its container already.
+func (ns *NodeState) sumInstances() {
+	if len(ns.Instances) == 0 {
+		return
+	}
+	ns.Total, ns.Errors, ns.Rate, ns.LastError = 0, 0, 0, ""
+	for _, in := range ns.Instances {
+		ns.Total += in.Total
+		ns.Errors += in.Errors
+		ns.Rate += in.Rate
+		if ns.LastError == "" && in.LastError != "" {
+			ns.LastError = fmt.Sprintf("#%d: %s", in.Instance, in.LastError)
+		}
+	}
+	ns.Rate = math.Round(ns.Rate*10) / 10
 }
 
 // streamTicks is the body of GET /api/flows/{id}/events: every period it writes

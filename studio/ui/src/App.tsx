@@ -4,7 +4,7 @@ import Canvas from './Canvas'
 import FlowList from './FlowList'
 import Inspector from './Inspector'
 import Palette from './Palette'
-import { api, describe, watch, type FlowState, type FlowSummary, type NodeRuntime } from './flow/api'
+import { api, containersOf, describe, watch, type FlowState, type FlowSummary, type NodeRuntime } from './flow/api'
 import { fileContent, fillDefaults, type CanvasEdge, type CanvasNode } from './flow/schema'
 import TailDrawer from './TailDrawer'
 import { RuntimeContext } from './nodes/StudioNodes'
@@ -33,12 +33,16 @@ function Studio() {
   const [pickedInstance, setPickedInstance] = useState(0) // the tail drawer's instance, for a consumer with instances
   const dirty = current !== null && snapshot(current.name, nodes, edges) !== savedSnapshot
 
-  const refresh = useCallback(() => api.list().then(setFlows).catch((e) => setError(describe(e))), [])
+  // A quiet refresh (the poll below) keeps its failure out of the top bar, so it neither
+  // sticks there nor overwrites an action's error.
+  const refresh = useCallback(
+    (quiet = false) => api.list().then(setFlows).catch((e) => quiet || setError(describe(e))),
+    [],
+  )
   // Re-read every 5 s, so flows deployed or stopped elsewhere (another tab, curl) show their state.
-  // The poll's own failure is silent: it must not set or overwrite the top-bar error.
   useEffect(() => {
     refresh()
-    const t = setInterval(() => api.list().then(setFlows).catch(() => {}), 5000)
+    const t = setInterval(() => refresh(true), 5000)
     return () => clearInterval(t)
   }, [refresh])
 
@@ -144,7 +148,7 @@ function Studio() {
   const rt = node ? flowState?.nodes[node.id] : undefined
   const instances = rt?.instances?.map((i) => i.instance ?? 0) ?? []
   const instance = instances.includes(pickedInstance) ? pickedInstance : (instances[0] ?? 0)
-  const tailed = rt?.instances?.find((i) => i.instance === instance) ?? rt
+  const tailed = rt && containersOf(rt).find((c) => (c.instance ?? 0) === instance)
 
   return (
     <div className="studio">

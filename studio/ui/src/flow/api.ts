@@ -22,6 +22,10 @@ export type NodeRuntime = {
   instances?: NodeRuntime[]
 }
 
+// The states of a node's containers: the node itself when it runs one, else its
+// instances (Go: NodeState.containers).
+export const containersOf = (rt: NodeRuntime): NodeRuntime[] => rt.instances ?? [rt]
+
 // The snapshot GET /api/flows/{id}/state answers and every SSE tick carries.
 export type FlowState = { status: 'running' | 'stopped'; nodes: Record<string, NodeRuntime> }
 

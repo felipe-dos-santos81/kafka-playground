@@ -53,7 +53,7 @@ topics: ## Describe every topic: partitions, leaders, replicas
 groups: ## [STEP 5] Describe every consumer group: members, partitions, lag
 	$(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --describe --all-groups
 
-nodes: ## List Studio node containers: one per producer and consumer of each deployed flow
+nodes: ## List Studio node containers: one per producer and consumer of each deployed flow (one per instance for a consumer with instances)
 	docker ps -a -f label=studio.flow
 
 # ── Produce ──────────────────────────────────────────────────────────────────
@@ -77,12 +77,14 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	echo "studio health: $$health"; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows -H 'Sec-Fetch-Site: cross-site' --data '{"name":"x"}'); \
 	[ "$$code" = 403 ] || { echo "STUDIO FAILED: cross-site write accepted ($$code)"; exit 1; }; \
-	flow='{"name":"verify","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":{"source":"manual","key":"","value":"{}"}},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"studio-verify","partitions":1,"replication_factor":1}},{"id":"consumer-1","type":"consumer","position":{"x":400,"y":0},"data":{"group":"studio-verify","auto_offset_reset":"earliest","sink":{"kind":"log"}}}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"},{"id":"e2","source":"topic-1","target":"consumer-1"}]}'; \
-	created=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$flow") || { echo "STUDIO FAILED: create: $$created"; exit 1; }; \
-	id=$$(echo "$$created" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'); \
-	trap "curl -sS -X DELETE $(STUDIO_URL)/api/flows/$$id >/dev/null 2>&1; docker rm -f studio-$$id-consumer-1 >/dev/null 2>&1" EXIT; \
+	flow3() { printf '{"name":"%s","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":%s},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"%s","partitions":%s,"replication_factor":1}},{"id":"consumer-1","type":"consumer","position":{"x":400,"y":0},"data":%s}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"},{"id":"e2","source":"topic-1","target":"consumer-1"}]}' "$$1" "$$2" "$$3" "$$4" "$$5"; }; \
+	manual='{"source":"manual","key":"","value":"{}"}'; \
+	flow=$$(flow3 verify "$$manual" studio-verify 1 '{"group":"studio-verify","auto_offset_reset":"earliest","sink":{"kind":"log"}}'); \
+	create() { out=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$1") || { echo "STUDIO FAILED: create $$2: $$out" >&2; return 1; }; echo "$$out" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'; }; \
+	flows=; trap 'for f in $$flows; do curl -sS -X DELETE $(STUDIO_URL)/api/flows/$$f >/dev/null 2>&1; done; docker rm -f studio-$$id-consumer-1 >/dev/null 2>&1' EXIT; \
+	id=$$(create "$$flow" "the verify flow") || exit 1; flows="$$id"; \
 	nodes() { docker ps -aq -f label=studio.flow=$$id | wc -l | tr -d ' '; }; \
-	[ -f "flows/$$id.json" ] || { echo "STUDIO FAILED: flows/$$id.json not written ($$created)"; exit 1; }; \
+	[ -f "flows/$$id.json" ] || { echo "STUDIO FAILED: flows/$$id.json not written"; exit 1; }; \
 	bad=$$(echo "$$flow" | sed 's/"source":"producer-1","target":"topic-1"/"source":"topic-1","target":"producer-1"/'); \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X PUT $(STUDIO_URL)/api/flows/$$id -H 'Content-Type: application/json' --data "$$bad"); \
 	[ "$$code" = 422 ] || { echo "STUDIO FAILED: bad edge accepted ($$code)"; exit 1; }; \
@@ -117,22 +119,17 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$id/deploy >/dev/null || { echo "STUDIO FAILED: redeploy"; exit 1; }; \
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$id || { echo "STUDIO FAILED: delete"; exit 1; }; \
 	[ "$$(nodes)" = 0 ] && [ ! -f "flows/$$id.json" ] || { echo "STUDIO FAILED: delete left $$(nodes) containers or flows/$$id.json"; exit 1; }; \
-	tflow='{"name":"verify-timer","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":{"source":"timer","interval_ms":100,"key":"","value":"{\"n\": {{.Seq}}}"}},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"studio-verify-timer","partitions":1,"replication_factor":1}},{"id":"consumer-1","type":"consumer","position":{"x":400,"y":0},"data":{"group":"studio-verify-timer","auto_offset_reset":"latest","sink":{"kind":"log"}}}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"},{"id":"e2","source":"topic-1","target":"consumer-1"}]}'; \
-	created=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$tflow") || { echo "STUDIO FAILED: create the timer flow: $$created"; exit 1; }; \
-	tid=$$(echo "$$created" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'); \
-	trap "curl -sS -X DELETE $(STUDIO_URL)/api/flows/$$id >/dev/null 2>&1; curl -sS -X DELETE $(STUDIO_URL)/api/flows/$$tid >/dev/null 2>&1; docker rm -f studio-$$id-consumer-1 >/dev/null 2>&1" EXIT; \
+	tflow=$$(flow3 verify-timer '{"source":"timer","interval_ms":100,"key":"","value":"{\"n\": {{.Seq}}}"}' studio-verify-timer 1 '{"group":"studio-verify-timer","auto_offset_reset":"latest","sink":{"kind":"log"}}'); \
+	tid=$$(create "$$tflow" "the timer flow") || exit 1; flows="$$flows $$tid"; \
 	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$tid/deploy >/dev/null || { echo "STUDIO FAILED: timer deploy"; exit 1; }; \
 	tick=$$(curl -sN --max-time 20 $(STUDIO_URL)/api/flows/$$tid/events | grep -m1 '"consumer-1":{[^}]*"rate":.*"producer-1":{[^}]*"rate":'); \
 	[ -n "$$tick" ] || { echo "STUDIO FAILED: no tick with consumer and producer rates for the timer flow"; exit 1; }; \
 	echo "studio tick: $$tick"; \
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$tid || { echo "STUDIO FAILED: delete the timer flow"; exit 1; }; \
-	a='{"name":"verify-chain-a","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":{"source":"manual","key":"","value":"{}"}},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"studio-verify-a","partitions":1,"replication_factor":1}},{"id":"consumer-1","type":"consumer","position":{"x":400,"y":0},"data":{"group":"studio-verify-a","auto_offset_reset":"earliest","sink":{"kind":"log"}}},{"id":"topic-2","type":"topic","position":{"x":600,"y":0},"data":{"name":"studio-verify-a-out","partitions":1,"replication_factor":1}},{"id":"consumer-2","type":"consumer","position":{"x":800,"y":0},"data":{"group":"studio-verify-a-out","auto_offset_reset":"earliest","sink":{"kind":"log"}}}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"},{"id":"e2","source":"topic-1","target":"consumer-1"},{"id":"e3","source":"consumer-1","target":"topic-2"},{"id":"e4","source":"topic-2","target":"consumer-2"}]}'; \
-	created=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$a") || { echo "STUDIO FAILED: create chain flow A: $$created"; exit 1; }; \
-	aid=$$(echo "$$created" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'); \
-	b='{"name":"verify-chain-b","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":{"source":"manual","key":"","value":"{}"}},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"studio-verify-b","partitions":1,"replication_factor":1}},{"id":"consumer-1","type":"consumer","position":{"x":400,"y":0},"data":{"group":"studio-verify-b","auto_offset_reset":"earliest","sink":{"kind":"http","url":"http://studio:8082/api/flows/'"$$aid"'/nodes/producer-1/send"}}}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"},{"id":"e2","source":"topic-1","target":"consumer-1"}]}'; \
-	created=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$b") || { echo "STUDIO FAILED: create chain flow B: $$created"; exit 1; }; \
-	bid=$$(echo "$$created" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'); \
-	trap "for f in $$id $$tid $$aid $$bid; do curl -sS -X DELETE $(STUDIO_URL)/api/flows/\$$f >/dev/null 2>&1; done; docker rm -f studio-$$id-consumer-1 >/dev/null 2>&1" EXIT; \
+	a='{"name":"verify-chain-a","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":'"$$manual"'},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"studio-verify-a","partitions":1,"replication_factor":1}},{"id":"consumer-1","type":"consumer","position":{"x":400,"y":0},"data":{"group":"studio-verify-a","auto_offset_reset":"earliest","sink":{"kind":"log"}}},{"id":"topic-2","type":"topic","position":{"x":600,"y":0},"data":{"name":"studio-verify-a-out","partitions":1,"replication_factor":1}},{"id":"consumer-2","type":"consumer","position":{"x":800,"y":0},"data":{"group":"studio-verify-a-out","auto_offset_reset":"earliest","sink":{"kind":"log"}}}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"},{"id":"e2","source":"topic-1","target":"consumer-1"},{"id":"e3","source":"consumer-1","target":"topic-2"},{"id":"e4","source":"topic-2","target":"consumer-2"}]}'; \
+	aid=$$(create "$$a" "chain flow A") || exit 1; flows="$$flows $$aid"; \
+	b=$$(flow3 verify-chain-b "$$manual" studio-verify-b 1 '{"group":"studio-verify-b","auto_offset_reset":"earliest","sink":{"kind":"http","url":"http://studio:8082/api/flows/'"$$aid"'/nodes/producer-1/send"}}'); \
+	bid=$$(create "$$b" "chain flow B") || exit 1; flows="$$flows $$bid"; \
 	for f in $$aid $$bid; do curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$f/deploy >/dev/null || { echo "STUDIO FAILED: deploy chain flow $$f"; exit 1; }; done; \
 	rec="chain-$$(date +%s)"; \
 	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$bid/nodes/producer-1/send --data "{\"id\":\"$$rec\"}" >/dev/null || { echo "STUDIO FAILED: send to chain flow B"; exit 1; }; \
@@ -142,10 +139,8 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	done; \
 	echo "studio chain: $$rec went through flow B's http sink into flow A and was forwarded"; \
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$bid && curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$aid || { echo "STUDIO FAILED: delete the chain flows"; exit 1; }; \
-	c='{"name":"verify-instances","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":{"source":"manual","key":"","value":"{}"}},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"studio-verify-instances","partitions":3,"replication_factor":1}},{"id":"consumer-1","type":"consumer","position":{"x":400,"y":0},"data":{"group":"studio-verify-instances","auto_offset_reset":"earliest","instances":3,"sink":{"kind":"log"}}}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"},{"id":"e2","source":"topic-1","target":"consumer-1"}]}'; \
-	created=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$c") || { echo "STUDIO FAILED: create the instances flow: $$created"; exit 1; }; \
-	cid=$$(echo "$$created" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'); \
-	trap "for f in $$id $$tid $$aid $$bid $$cid; do curl -sS -X DELETE $(STUDIO_URL)/api/flows/\$$f >/dev/null 2>&1; done; docker rm -f studio-$$id-consumer-1 >/dev/null 2>&1" EXIT; \
+	c=$$(flow3 verify-instances "$$manual" studio-verify-instances 3 '{"group":"studio-verify-instances","auto_offset_reset":"earliest","instances":3,"sink":{"kind":"log"}}'); \
+	cid=$$(create "$$c" "the instances flow") || exit 1; flows="$$flows $$cid"; \
 	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$cid/deploy >/dev/null || { echo "STUDIO FAILED: deploy the instances flow"; exit 1; }; \
 	[ "$$(docker ps -q -f label=studio.flow=$$cid -f label=studio.node=consumer-1 | wc -l | tr -d ' ')" = 3 ] || { echo "STUDIO FAILED: want 3 consumer-1 containers"; exit 1; }; \
 	for i in $$(seq 45); do \
@@ -157,6 +152,10 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	[ "$$code" = 200 ] || { echo "STUDIO FAILED: tail of instance 3: $$code, want 200"; exit 1; }; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' "$(STUDIO_URL)/api/flows/$$cid/nodes/consumer-1/tail?since=0&instance=4"); \
 	[ "$$code" = 409 ] || { echo "STUDIO FAILED: tail of a fourth instance: $$code, want 409"; exit 1; }; \
+	docker rm -f studio-$$cid-consumer-1-2 >/dev/null; \
+	curl -sS $(STUDIO_URL)/api/flows/$$cid/state | grep -q '"consumer-1":{"state":"missing",.*"instance":2,"state":"missing"' || { echo "STUDIO FAILED: a removed instance does not show as missing: $$(curl -sS $(STUDIO_URL)/api/flows/$$cid/state)"; exit 1; }; \
+	code=$$(curl -sS -o /dev/null -w '%{http_code}' "$(STUDIO_URL)/api/flows/$$cid/nodes/consumer-1/tail?since=0&instance=2"); \
+	[ "$$code" = 409 ] || { echo "STUDIO FAILED: tail of a removed instance: $$code, want 409"; exit 1; }; \
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$cid || { echo "STUDIO FAILED: delete the instances flow"; exit 1; }; \
 	echo "STUDIO OK ($$id)"
 
