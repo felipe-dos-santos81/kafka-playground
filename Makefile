@@ -72,7 +72,7 @@ scale: ## [STEP 4] Set the number of orders-workers group members (usage: make s
 
 # ── Studio ───────────────────────────────────────────────────────────────────
 
-verify-studio: up ## Check the studio end to end: health, cross-site refusal, save rules, deploy (rollback, 409, restart), stop, delete
+verify-studio: up ## Check the studio end to end: health, cross-site refusal, save rules, deploy (rollback, 409, restart), send, tail, stop, delete
 	@health=$$(curl -sS --fail-with-body $(STUDIO_URL)/api/health) || { echo "STUDIO FAILED: health: $$health"; exit 1; }; \
 	echo "studio health: $$health"; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows -H 'Sec-Fetch-Site: cross-site' --data '{"name":"x"}'); \
@@ -93,12 +93,22 @@ verify-studio: up ## Check the studio end to end: health, cross-site refusal, sa
 	[ "$$code" = 502 ] && [ "$$(nodes)" = 0 ] || { echo "STUDIO FAILED: deploy into a taken name: $$code with $$(nodes) containers left (want 502, 0)"; exit 1; }; \
 	deployed=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$id/deploy) || { echo "STUDIO FAILED: deploy: $$deployed"; exit 1; }; \
 	[ "$$(nodes)" = 2 ] || { echo "STUDIO FAILED: $$(nodes) node containers after deploy, want 2"; exit 1; }; \
+	rec="verify-$$(date +%s)"; \
+	sent=$$(curl -sS --fail-with-body -X POST "$(STUDIO_URL)/api/flows/$$id/nodes/producer-1/send?key=$$rec" --data "{\"id\":\"$$rec\"}") || { echo "STUDIO FAILED: send: $$sent"; exit 1; }; \
+	echo "studio sent $$rec: $$sent"; \
+	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$id/nodes/producer-1/send >/dev/null || { echo "STUDIO FAILED: template send"; exit 1; }; \
+	for i in $$(seq 30); do \
+		curl -sS "$(STUDIO_URL)/api/flows/$$id/nodes/consumer-1/tail?since=0" | grep -q "\"key\":\"$$rec\"" && break; \
+		[ "$$i" = 30 ] && { echo "STUDIO FAILED: the consumer tail never showed $$rec"; exit 1; }; sleep 1; \
+	done; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows/$$id/deploy); \
 	[ "$$code" = 409 ] && [ "$$(nodes)" = 2 ] || { echo "STUDIO FAILED: second deploy: $$code with $$(nodes) containers (want 409, 2)"; exit 1; }; \
 	$(COMPOSE) restart studio >/dev/null 2>&1 && $(COMPOSE) up -d --wait studio >/dev/null 2>&1 || { echo "STUDIO FAILED: restart"; exit 1; }; \
 	curl -sS --fail-with-body $(STUDIO_URL)/api/flows/$$id/state | grep -q '"status":"running"' || { echo "STUDIO FAILED: flow not running after a studio restart"; exit 1; }; \
 	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$id/stop >/dev/null || { echo "STUDIO FAILED: stop"; exit 1; }; \
 	[ "$$(nodes)" = 0 ] || { echo "STUDIO FAILED: $$(nodes) node containers left after stop"; exit 1; }; \
+	code=$$(curl -sS -o /dev/null -w '%{http_code}' "$(STUDIO_URL)/api/flows/$$id/nodes/consumer-1/tail?since=0"); \
+	[ "$$code" = 409 ] || { echo "STUDIO FAILED: tail of a stopped flow: $$code, want 409"; exit 1; }; \
 	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$id/deploy >/dev/null || { echo "STUDIO FAILED: redeploy"; exit 1; }; \
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$id || { echo "STUDIO FAILED: delete"; exit 1; }; \
 	[ "$$(nodes)" = 0 ] && [ ! -f "flows/$$id.json" ] || { echo "STUDIO FAILED: delete left $$(nodes) containers or flows/$$id.json"; exit 1; }; \

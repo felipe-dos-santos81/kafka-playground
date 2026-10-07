@@ -174,6 +174,7 @@ func TestUnroutedAPIAnswersJSON(t *testing.T) {
 		{"POST", "/api/typo", 404},
 		{"POST", "/api/health", 405},
 		{"PATCH", "/api/flows/deadbeef", 405},
+		{"PUT", "/api/flows/deadbeef/nodes/producer-1/send", 405},
 	} {
 		code, body := call(t, ts, c.method, c.path, nil)
 		var e struct{ Error string }
@@ -239,5 +240,25 @@ func TestEngineErrStatus(t *testing.T) {
 	engineErr(w, notDeployable)
 	if !strings.Contains(w.Body.String(), `"errors":[{"node":"producer-1","message":"value is required"}]`) {
 		t.Fatalf("422 body: %s", w.Body)
+	}
+}
+
+func TestProxy(t *testing.T) {
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTeapot)
+		fmt.Fprintf(w, `{"method":%q,"query":%q,"body":%q}`, r.Method, r.URL.RawQuery, b)
+	}))
+	w := httptest.NewRecorder()
+	proxy(w, httptest.NewRequest(http.MethodPost, "/api/flows/x/nodes/p/send?key=k", strings.NewReader(`{"a":1}`)), node.URL+"/send?key=k")
+	if want := `{"method":"POST","query":"key=k","body":"{\"a\":1}"}`; w.Code != http.StatusTeapot || w.Body.String() != want {
+		t.Fatalf("want the node's status and body passed through, got %d %s", w.Code, w.Body)
+	}
+	node.Close()
+	w = httptest.NewRecorder()
+	proxy(w, httptest.NewRequest(http.MethodGet, "/api/flows/x/nodes/p/tail", nil), node.URL+"/tail")
+	if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), `"error":"node: `) {
+		t.Fatalf("unreachable node: want 502 JSON, got %d %s", w.Code, w.Body)
 	}
 }

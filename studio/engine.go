@@ -173,3 +173,23 @@ func (e *Engine) Reconcile(ctx context.Context) error {
 	log.Printf("reconcile: removing %d containers of deleted flows", len(orphans))
 	return removeContainers(ctx, e.docker, orphans)
 }
+
+// NodeRunning is nil when node's container in flow id is running; otherwise
+// ErrNotRunning, wrapped with the node's state when the flow itself runs.
+func (e *Engine) NodeRunning(ctx context.Context, id, node string) error {
+	st, err := e.State(ctx, id)
+	if err != nil {
+		return err
+	}
+	if st.Status != "running" {
+		return ErrNotRunning
+	}
+	switch state := st.Nodes[node].State; state {
+	case "running":
+		return nil
+	case "":
+		return fmt.Errorf("node %s has no container: %w", node, ErrNotRunning)
+	default:
+		return fmt.Errorf("node %s is %s: %w", node, state, ErrNotRunning)
+	}
+}

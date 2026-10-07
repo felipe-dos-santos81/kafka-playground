@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"net/http"
 	"time"
@@ -39,9 +40,11 @@ func newMux(s *server, ui fs.FS) http.Handler {
 	mux.HandleFunc("POST /api/flows/{id}/deploy", s.deploy)
 	mux.HandleFunc("POST /api/flows/{id}/stop", s.stopFlow)
 	mux.HandleFunc("GET /api/flows/{id}/state", s.flowState)
+	mux.HandleFunc("POST /api/flows/{id}/nodes/{node}/send", s.nodeProxy("/send"))
+	mux.HandleFunc("GET /api/flows/{id}/nodes/{node}/tail", s.nodeProxy("/tail"))
 	// Method-less fallbacks keep every /api/ answer JSON: a known path with
 	// the wrong method is 405, anything else under /api/ is 404.
-	for _, path := range []string{"/api/health", "/api/flows", "/api/flows/{id}", "/api/flows/{id}/deploy", "/api/flows/{id}/stop", "/api/flows/{id}/state"} {
+	for _, path := range []string{"/api/health", "/api/flows", "/api/flows/{id}", "/api/flows/{id}/deploy", "/api/flows/{id}/stop", "/api/flows/{id}/state", "/api/flows/{id}/nodes/{node}/send", "/api/flows/{id}/nodes/{node}/tail"} {
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusMethodNotAllowed, r.Method+" is not allowed on "+r.URL.Path)
 		})
@@ -181,6 +184,43 @@ func (s *server) flowState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, http.StatusOK, st)
+}
+
+// nodeProxy forwards to path on the node's own container once it runs;
+// otherwise it answers 409 naming the node's state.
+func (s *server) nodeProxy(path string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, node := r.PathValue("id"), r.PathValue("node")
+		if err := s.engine.NodeRunning(r.Context(), id, node); err != nil {
+			engineErr(w, err)
+			return
+		}
+		proxy(w, r, "http://"+containerName(id, node)+nodeAddr+path+"?"+r.URL.RawQuery)
+	}
+}
+
+// proxy forwards r to url and copies the answer back; an unreachable node is 502.
+func proxy(w http.ResponseWriter, r *http.Request, url string) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	var body io.Reader
+	if r.Method != http.MethodGet {
+		body = http.MaxBytesReader(w, r.Body, 1<<20)
+	}
+	req, err := http.NewRequestWithContext(ctx, r.Method, url, body)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fail(w, http.StatusBadGateway, "node: "+err.Error())
+		return
+	}
+	defer res.Body.Close()
+	w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
+	w.WriteHeader(res.StatusCode)
+	io.Copy(w, res.Body)
 }
 
 // engineErr answers an engine error: 404 unknown flow, 422 not deployable,
