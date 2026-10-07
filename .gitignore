@@ -8,6 +8,8 @@
 /studio/ui/node_modules/
 /studio/ui/dist/*
 !/studio/ui/dist/.gitkeep
+/studio/ui/test-results/
+/studio/ui/playwright-report/
 
 # Agent scratch space and worktrees
 /.superpowers/

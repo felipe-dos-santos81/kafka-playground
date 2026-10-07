@@ -39,12 +39,16 @@ function Shell({ id, type, selected, children }: { id: string; type: NodeType; s
   const badgeClass = rt?.instances ? (runningCount === containers.length ? 'running' : 'exited') : rt?.state
   const line = rt ? runtimeLine(type, rt) : ''
   return (
-    <div className={`node ${type}${selected ? ' selected' : ''}`} title={rt?.lastError || undefined}>
+    <div data-testid={`node-${id}`} className={`node ${type}${selected ? ' selected' : ''}`} title={rt?.lastError || undefined}>
       <div className="node-title">
         {type} {rt && <span className={`node-state ${badgeClass}`}>{badge}</span>}
       </div>
       <div className="node-summary">{children}</div>
-      {line && <div className="node-runtime">{line}</div>}
+      {line && (
+        <div data-testid={`runtime-${id}`} className="node-runtime">
+          {line}
+        </div>
+      )}
       {hasInput(type) && <Handle type="target" position={Position.Left} />}
       {hasOutput(type) && <Handle type="source" position={Position.Right} />}
     </div>

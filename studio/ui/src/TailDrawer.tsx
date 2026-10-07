@@ -94,7 +94,7 @@ export default function TailDrawer({ flowId, node, instance, instances, onInstan
     )
 
   return (
-    <section className="drawer" ref={box} onScroll={onScroll}>
+    <section data-testid="tail" className="drawer" ref={box} onScroll={onScroll}>
       <header>
         <strong>{node.id}</strong> tail
         {instances.length > 0 && (

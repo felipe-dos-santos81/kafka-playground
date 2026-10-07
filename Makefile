@@ -19,7 +19,7 @@ svc ?= orders-workers orders-audit
 # Single-quote $(1) for the shell; fed $(value var), quotes, spaces and $ pass through untouched.
 shq = '$(subst ','\'',$(1))'
 
-.PHONY: help up down ps logs topics groups nodes produce scale verify verify-studio test
+.PHONY: help up down ps logs topics groups nodes produce scale verify verify-studio verify-ui test
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
@@ -186,6 +186,10 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	[ "$$code" = 404 ] || { echo "STUDIO FAILED: the events of a deleted flow answered $$code, want 404"; exit 1; }; \
 	echo "STUDIO OK ($$id)"
 
+verify-ui: up ## Check the studio's UI in a browser (Playwright, Chromium): editor, node types, live view; installs Chromium once
+	@cd studio/ui && { [ -d node_modules ] || npm ci; } && npx playwright install chromium && \
+		STUDIO_URL=$(STUDIO_URL) npx playwright test && echo "UI OK"
+
 # Waits until both groups have committed past the record (so it can no longer be
 # redelivered), then counts it in the logs: exactly once per group.
 verify: up verify-studio ## End-to-end check: studio API, then one record seen exactly once per consumer group
@@ -208,8 +212,8 @@ verify: up verify-studio ## End-to-end check: studio API, then one record seen e
 # ── Development ──────────────────────────────────────────────────────────────
 
 # gofmt -l lists unformatted files; tee shows them, and a non-empty list fails the step.
-test: ## Static checks and unit tests, no running stack needed: go vet, gofmt, go test, UI build (tsc), compose config
+test: ## Static checks and unit tests, no running stack needed: go vet, gofmt, go test, UI build (tsc), UI tests type-check, compose config
 	cd producer && go vet ./... && test -z "$$(gofmt -l . | tee /dev/stderr)"
 	cd studio && go vet ./... && test -z "$$(gofmt -l . | tee /dev/stderr)" && go test ./...
-	cd studio/ui && { [ -d node_modules ] || npm ci; } && npm run build
+	cd studio/ui && { [ -d node_modules ] || npm ci; } && npm run build && npx tsc -p e2e
 	$(COMPOSE) config --quiet
