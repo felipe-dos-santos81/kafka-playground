@@ -24,30 +24,20 @@ type Props = {
   onEdgesChange: OnEdgesChange
   setNodes: Dispatch<SetStateAction<StudioNode[]>>
   setEdges: Dispatch<SetStateAction<Edge[]>>
-  onEdit: () => void // called for edits that bypass onNodesChange/onEdgesChange (drop, connect)
   defaultViewport?: Viewport // initial viewport (read on mount); fits the view when absent
 }
 
-export default function Canvas({ nodes, edges, onNodesChange, onEdgesChange, setNodes, setEdges, onEdit, defaultViewport }: Props) {
-  const { screenToFlowPosition } = useReactFlow()
+export default function Canvas({ nodes, edges, onNodesChange, onEdgesChange, setNodes, setEdges, defaultViewport }: Props) {
+  const { screenToFlowPosition, getNode } = useReactFlow()
 
-  // Only the pairs flow.go allows; the backend re-checks on save. addEdge drops duplicates itself.
+  // Only the pairs flow.go allows (none pairs a type with itself, so no self edges);
+  // the backend re-checks on save. addEdge drops duplicates itself.
   const isValidConnection = useCallback(
-    (c: Edge | Connection) => {
-      const s = nodes.find((n) => n.id === c.source)
-      const t = nodes.find((n) => n.id === c.target)
-      return !!s && !!t && s.id !== t.id && canConnect(s.type, t.type)
-    },
-    [nodes],
+    (c: Edge | Connection) => canConnect(getNode(c.source)?.type, getNode(c.target)?.type),
+    [getNode],
   )
 
-  const onConnect = useCallback(
-    (c: Connection) => {
-      setEdges((eds) => addEdge(c, eds))
-      onEdit()
-    },
-    [setEdges, onEdit],
-  )
+  const onConnect = useCallback((c: Connection) => setEdges((eds) => addEdge(c, eds)), [setEdges])
 
   const onDrop = useCallback(
     (e: DragEvent) => {
@@ -56,9 +46,8 @@ export default function Canvas({ nodes, edges, onNodesChange, onEdgesChange, set
       if (!type) return
       const position = screenToFlowPosition({ x: e.clientX, y: e.clientY })
       setNodes((nds) => [...nds, { id: nextId(type, nds), type, position, data: defaultData(type) } as StudioNode])
-      onEdit()
     },
-    [screenToFlowPosition, setNodes, onEdit],
+    [screenToFlowPosition, setNodes],
   )
 
   return (

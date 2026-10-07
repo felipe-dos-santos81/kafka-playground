@@ -5,7 +5,7 @@ import FlowList from './FlowList'
 import Inspector from './Inspector'
 import Palette from './Palette'
 import { api, ApiError, type FlowSummary } from './flow/api'
-import { fillDefaults, type FlowFile } from './flow/schema'
+import { content, fillDefaults, snapshot } from './flow/schema'
 import type { StudioNode } from './nodes/types'
 
 function describe(e: unknown): string {
@@ -18,8 +18,9 @@ function Studio() {
   const { getViewport } = useReactFlow()
   const [flows, setFlows] = useState<FlowSummary[]>([])
   const [current, setCurrent] = useState<{ id: string; name: string; viewport?: Viewport } | null>(null)
-  const [dirty, setDirty] = useState(false)
+  const [saved, setSaved] = useState('') // snapshot of the flow as last loaded or saved
   const [error, setError] = useState('')
+  const dirty = current !== null && snapshot(current.name, content(nodes, edges)) !== saved
 
   const refresh = useCallback(() => api.list().then(setFlows).catch((e) => setError(describe(e))), [])
   useEffect(() => {
@@ -39,29 +40,20 @@ function Studio() {
     withTopBarError(async () => {
       const f = await api.get(id)
       // Hand-edited files may omit data fields: fill them from the defaults so the node
-      // components never crash, and mark the flow unsaved so the difference is visible.
-      const loaded = f.nodes.map(fillDefaults)
-      setNodes(loaded.map((l) => l.node) as unknown as StudioNode[])
+      // components never crash. The snapshot is the file as stored, so a fill shows as unsaved.
+      setNodes(f.nodes.map(fillDefaults) as unknown as StudioNode[])
       setEdges(f.edges)
       setCurrent({ id: f.id, name: f.name, viewport: f.viewport ?? undefined }) // Canvas mounts per flow and reads it as defaultViewport
-      setDirty(loaded.some((l) => l.filled))
+      setSaved(snapshot(f.name, content(f.nodes, f.edges)))
       setError('')
     })
-
-  // React Flow's shape is the file format: only drop runtime-only fields.
-  const toFile = (id: string, name: string): FlowFile => ({
-    id,
-    name,
-    nodes: nodes.map(({ id, type, position, data }) => ({ id, type: type!, position, data })),
-    edges: edges.map(({ id, source, target }) => ({ id, source, target })),
-    viewport: getViewport(),
-  })
 
   const save = () =>
     withTopBarError(async () => {
       if (!current) return
-      await api.save(toFile(current.id, current.name))
-      setDirty(false)
+      const c = content(nodes, edges)
+      await api.save({ id: current.id, name: current.name, ...c, viewport: getViewport() })
+      setSaved(snapshot(current.name, c)) // edits made while the request ran stay unsaved
       setError('')
       refresh()
     })
@@ -78,8 +70,7 @@ function Studio() {
     if (!name) return
     await withTopBarError(async () => {
       const f = await api.create({ name, nodes: [], edges: [] })
-      await refresh()
-      await load(f.id)
+      await Promise.all([refresh(), load(f.id)])
     })
   }
 
@@ -89,7 +80,6 @@ function Studio() {
       await api.remove(id)
       if (current?.id === id) {
         setCurrent(null)
-        setDirty(false)
         setNodes([])
         setEdges([])
       }
@@ -97,14 +87,8 @@ function Studio() {
     })
   }
 
-  // Selection and measurement changes are not edits.
-  const markDirtyOnEdit = (changes: { type: string }[]) => {
-    if (changes.some((c) => c.type !== 'select' && c.type !== 'dimensions')) setDirty(true)
-  }
-
   const updateData = (id: string, patch: Record<string, unknown>) => {
     setNodes((nds) => nds.map((n) => (n.id === id ? ({ ...n, data: { ...n.data, ...patch } } as StudioNode) : n)))
-    setDirty(true)
   }
 
   // React Flow tracks selection on the nodes; the inspector edits exactly one.
@@ -119,10 +103,7 @@ function Studio() {
           <>
             <input
               value={current.name}
-              onChange={(e) => {
-                setCurrent({ ...current, name: e.target.value })
-                setDirty(true)
-              }}
+              onChange={(e) => setCurrent({ ...current, name: e.target.value })}
             />
             <button onClick={save} disabled={!dirty}>
               {dirty ? 'Save' : 'Saved'}
@@ -142,17 +123,10 @@ function Studio() {
             defaultViewport={current.viewport}
             nodes={nodes}
             edges={edges}
-            onNodesChange={(c) => {
-              markDirtyOnEdit(c)
-              onNodesChange(c)
-            }}
-            onEdgesChange={(c) => {
-              markDirtyOnEdit(c)
-              onEdgesChange(c)
-            }}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
             setNodes={setNodes}
             setEdges={setEdges}
-            onEdit={() => setDirty(true)}
           />
         ) : (
           <p className="hint" style={{ padding: 16 }}>

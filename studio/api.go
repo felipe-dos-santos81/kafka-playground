@@ -145,14 +145,14 @@ func readFlow(w http.ResponseWriter, r *http.Request) (Flow, bool) {
 
 // storeErr answers 404 or 500 for a store error and reports whether it did.
 func storeErr(w http.ResponseWriter, err error) bool {
-	switch {
-	case err == nil:
+	if err == nil {
 		return false
-	case errors.Is(err, ErrNotFound):
-		fail(w, http.StatusNotFound, "flow not found")
-	default:
-		fail(w, http.StatusInternalServerError, err.Error())
 	}
+	status := http.StatusInternalServerError
+	if errors.Is(err, ErrNotFound) {
+		status = http.StatusNotFound
+	}
+	fail(w, status, err.Error())
 	return true
 }
 

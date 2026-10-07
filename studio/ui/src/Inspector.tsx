@@ -87,9 +87,7 @@ export default function Inspector({ node, onChange }: Props) {
             <option value="latest">latest</option>
           </select>
           <label>Sink</label>
-          <select value={node.data.sink.kind} disabled>
-            <option value="log">log (tail panel)</option>
-          </select>
+          <p>{node.data.sink.kind === 'log' ? 'log (tail panel)' : node.data.sink.kind}</p>
         </>
       )}
       {node.type === 'transform' && (

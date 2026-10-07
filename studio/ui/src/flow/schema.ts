@@ -1,3 +1,4 @@
+import type { XYPosition } from '@xyflow/react'
 import { z } from 'zod'
 
 export const NODE_TYPES = ['producer', 'topic', 'consumer', 'transform'] as const
@@ -57,24 +58,16 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 
 type FileNode = FlowFile['nodes'][number]
 
-// The node with every missing default data field filled in (one level into objects
-// such as sink); filled reports whether anything was added, i.e. the file lacked it.
-export function fillDefaults(node: FileNode): { node: FileNode; filled: boolean } {
-  const out = { ...node.data }
-  let filled = false
+// The node with every missing default data field filled in, one level into objects
+// such as sink, so a hand-edited file that omits fields still renders.
+export function fillDefaults(node: FileNode): FileNode {
+  const data = { ...node.data }
   for (const [k, v] of Object.entries(defaultData(node.type))) {
-    if (!(k in out)) {
-      out[k] = v
-      filled = true
-    } else if (isObject(v) && isObject(out[k])) {
-      const inner = { ...v, ...out[k] }
-      if (Object.keys(inner).length > Object.keys(out[k]).length) {
-        out[k] = inner
-        filled = true
-      }
-    }
+    const have = data[k]
+    if (!(k in data)) data[k] = v
+    else if (isObject(v) && isObject(have)) data[k] = { ...have, ...Object.fromEntries(Object.entries(v).filter(([n]) => !(n in have))) }
   }
-  return { node: { ...node, data: out }, filled }
+  return { ...node, data }
 }
 
 // Smallest unused "<type>-<n>"; ids must match the Go nodeIDRe.
@@ -85,3 +78,19 @@ export function nextId(type: NodeType, nodes: { id: string }[]): string {
     if (!used.has(id)) return id
   }
 }
+
+export type Content = Pick<FlowFile, 'nodes' | 'edges'>
+
+// What a flow file stores of the canvas: React Flow's shape without runtime-only fields.
+export function content(
+  nodes: { id: string; type?: NodeType; position: XYPosition; data: Record<string, unknown> }[],
+  edges: { id: string; source: string; target: string }[],
+): Content {
+  return {
+    nodes: nodes.map(({ id, type, position, data }) => ({ id, type: type!, position, data })),
+    edges: edges.map(({ id, source, target }) => ({ id, source, target })),
+  }
+}
+
+// Compared to tell unsaved edits; the viewport is left out because panning is not an edit.
+export const snapshot = (name: string, c: Content) => JSON.stringify({ name, ...c })

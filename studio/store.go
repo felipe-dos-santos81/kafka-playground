@@ -3,12 +3,12 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,11 +23,7 @@ var ErrNotFound = errors.New("flow not found")
 var flowIDRe = regexp.MustCompile(`^[0-9a-f]{8}$`)
 
 // NewID returns 8 random lowercase hex characters.
-func NewID() string {
-	b := make([]byte, 4)
-	rand.Read(b) // cannot fail on supported platforms
-	return hex.EncodeToString(b)
-}
+func NewID() string { return fmt.Sprintf("%08x", rand.Uint32()) }
 
 // path is the only way to a flow file: an id that is not 8 lowercase hex
 // characters (so no "..", no separators) is ErrNotFound.
@@ -96,13 +92,12 @@ func (s Store) Put(f Flow) error {
 	if err != nil {
 		return err
 	}
+	defer os.Remove(tmp.Name()) // a no-op once the rename has happened
 	if _, err := tmp.Write(append(b, '\n')); err != nil {
 		tmp.Close()
-		os.Remove(tmp.Name())
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
