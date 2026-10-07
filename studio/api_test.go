@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -167,6 +169,7 @@ func TestUnroutedAPIAnswersJSON(t *testing.T) {
 		want         int
 	}{
 		{"GET", "/api", 404},
+		{"GET", "/api/flows/deadbeef/deploy", 405},
 		{"GET", "/api/typo", 404},
 		{"POST", "/api/typo", 404},
 		{"POST", "/api/health", 405},
@@ -209,5 +212,32 @@ func TestCrossOriginWritesRefused(t *testing.T) {
 		if res.StatusCode != c.want || (c.want == 403 && e.Error == "") {
 			t.Errorf("%s with Sec-Fetch-Site %q: want %d, got %d %+v", c.method, c.site, c.want, res.StatusCode, e)
 		}
+	}
+}
+
+func TestEngineErrStatus(t *testing.T) {
+	notDeployable := Problems{{Node: "producer-1", Message: "value is required"}}
+	for _, c := range []struct {
+		err  error
+		want int
+	}{
+		{ErrNotFound, 404},
+		{notDeployable, 422},
+		{ErrRunning, 409},
+		{ErrNotRunning, 409},
+		{fmt.Errorf("node consumer-1 is exited: %w", ErrNotRunning), 409},
+		{errors.New("Error response from daemon: Conflict"), 502},
+	} {
+		w := httptest.NewRecorder()
+		engineErr(w, c.err)
+		var body map[string]any
+		if w.Code != c.want || json.Unmarshal(w.Body.Bytes(), &body) != nil {
+			t.Errorf("%v: want %d with a JSON body, got %d %s", c.err, c.want, w.Code, w.Body)
+		}
+	}
+	w := httptest.NewRecorder()
+	engineErr(w, notDeployable)
+	if !strings.Contains(w.Body.String(), `"errors":[{"node":"producer-1","message":"value is required"}]`) {
+		t.Fatalf("422 body: %s", w.Body)
 	}
 }

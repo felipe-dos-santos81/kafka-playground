@@ -19,6 +19,7 @@ type server struct {
 	store  Store
 	docker *client.Client // nil until main wires it; health then answers 503
 	kafka  *kgo.Client    // likewise
+	engine *Engine        // nil in unit tests; deploy, stop and state need it
 }
 
 type flowSummary struct {
@@ -35,9 +36,12 @@ func newMux(s *server, ui fs.FS) http.Handler {
 	mux.HandleFunc("GET /api/flows/{id}", s.getFlow)
 	mux.HandleFunc("PUT /api/flows/{id}", s.putFlow)
 	mux.HandleFunc("DELETE /api/flows/{id}", s.deleteFlow)
+	mux.HandleFunc("POST /api/flows/{id}/deploy", s.deploy)
+	mux.HandleFunc("POST /api/flows/{id}/stop", s.stopFlow)
+	mux.HandleFunc("GET /api/flows/{id}/state", s.flowState)
 	// Method-less fallbacks keep every /api/ answer JSON: a known path with
 	// the wrong method is 405, anything else under /api/ is 404.
-	for _, path := range []string{"/api/health", "/api/flows", "/api/flows/{id}"} {
+	for _, path := range []string{"/api/health", "/api/flows", "/api/flows/{id}", "/api/flows/{id}/deploy", "/api/flows/{id}/stop", "/api/flows/{id}/state"} {
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusMethodNotAllowed, r.Method+" is not allowed on "+r.URL.Path)
 		})
@@ -92,9 +96,19 @@ func (s *server) listFlows(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	running := map[string]bool{}
+	if s.engine != nil {
+		if rs, err := s.engine.Running(r.Context()); err == nil {
+			running = rs // Docker unreachable: every flow shows stopped and health says why
+		}
+	}
 	out := make([]flowSummary, 0, len(flows))
 	for _, f := range flows {
-		out = append(out, flowSummary{ID: f.ID, Name: f.Name, Status: "stopped"}) // M2: status from the engine
+		status := "stopped"
+		if running[f.ID] {
+			status = "running"
+		}
+		out = append(out, flowSummary{ID: f.ID, Name: f.Name, Status: status})
 	}
 	reply(w, http.StatusOK, out)
 }
@@ -129,11 +143,60 @@ func (s *server) putFlow(w http.ResponseWriter, r *http.Request) {
 	s.saveFlow(w, f, http.StatusOK)
 }
 
+// deleteFlow stops a running flow first, so no container outlives its file.
 func (s *server) deleteFlow(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.Delete(r.PathValue("id")); storeErr(w, err) {
+	id := r.PathValue("id")
+	if s.engine != nil {
+		if err := s.engine.Stop(r.Context(), id); err != nil && !errors.Is(err, ErrNotRunning) && !errors.Is(err, ErrNotFound) {
+			engineErr(w, err)
+			return
+		}
+	}
+	if err := s.store.Delete(id); storeErr(w, err) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) deploy(w http.ResponseWriter, r *http.Request) {
+	if err := s.engine.Deploy(r.Context(), r.PathValue("id")); err != nil {
+		engineErr(w, err)
+		return
+	}
+	reply(w, http.StatusOK, map[string]string{"status": "running"})
+}
+
+func (s *server) stopFlow(w http.ResponseWriter, r *http.Request) {
+	if err := s.engine.Stop(r.Context(), r.PathValue("id")); err != nil {
+		engineErr(w, err)
+		return
+	}
+	reply(w, http.StatusOK, map[string]string{"status": "stopped"})
+}
+
+func (s *server) flowState(w http.ResponseWriter, r *http.Request) {
+	st, err := s.engine.State(r.Context(), r.PathValue("id"))
+	if err != nil {
+		engineErr(w, err)
+		return
+	}
+	reply(w, http.StatusOK, st)
+}
+
+// engineErr answers an engine error: 404 unknown flow, 422 not deployable,
+// 409 already running or not running, 502 Docker, Kafka or a node.
+func engineErr(w http.ResponseWriter, err error) {
+	var ps Problems
+	switch {
+	case errors.Is(err, ErrNotFound):
+		fail(w, http.StatusNotFound, err.Error())
+	case errors.As(err, &ps):
+		reply(w, http.StatusUnprocessableEntity, map[string]any{"errors": []Problem(ps)})
+	case errors.Is(err, ErrRunning), errors.Is(err, ErrNotRunning):
+		fail(w, http.StatusConflict, err.Error())
+	default:
+		fail(w, http.StatusBadGateway, err.Error())
+	}
 }
 
 // saveFlow validates f at save level and stores it, answering 422, 500 or status with the flow.

@@ -18,7 +18,7 @@ svc ?= orders-workers orders-audit
 # Single-quote $(1) for the shell; fed $(value var), quotes, spaces and $ pass through untouched.
 shq = '$(subst ','\'',$(1))'
 
-.PHONY: help up down ps logs topics groups produce scale verify verify-studio
+.PHONY: help up down ps logs topics groups nodes produce scale verify verify-studio
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
@@ -35,7 +35,8 @@ up: ## [STEP 1] Start everything and wait until it is healthy
 	$(COMPOSE) up -d --wait
 	@echo "Producer page: $(PRODUCER_URL)   Console: $(CONSOLE_URL)   Studio: $(STUDIO_URL)   Broker from the host: localhost:9092"
 
-down: ## Remove every container (topics and messages are lost)
+down: ## Remove every container, Studio node containers first (topics and messages are lost)
+	@ids=$$(docker ps -aq -f label=studio.flow); [ -z "$$ids" ] || docker rm -f $$ids >/dev/null
 	$(COMPOSE) down --remove-orphans
 
 ps: ## Show every container, including exited topic jobs
@@ -51,6 +52,9 @@ topics: ## Describe every topic: partitions, leaders, replicas
 
 groups: ## [STEP 5] Describe every consumer group: members, partitions, lag
 	$(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --describe --all-groups
+
+nodes: ## List Studio node containers: one per producer and consumer of each deployed flow
+	docker ps -a -f label=studio.flow
 
 # ── Produce ──────────────────────────────────────────────────────────────────
 
@@ -68,19 +72,36 @@ scale: ## [STEP 4] Set the number of orders-workers group members (usage: make s
 
 # ── Studio ───────────────────────────────────────────────────────────────────
 
-verify-studio: up ## Check the studio API: health, create, reject a bad edge, read back, delete
+verify-studio: up ## Check the studio end to end: health, cross-site refusal, save rules, deploy (rollback, 409, restart), stop, delete
 	@health=$$(curl -sS --fail-with-body $(STUDIO_URL)/api/health) || { echo "STUDIO FAILED: health: $$health"; exit 1; }; \
 	echo "studio health: $$health"; \
-	flow='{"name":"verify","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":{"source":"manual","key":"","value":"{}"}},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"verify","partitions":1,"replication_factor":1}}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"}]}'; \
+	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows -H 'Sec-Fetch-Site: cross-site' --data '{"name":"x"}'); \
+	[ "$$code" = 403 ] || { echo "STUDIO FAILED: cross-site write accepted ($$code)"; exit 1; }; \
+	flow='{"name":"verify","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":{"source":"manual","key":"","value":"{}"}},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"studio-verify","partitions":1,"replication_factor":1}},{"id":"consumer-1","type":"consumer","position":{"x":400,"y":0},"data":{"group":"studio-verify","auto_offset_reset":"earliest","sink":{"kind":"log"}}}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"},{"id":"e2","source":"topic-1","target":"consumer-1"}]}'; \
 	created=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$flow") || { echo "STUDIO FAILED: create: $$created"; exit 1; }; \
 	id=$$(echo "$$created" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'); \
+	trap "curl -sS -X DELETE $(STUDIO_URL)/api/flows/$$id >/dev/null 2>&1; docker rm -f studio-$$id-consumer-1 >/dev/null 2>&1" EXIT; \
+	nodes() { docker ps -aq -f label=studio.flow=$$id | wc -l | tr -d ' '; }; \
 	[ -f "flows/$$id.json" ] || { echo "STUDIO FAILED: flows/$$id.json not written ($$created)"; exit 1; }; \
 	bad=$$(echo "$$flow" | sed 's/"source":"producer-1","target":"topic-1"/"source":"topic-1","target":"producer-1"/'); \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X PUT $(STUDIO_URL)/api/flows/$$id -H 'Content-Type: application/json' --data "$$bad"); \
 	[ "$$code" = 422 ] || { echo "STUDIO FAILED: bad edge accepted ($$code)"; exit 1; }; \
 	curl -sS --fail-with-body $(STUDIO_URL)/api/flows/$$id | grep -q '"name":"verify"' || { echo "STUDIO FAILED: round trip"; exit 1; }; \
+	docker create --name studio-$$id-consumer-1 $$(docker inspect -f '{{.Config.Image}}' $$($(COMPOSE) ps -q studio)) >/dev/null; \
+	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows/$$id/deploy); \
+	docker rm studio-$$id-consumer-1 >/dev/null; \
+	[ "$$code" = 502 ] && [ "$$(nodes)" = 0 ] || { echo "STUDIO FAILED: deploy into a taken name: $$code with $$(nodes) containers left (want 502, 0)"; exit 1; }; \
+	deployed=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$id/deploy) || { echo "STUDIO FAILED: deploy: $$deployed"; exit 1; }; \
+	[ "$$(nodes)" = 2 ] || { echo "STUDIO FAILED: $$(nodes) node containers after deploy, want 2"; exit 1; }; \
+	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows/$$id/deploy); \
+	[ "$$code" = 409 ] && [ "$$(nodes)" = 2 ] || { echo "STUDIO FAILED: second deploy: $$code with $$(nodes) containers (want 409, 2)"; exit 1; }; \
+	$(COMPOSE) restart studio >/dev/null 2>&1 && $(COMPOSE) up -d --wait studio >/dev/null 2>&1 || { echo "STUDIO FAILED: restart"; exit 1; }; \
+	curl -sS --fail-with-body $(STUDIO_URL)/api/flows/$$id/state | grep -q '"status":"running"' || { echo "STUDIO FAILED: flow not running after a studio restart"; exit 1; }; \
+	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$id/stop >/dev/null || { echo "STUDIO FAILED: stop"; exit 1; }; \
+	[ "$$(nodes)" = 0 ] || { echo "STUDIO FAILED: $$(nodes) node containers left after stop"; exit 1; }; \
+	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$id/deploy >/dev/null || { echo "STUDIO FAILED: redeploy"; exit 1; }; \
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$id || { echo "STUDIO FAILED: delete"; exit 1; }; \
-	[ ! -f "flows/$$id.json" ] || { echo "STUDIO FAILED: flows/$$id.json still exists"; exit 1; }; \
+	[ "$$(nodes)" = 0 ] && [ ! -f "flows/$$id.json" ] || { echo "STUDIO FAILED: delete left $$(nodes) containers or flows/$$id.json"; exit 1; }; \
 	echo "STUDIO OK ($$id)"
 
 # ── Verify ───────────────────────────────────────────────────────────────────

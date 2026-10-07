@@ -5,12 +5,14 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -56,7 +58,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	s := &server{store: Store{dir: dir}, docker: cli, kafka: kafka}
+	store := Store{dir: dir}
+	engine := &Engine{store: store, docker: cli, adm: kadm.NewClient(kafka), brokers: brokers}
+	if err := engine.Reconcile(context.Background()); err != nil {
+		log.Println("reconcile:", err) // health says why; orphans stay until the next start
+	}
+	s := &server{store: store, docker: cli, kafka: kafka, engine: engine}
 	log.Println("studio on", addr, "flows in", dir)
 	log.Fatal(http.ListenAndServe(addr, newMux(s, ui)))
 }
