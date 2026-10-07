@@ -10,6 +10,7 @@ import {
   type Edge,
   type OnEdgesChange,
   type OnNodesChange,
+  type Viewport,
 } from '@xyflow/react'
 import { DRAG_TYPE } from './Palette'
 import { canConnect, defaultData, nextId, type NodeType } from './flow/schema'
@@ -29,9 +30,10 @@ type Props = {
   setEdges: Dispatch<SetStateAction<Edge[]>>
   onSelect: (id: string | null) => void
   onEdit: () => void // called for edits that bypass onNodesChange/onEdgesChange (drop, connect)
+  defaultViewport?: Viewport // initial viewport (read on mount); fits the view when absent
 }
 
-export default function Canvas({ nodes, edges, onNodesChange, onEdgesChange, setNodes, setEdges, onSelect, onEdit }: Props) {
+export default function Canvas({ nodes, edges, onNodesChange, onEdgesChange, setNodes, setEdges, onSelect, onEdit, defaultViewport }: Props) {
   const { screenToFlowPosition } = useReactFlow()
 
   // Only the pairs flow.go allows; the backend re-checks on save. addEdge drops duplicates itself.
@@ -80,7 +82,8 @@ export default function Canvas({ nodes, edges, onNodesChange, onEdgesChange, set
       }}
       onSelectionChange={({ nodes: sel }) => onSelect(sel[0]?.id ?? null)}
       deleteKeyCode={['Backspace', 'Delete']}
-      fitView
+      defaultViewport={defaultViewport}
+      fitView={!defaultViewport}
     >
       <Background />
       <Controls />

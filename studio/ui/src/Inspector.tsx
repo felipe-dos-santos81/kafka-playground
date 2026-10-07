@@ -17,7 +17,15 @@ export default function Inspector({ node, onChange }: Props) {
       {node.type === 'producer' && (
         <>
           <label>Source</label>
-          <select value={node.data.source} onChange={(e) => set({ source: e.target.value })}>
+          <select
+            value={node.data.source}
+            onChange={(e) =>
+              set({
+                source: e.target.value,
+                ...(e.target.value === 'timer' && { interval_ms: node.data.interval_ms ?? 1000 }),
+              })
+            }
+          >
             <option value="manual">manual</option>
             <option value="timer">timer</option>
           </select>

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ReactFlowProvider, useEdgesState, useNodesState, useReactFlow, type Edge } from '@xyflow/react'
+import { ReactFlowProvider, useEdgesState, useNodesState, useReactFlow, type Edge, type Viewport } from '@xyflow/react'
 import Canvas from './Canvas'
 import FlowList from './FlowList'
 import Inspector from './Inspector'
 import Palette from './Palette'
 import { api, ApiError, type FlowSummary } from './flow/api'
-import type { FlowFile } from './flow/schema'
+import { defaultData, type FlowFile } from './flow/schema'
 import type { StudioNode } from './nodes/types'
 
 function describe(e: unknown): string {
@@ -15,9 +15,9 @@ function describe(e: unknown): string {
 function Studio() {
   const [nodes, setNodes, onNodesChange] = useNodesState<StudioNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
-  const { getViewport, setViewport } = useReactFlow()
+  const { getViewport } = useReactFlow()
   const [flows, setFlows] = useState<FlowSummary[]>([])
-  const [current, setCurrent] = useState<{ id: string; name: string } | null>(null)
+  const [current, setCurrent] = useState<{ id: string; name: string; viewport?: Viewport } | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState('')
@@ -30,10 +30,10 @@ function Studio() {
   const load = async (id: string) => {
     try {
       const f = await api.get(id)
-      setNodes(f.nodes as unknown as StudioNode[]) // the backend validated the per-type data
+      // Hand-edited files may omit data fields: fill them from the defaults so the node components never crash.
+      setNodes(f.nodes.map((n) => ({ ...n, data: { ...defaultData(n.type), ...n.data } })) as unknown as StudioNode[])
       setEdges(f.edges)
-      setViewport(f.viewport ?? { x: 0, y: 0, zoom: 1 })
-      setCurrent({ id: f.id, name: f.name })
+      setCurrent({ id: f.id, name: f.name, viewport: f.viewport }) // Canvas mounts per flow and reads it as defaultViewport
       setSelected(null)
       setDirty(false)
       setError('')
@@ -63,7 +63,14 @@ function Studio() {
     }
   }
 
+  const discard = () => !dirty || window.confirm('Discard unsaved changes?')
+
+  const open = (id: string) => {
+    if (discard()) load(id)
+  }
+
   const create = async () => {
+    if (!discard()) return
     const name = window.prompt('Flow name')?.trim()
     if (!name) return
     try {
@@ -81,6 +88,7 @@ function Studio() {
       await api.remove(id)
       if (current?.id === id) {
         setCurrent(null)
+        setDirty(false)
         setNodes([])
         setEdges([])
       }
@@ -123,12 +131,14 @@ function Studio() {
         {error && <span className="error">{error}</span>}
       </header>
       <aside className="side">
-        <FlowList flows={flows} currentId={current?.id ?? null} onOpen={load} onCreate={create} onDelete={remove} />
+        <FlowList flows={flows} currentId={current?.id ?? null} onOpen={open} onCreate={create} onDelete={remove} />
         <Palette />
       </aside>
       <main className="canvas">
         {current ? (
           <Canvas
+            key={current.id}
+            defaultViewport={current.viewport}
             nodes={nodes}
             edges={edges}
             onNodesChange={(c) => {
