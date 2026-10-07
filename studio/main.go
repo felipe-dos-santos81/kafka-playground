@@ -1,6 +1,7 @@
 // Pipeline Studio: build Kafka pipelines on a canvas and run them. `studio`
 // serves the UI and API on :8082; `studio -healthcheck` is the compose
-// healthcheck (the scratch image has no curl). M2 adds the `node` role.
+// healthcheck (the scratch image has no curl); `studio node` runs one node of
+// a deployed flow (node.go).
 package main
 
 import (
@@ -26,6 +27,10 @@ func main() {
 		if err != nil || r.StatusCode != http.StatusOK {
 			os.Exit(1)
 		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "node" {
+		runNode()
 		return
 	}
 	dir := os.Getenv("STUDIO_DATA")

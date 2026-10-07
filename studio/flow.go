@@ -278,19 +278,28 @@ func decodeData(n Node, into any, add func(node, edge, format string, args ...an
 	return true
 }
 
-// checkTemplate parses a producer template and renders it once with Seq=1;
-// with mustBeJSON the rendering must be valid JSON.
-func checkTemplate(src string, mustBeJSON bool) error {
+// render executes a producer key or value template with d.
+func render(src string, d templateData) (string, error) {
 	t, err := template.New("").Parse(src)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, d); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// checkTemplate renders a producer template once with Seq=1; with mustBeJSON the
+// result must be valid JSON.
+func checkTemplate(src string, mustBeJSON bool) error {
+	out, err := render(src, templateData{Seq: 1, Now: "2026-01-01T00:00:00Z"})
 	if err != nil {
 		return err
 	}
-	var buf bytes.Buffer
-	if err := t.Execute(&buf, templateData{Seq: 1, Now: "2026-01-01T00:00:00Z"}); err != nil {
-		return err
-	}
-	if mustBeJSON && !json.Valid(buf.Bytes()) {
-		return fmt.Errorf("renders to invalid JSON: %s", buf.String())
+	if mustBeJSON && !json.Valid([]byte(out)) {
+		return fmt.Errorf("renders to invalid JSON: %s", out)
 	}
 	return nil
 }
