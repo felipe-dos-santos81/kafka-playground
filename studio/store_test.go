@@ -5,14 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
 
 func TestNewID(t *testing.T) {
 	a, b := NewID(), NewID()
-	if !regexp.MustCompile(`^[0-9a-f]{8}$`).MatchString(a) || a == b {
+	if !flowIDRe.MatchString(a) || a == b {
 		t.Fatalf("want two distinct 8-hex ids, got %q %q", a, b)
 	}
 }

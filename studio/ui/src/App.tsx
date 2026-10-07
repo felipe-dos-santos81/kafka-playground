@@ -18,7 +18,6 @@ function Studio() {
   const { getViewport } = useReactFlow()
   const [flows, setFlows] = useState<FlowSummary[]>([])
   const [current, setCurrent] = useState<{ id: string; name: string; viewport?: Viewport } | null>(null)
-  const [selected, setSelected] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState('')
 
@@ -45,7 +44,6 @@ function Studio() {
       setNodes(loaded.map(({ node, data }) => ({ ...node, data })) as unknown as StudioNode[])
       setEdges(f.edges)
       setCurrent({ id: f.id, name: f.name, viewport: f.viewport ?? undefined }) // Canvas mounts per flow and reads it as defaultViewport
-      setSelected(null)
       setDirty(loaded.some((l) => l.filled))
       setError('')
     })
@@ -109,7 +107,7 @@ function Studio() {
     setDirty(true)
   }
 
-  const node = nodes.find((n) => n.id === selected) ?? null
+  const node = nodes.find((n) => n.selected) ?? null // React Flow tracks selection on the nodes
 
   return (
     <div className="studio">
@@ -152,7 +150,6 @@ function Studio() {
             }}
             setNodes={setNodes}
             setEdges={setEdges}
-            onSelect={setSelected}
             onEdit={() => setDirty(true)}
           />
         ) : (

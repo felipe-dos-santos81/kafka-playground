@@ -20,11 +20,11 @@ html, body, #root { margin: 0; height: 100%; }
 .flows { list-style: none; padding: 0; margin: 0 0 16px; }
 .flows li { display: flex; justify-content: space-between; padding: 4px 0; cursor: pointer; }
 .flows li.current { font-weight: 600; }
-.palette-item { padding: 8px; margin: 6px 0; border: 2px solid #999; border-radius: 4px; cursor: grab; background: #fff; }
+.palette-item { text-transform: capitalize; padding: 8px; margin: 6px 0; border: 2px solid #999; border-radius: 4px; cursor: grab; background: #fff; }
 .hint { color: #666; font-size: 12px; }
 .node { min-width: 160px; padding: 6px 10px; border: 2px solid #999; border-radius: 6px; background: #fff; }
 .node.selected { box-shadow: 0 0 0 2px #1976d2; }
-.node-title { font-weight: 600; }
+.node-title { font-weight: 600; text-transform: capitalize; }
 .node-summary { color: #555; font-size: 12px; }
 .producer { border-color: #2e7d32; }
 .topic { border-color: #ef6c00; }

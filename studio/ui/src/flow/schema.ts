@@ -32,6 +32,8 @@ export const FlowSchema = z.object({
 })
 export type FlowFile = z.infer<typeof FlowSchema>
 
+export const DEFAULT_INTERVAL_MS = 1000 // a timer producer's interval until one is set
+
 // What a node dragged from the palette starts with.
 export function defaultData(type: NodeType): Record<string, unknown> {
   switch (type) {

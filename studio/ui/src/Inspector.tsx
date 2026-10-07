@@ -1,3 +1,4 @@
+import { DEFAULT_INTERVAL_MS } from './flow/schema'
 import type { StudioNode } from './nodes/types'
 
 type Props = {
@@ -22,7 +23,7 @@ export default function Inspector({ node, onChange }: Props) {
             onChange={(e) =>
               set({
                 source: e.target.value,
-                ...(e.target.value === 'timer' && { interval_ms: node.data.interval_ms ?? 1000 }),
+                ...(e.target.value === 'timer' && { interval_ms: node.data.interval_ms ?? DEFAULT_INTERVAL_MS }),
               })
             }
           >
@@ -35,7 +36,7 @@ export default function Inspector({ node, onChange }: Props) {
               <input
                 type="number"
                 min={10}
-                value={node.data.interval_ms ?? 1000}
+                value={node.data.interval_ms ?? DEFAULT_INTERVAL_MS}
                 onChange={(e) => set({ interval_ms: Number(e.target.value) })}
               />
             </>

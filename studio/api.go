@@ -9,7 +9,6 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/moby/moby/client"
@@ -26,7 +25,7 @@ type flowSummary struct {
 	Status string `json:"status"`
 }
 
-func newMux(s *server, ui fs.FS) http.Handler {
+func newMux(s *server, ui fs.FS) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/flows", s.listFlows)
@@ -34,34 +33,22 @@ func newMux(s *server, ui fs.FS) http.Handler {
 	mux.HandleFunc("GET /api/flows/{id}", s.getFlow)
 	mux.HandleFunc("PUT /api/flows/{id}", s.putFlow)
 	mux.HandleFunc("DELETE /api/flows/{id}", s.deleteFlow)
-	mux.Handle("GET /", http.FileServerFS(ui))
-	return apiJSON(mux)
-}
-
-// apiJSON answers unrouted /api/ requests with JSON errors; the mux alone would
-// answer in plain text, or hand GETs to the UI's catch-all.
-func apiJSON(mux *http.ServeMux) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/") || routed(mux, r, r.Method) {
-			mux.ServeHTTP(w, r)
-			return
-		}
-		for _, m := range []string{"GET", "POST", "PUT", "DELETE"} {
-			if routed(mux, r, m) {
-				fail(w, http.StatusMethodNotAllowed, r.Method+" is not allowed on "+r.URL.Path)
-				return
-			}
-		}
+	// Method-less fallbacks keep every /api/ answer JSON: a known path with
+	// the wrong method is 405, anything else under /api/ is 404.
+	for _, path := range []string{"/api/health", "/api/flows", "/api/flows/{id}"} {
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			fail(w, http.StatusMethodNotAllowed, r.Method+" is not allowed on "+r.URL.Path)
+		})
+	}
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "no such endpoint: "+r.URL.Path)
 	})
-}
-
-// routed reports whether method on r's path reaches an API route, not the UI catch-all.
-func routed(mux *http.ServeMux, r *http.Request, method string) bool {
-	c := r.Clone(r.Context())
-	c.Method = method
-	_, pattern := mux.Handler(c)
-	return pattern != "" && pattern != "GET /"
+	// The UI is index.html plus Vite's assets/; narrower than "GET /" so it
+	// cannot collide with the method-less /api/ routes above.
+	files := http.FileServerFS(ui)
+	mux.Handle("GET /{$}", files)
+	mux.Handle("GET /assets/", files)
+	return mux
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +80,7 @@ func (s *server) listFlows(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) createFlow(w http.ResponseWriter, r *http.Request) {
-	f, ok := s.readFlow(w, r)
+	f, ok := readFlow(w, r)
 	if !ok {
 		return
 	}
@@ -103,7 +90,7 @@ func (s *server) createFlow(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) getFlow(w http.ResponseWriter, r *http.Request) {
 	f, err := s.store.Get(r.PathValue("id"))
-	if s.storeErr(w, err) {
+	if storeErr(w, err) {
 		return
 	}
 	reply(w, http.StatusOK, f)
@@ -111,10 +98,10 @@ func (s *server) getFlow(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) putFlow(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.store.Get(id); s.storeErr(w, err) {
+	if _, err := s.store.Get(id); storeErr(w, err) {
 		return
 	}
-	f, ok := s.readFlow(w, r)
+	f, ok := readFlow(w, r)
 	if !ok {
 		return
 	}
@@ -123,7 +110,7 @@ func (s *server) putFlow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) deleteFlow(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.Delete(r.PathValue("id")); s.storeErr(w, err) {
+	if err := s.store.Delete(r.PathValue("id")); storeErr(w, err) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -143,7 +130,7 @@ func (s *server) saveFlow(w http.ResponseWriter, f Flow, status int) {
 }
 
 // readFlow decodes a flow from a body capped at 1 MiB; on failure it has already answered 400.
-func (s *server) readFlow(w http.ResponseWriter, r *http.Request) (Flow, bool) {
+func readFlow(w http.ResponseWriter, r *http.Request) (Flow, bool) {
 	var f Flow
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&f); err != nil {
 		fail(w, http.StatusBadRequest, "body: "+err.Error())
@@ -154,7 +141,7 @@ func (s *server) readFlow(w http.ResponseWriter, r *http.Request) (Flow, bool) {
 }
 
 // storeErr answers 404 or 500 for a store error and reports whether it did.
-func (s *server) storeErr(w http.ResponseWriter, err error) bool {
+func storeErr(w http.ResponseWriter, err error) bool {
 	switch {
 	case err == nil:
 		return false

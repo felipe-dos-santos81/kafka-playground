@@ -138,8 +138,8 @@ func Validate(f *Flow, level Level) []Problem {
 			types[n.ID] = n.Type
 		}
 	}
-	inDegree := map[string]int{}        // node id → number of incoming edges
-	outTargets := map[string][]string{} // node id → target node ids
+	inDegree := map[string]int{}  // node id → number of incoming edges
+	outDegree := map[string]int{} // node id → number of outgoing edges
 	edgeIDs := map[string]bool{}
 	seen := map[[2]string]bool{}
 	for _, e := range f.Edges {
@@ -169,7 +169,7 @@ func Validate(f *Flow, level Level) []Problem {
 		}
 		seen[[2]string{e.Source, e.Target}] = true
 		inDegree[e.Target]++
-		outTargets[e.Source] = append(outTargets[e.Source], e.Target)
+		outDegree[e.Source]++
 	}
 	if level == Save {
 		return ps
@@ -199,7 +199,7 @@ func Validate(f *Flow, level Level) []Problem {
 			if err := checkTemplate(d.Key, false); err != nil {
 				add(n.ID, "", "key: %v", err)
 			}
-			if len(outTargets[n.ID]) != 1 {
+			if outDegree[n.ID] != 1 {
 				add(n.ID, "", "a producer needs exactly one edge to a topic")
 			}
 		case "topic":
@@ -247,7 +247,7 @@ func Validate(f *Flow, level Level) []Problem {
 			if inDegree[n.ID] != 1 {
 				add(n.ID, "", "a consumer needs exactly one edge from a topic")
 			}
-			if len(outTargets[n.ID]) > 1 {
+			if outDegree[n.ID] > 1 {
 				add(n.ID, "", "a consumer may forward to at most one topic or transform")
 			}
 		case "transform":
@@ -258,7 +258,7 @@ func Validate(f *Flow, level Level) []Problem {
 			if strings.TrimSpace(d.Expr) == "" {
 				add(n.ID, "", "expr is required")
 			}
-			if inDegree[n.ID] != 1 || len(outTargets[n.ID]) != 1 {
+			if inDegree[n.ID] != 1 || outDegree[n.ID] != 1 {
 				add(n.ID, "", "a transform needs one edge from a consumer and one edge to a topic")
 			}
 		}

@@ -29,7 +29,14 @@ func NewID() string {
 	return hex.EncodeToString(b)
 }
 
-func (s Store) path(id string) string { return filepath.Join(s.dir, id+".json") }
+// path is the only way to a flow file: an id that is not 8 lowercase hex
+// characters (so no "..", no separators) is ErrNotFound.
+func (s Store) path(id string) (string, error) {
+	if !flowIDRe.MatchString(id) {
+		return "", ErrNotFound
+	}
+	return filepath.Join(s.dir, id+".json"), nil
+}
 
 // List returns every readable flow sorted by name; a file that does not parse
 // is logged and skipped so one hand-edited mistake does not hide the rest.
@@ -57,10 +64,11 @@ func (s Store) List() ([]Flow, error) {
 
 func (s Store) Get(id string) (Flow, error) {
 	var f Flow
-	if !flowIDRe.MatchString(id) {
-		return f, ErrNotFound
+	path, err := s.path(id)
+	if err != nil {
+		return f, err
 	}
-	b, err := os.ReadFile(s.path(id))
+	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return f, ErrNotFound
 	}
@@ -76,8 +84,9 @@ func (s Store) Get(id string) (Flow, error) {
 }
 
 func (s Store) Put(f Flow) error {
-	if !flowIDRe.MatchString(f.ID) {
-		return ErrNotFound
+	path, err := s.path(f.ID)
+	if err != nil {
+		return err
 	}
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
@@ -96,14 +105,15 @@ func (s Store) Put(f Flow) error {
 		os.Remove(tmp.Name())
 		return err
 	}
-	return os.Rename(tmp.Name(), s.path(f.ID))
+	return os.Rename(tmp.Name(), path)
 }
 
 func (s Store) Delete(id string) error {
-	if !flowIDRe.MatchString(id) {
-		return ErrNotFound
+	path, err := s.path(id)
+	if err != nil {
+		return err
 	}
-	err := os.Remove(s.path(id))
+	err = os.Remove(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return ErrNotFound
 	}

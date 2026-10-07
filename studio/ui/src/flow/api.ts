@@ -1,16 +1,14 @@
 import { FlowSchema, type FlowFile } from './schema'
 
 export type FlowSummary = { id: string; name: string; status: string }
-export type Problem = { node?: string; edge?: string; message: string }
+type Problem = { node?: string; edge?: string; message: string }
 
 // No constructor parameter properties: the Vite template enables erasableSyntaxOnly.
 export class ApiError extends Error {
   status: number
-  problems: Problem[]
-  constructor(status: number, message: string, problems: Problem[] = []) {
+  constructor(status: number, message: string) {
     super(message)
     this.status = status
-    this.problems = problems
   }
 }
 
@@ -25,7 +23,7 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
       (problems.length
         ? problems.map((p) => `${p.node ?? p.edge ?? 'flow'}: ${p.message}`).join('; ')
         : res.statusText)
-    throw new ApiError(res.status, message, problems)
+    throw new ApiError(res.status, message)
   }
   return body as T
 }
