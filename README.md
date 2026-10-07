@@ -73,13 +73,18 @@ Consumers sharing a `GROUP_ID` split the partitions; without one, each container
 
 ## Pipeline Studio
 
-On http://localhost:8082: drag Producer, Topic and Consumer nodes from the palette, wire them, edit the selected node on the right, Save.
+On http://localhost:8082: drag Producer, Topic and Consumer nodes from the palette, wire them, edit the selected node on the right, Save, Deploy.
 
 - Allowed edges: Producer → Topic, Topic → Consumer, Consumer → Topic. Consumer → Transform → Topic is reserved for a later milestone: a Transform node in a flow file shows and edits, but the palette doesn't offer it yet. The editor refuses other wires; the server rejects them on save.
 - Opening a flow file that lacks some node fields fills in the defaults and marks the flow unsaved; the file changes only when you Save.
 - Each flow is `flows/<id>.json`: React Flow's nodes and edges (each edge with a unique `id`) plus `id`, `name` and `viewport`. Edit, copy or commit them; a file that does not parse is skipped and logged. `flows/0a1b2c3d.json` is an example.
-- The API lives under `/api` and always answers JSON: an unknown path is 404, a wrong method 405, errors are `{"error": "..."}`.
-- Deploy is not built yet. `GET /api/health` reports the Docker Engine version reachable through the mounted `/var/run/docker.sock`; deploy will run each node as a container. That socket is root-equivalent on the host, another reason the studio stays on `127.0.0.1`.
+- **Deploy** runs the saved flow: it creates the topics (a topic that exists is used as it is) and starts one container per producer and consumer, named `studio-<flow>-<node>` and labelled `studio.flow`. `make nodes` lists them; `docker logs`, `docker stop` and `docker rm -f` work on them, and the node's badge turns `exited` or `missing`. **Stop** removes them. Topics and committed offsets stay, so a redeployed consumer carries on where its group left off.
+- Select a deployed producer or consumer to open its tail: its last 100 records, refreshed every second. A producer's tail has **Send**, which renders its key and value templates. From the command line, `curl -X POST 'localhost:8082/api/flows/<id>/nodes/producer-1/send?key=k1' --data '{"id": 1}'` sends that body as it is.
+- This milestone deploys manual producers and log consumers. A deploy refuses the timer source (M3), the http sink, consumer forwarding and more than one instance (M4), and transforms (M5), naming the node.
+- Node containers outlive the studio: `docker compose restart studio` keeps flows running. They are not compose services, so stop the stack with `make down`, which removes them first; `docker compose down` alone cannot remove the network while they are attached.
+- Consumers commit their offsets on Stop. `docker rm -f` skips that, so their uncommitted records are delivered again on the next deploy (at-least-once).
+- The API lives under `/api` and always answers JSON: an unknown path is 404, a wrong method 405, errors are `{"error": "..."}`. Browsers may only write from the studio's own page: a cross-site POST, PUT or DELETE gets 403. curl and the node containers are not affected.
+- `GET /api/health` reports the Docker Engine version reachable through the mounted `/var/run/docker.sock` and whether the broker answers. That socket is root-equivalent on the host, another reason the studio stays on `127.0.0.1`.
 - Native Linux: the setup assumes Docker Desktop. There the socket is `root:docker 0660`, so `/api/health` stays 503 and `make up` fails. Add `user: "0"` to the `studio` service (the socket already grants root), or `group_add` the host's docker gid and make `./flows` writable by that user.
 - UI development: `cd studio/ui && npm install && npm run dev` serves http://localhost:5173 and proxies `/api` to the running `studio` container. Go changes need `make up` (rebuilds the image).
 

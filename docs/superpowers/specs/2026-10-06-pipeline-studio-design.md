@@ -137,8 +137,9 @@ patterns, `embed` + `http.FileServerFS` for the UI, `encoding/json`, `os`.
 | `DELETE /api/flows/{id}` | stop if running, delete the file | 404 |
 | `POST /api/flows/{id}/deploy` | validate → create topics → start containers | 422 `{errors:[{node, message}]}`, 409 already running, 502 Docker/Kafka failure (after rollback) |
 | `POST /api/flows/{id}/stop` | stop + remove the flow's containers | 404, 409 not running |
-| `POST /api/flows/{id}/nodes/{node}/send?key=` | body = JSON value; proxied to the producer container's `/send`; returns `{partition, offset}`. This is both the UI's Send button and the webhook URL | 400 invalid JSON, 409 not running, 502 |
+| `POST /api/flows/{id}/nodes/{node}/send?key=` | body = JSON value (key from `?key=`), or empty to render the node's own key and value templates with the next `.Seq` (the UI's Send button); proxied to the producer container's `/send`; returns `{partition, offset}`. The body form is the webhook URL | 400 invalid JSON, 409 not running, 502 |
 | `GET /api/flows/{id}/nodes/{node}/tail?since=N` | last ≤ 100 records with `seq > N`, proxied from the node | 409 |
+| `GET /api/flows/{id}/state` | `{status, nodes: {<id>: {state}}}`: the flow's container states (Docker's `running`, `exited`, … or `missing`). From M2; the UI polls it once a second until M3's `events` | 404 |
 | `GET /api/flows/{id}/events` | SSE stream of `tick` snapshots (section 3.6) | |
 
 Request bodies are capped at 1 MiB (`http.MaxBytesReader`); every `/api`
@@ -154,11 +155,13 @@ studio/
   api.go         handlers above
   flow.go        types, Validate(), edge rules, node-id and topic-name rules
   store.go       JSON files: list, read, write via temp file + os.Rename
+  resolve.go     flow → topics and one NodeSpec per container; what this milestone cannot run yet
+  kafka.go       idempotent topic creation
   engine.go      Deploy/Stop/Reconcile; runs map; per-run poller; snapshots
   docker.go      thin wrapper over moby client: self-inspect, create, start, list, stop, remove
   node.go        `studio node`: producer and consumer loops; /stats /tail /send
   flow_test.go   table test for Validate
-  store_test.go, api_test.go   file store and HTTP API through httptest
+  store_test.go, api_test.go, resolve_test.go, kafka_test.go, node_test.go   everything that runs without Docker or a broker
   ui/            Vite project
   Dockerfile     node → golang:1.27.1-alpine → scratch
 ```
@@ -254,7 +257,7 @@ Inside a node container:
   SIGTERM the client is closed, which commits and leaves the group. `docker
   rm -f` (SIGKILL) skips that, so uncommitted records are redelivered —
   at-least-once, on purpose, worth a README line.
-- **Stats:** `WithHooks` implementing `HookProduceRecordUnbuffered` and
+- **Stats (M3, with the poller that reads them; M2 nodes serve only /send and /tail):** `WithHooks` implementing `HookProduceRecordUnbuffered` and
   `HookFetchRecordUnbuffered` feed atomic counters; `/stats` returns
   `{state, total, errors, lastError, tailSeq, assigned}`; `/tail?since=`
   returns records from a 100-entry ring buffer (values truncated to 4 KiB);
@@ -339,6 +342,7 @@ secret in the path; the compose port binding leaves `127.0.0.1` only behind
 a TLS-terminating reverse proxy. The Docker socket mount makes the control
 plane root-equivalent on the host, so exposure beyond localhost is the first
 thing to redesign (a separate orchestrator with a narrow API), not the last.
+Browser writes from other origins are already refused (`http.CrossOriginProtection` around the mux, M2), because the API drives the Docker socket.
 
 ## 4. Flow data model
 
@@ -567,13 +571,14 @@ The user's split is kept with two moves: the timer source moves up to M3
 - Deploy: validation, `kadm.CreateTopics`, one container per node, rollback;
   Stop; reconcile on start; `send` and `tail` proxied (the tail drawer polls
   `tail` every second in M2; SSE arrives in M3).
+- Until their milestone, a deploy refuses (422, naming the node) the timer source, the http sink, consumer forwarding and instances above 1.
 - `make verify-studio` grows: create a flow by `curl`, deploy, `send` a unique
   record, poll the consumer's `tail` until it shows up, stop, assert the
   containers are gone. `make verify` runs the existing check and this one.
 - **Demo:** Deploy; `docker ps` lists `studio-<flow>-producer-1` and
   `…-consumer-1`; `make topics` shows the topic; Send from the producer node;
   the consumer drawer shows the record; `make groups` shows the group;
-  `docker rm -f` the consumer → its node turns `exited` in the UI; Stop
+  `docker stop` the consumer → its node turns `exited`; `docker rm -f` → `missing`; Stop
   removes the rest; `docker compose restart studio` while deployed keeps
   the flow running.
 
@@ -670,7 +675,7 @@ Open questions to answer before M2 starts (defaults in bold):
 
 - Unit: `flow_test.go` table test over `Validate` (every rule in 4.2 and 4.3,
   one failing input each); `store_test.go` and `api_test.go` drive the file
-  store and the HTTP API through `httptest`. The rest is I/O.
+  store and the HTTP API through `httptest`; `resolve_test.go`, `kafka_test.go` and `node_test.go` cover the runtime's pure parts. The rest is I/O.
 - End to end: `make verify-studio`, an API round trip from M1 and deploy as
   described in M2; extended in
   M3 with a timer flow asserting `rate > 0` and `lag == 0` from a `tick`, and
