@@ -13,8 +13,8 @@ Local Kafka playground, run with Docker Compose. Usage is in README.md. Pipeline
 ## Check your change
 
 ```sh
-make test                  # go vet, gofmt, go test, UI build (tsc), compose config
-make down && make verify   # always: ends with STUDIO OK and VERIFY OK
+make test                  # go vet, gofmt, go test, UI build (tsc), UI tests type-check, compose config
+make down && make verify   # always: ends with STUDIO OK, UI OK and VERIFY OK (the first run downloads Chromium)
 make down                  # then `docker ps -aq -f label=studio.flow` and `git status --short flows` print nothing
 ```
 
@@ -32,6 +32,7 @@ make down                  # then `docker ps -aq -f label=studio.flow` and `git 
 - A transform has no container: `Resolve` gives its expression and node id to the upstream consumer's `NodeSpec`, the consumer reports its counts in `/stats` `step`, and `applySteps` puts them on the Transform node. Expressions compile in `Validate` (deploy) and again in the consumer, through `compileTransform` (`transform.go`).
 - Studio consumers need their own groups: franz-go and the kcat consumers' librdkafka share no assignor, so the broker refuses a mixed group.
 - One `.gitignore`, at the root; don't add nested ones (a nested `dist` rule would hide `studio/ui/dist/.gitkeep`).
+- The UI tests (`studio/ui/e2e/`, Playwright, `make verify-ui`) find elements by role and text, and by `data-testid` where there is none (`node-<id>`, `runtime-<id>`, `tail`). A change to the UI's visible text, roles or those ids runs `make verify-ui`; the top-bar messages they check are quoted in the Studio spec, so rewording one goes through the spec. Each test removes the flows, topics and groups it made, by exact name.
 - Studio node containers are not compose services: they carry the `studio.flow` label, and `make down` removes them before `docker compose down` (the network cannot go while they are attached). Keep that line in `down`; use `make nodes` to see them.
 - Makefile: GNU make 3.81 on macOS with BSD tools (no `timeout`, no `base64 -w0`, no `sed -i` without `''`). Recipes use real tabs. Follow the existing style: `SERVICE`, `## ` help comments, `# ── Section ──` rules, lower-case `arg ?= default`. Pass user text to the shell as `$(call shq,$(value var))`.
 - Keep README.md, and the spec when behaviour departs from it, in sync with any behaviour change.

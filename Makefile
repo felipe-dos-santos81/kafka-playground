@@ -192,7 +192,7 @@ verify-ui: up ## Check the studio's UI in a browser (Playwright, Chromium): edit
 
 # Waits until both groups have committed past the record (so it can no longer be
 # redelivered), then counts it in the logs: exactly once per group.
-verify: up verify-studio ## End-to-end check: studio API, then one record seen exactly once per consumer group
+verify: up verify-studio verify-ui ## End-to-end check: studio API, studio UI, then one record seen exactly once per consumer group
 	@id="verify-$$(date +%s)"; \
 	sent=$$($(MAKE) --no-print-directory produce key="$$id" value="{\"id\":\"$$id\"}") || exit 1; \
 	partition=$$(echo "$$sent" | sed 's/.*"partition":\([0-9]*\).*/\1/'); \

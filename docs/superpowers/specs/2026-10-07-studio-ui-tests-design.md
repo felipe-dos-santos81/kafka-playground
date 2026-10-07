@@ -71,7 +71,7 @@ Accessible locators first: buttons and inputs by role and name
 |---|---|---|
 | `node-<id>` | a node's frame (`.node`) | `nodes/StudioNodes.tsx` |
 | `runtime-<id>` | a node's runtime line | `nodes/StudioNodes.tsx` |
-| `tail` | the tail drawer's record list | `TailDrawer.tsx` |
+| `tail` | the tail drawer: its records, its instance picker and Send, and the box that scrolls | `TailDrawer.tsx` |
 
 React Flow's handles are reached inside a node's frame by React Flow's own
 classes (`.react-flow__handle.source`, `.react-flow__handle.target`). Node ids
@@ -169,3 +169,22 @@ is removed afterwards (§6).
    already has the bundle, and only the event stream drops.
 3. Chromium's `EventSource` reconnects by itself after a dropped connection,
    which is what the UI's "connection lost, reconnecting" path relies on.
+
+## 9. Built as decided in its plan
+
+- `dragTo` drives both the palette's HTML5 drop and React Flow's handle-to-handle
+  connection in Chromium; no `page.mouse` fallback was needed (checked live).
+- A new flow's canvas zooms in on, and centres, the first node it gets
+  (React Flow's `fitView` on an empty canvas). The editor test therefore drops
+  the producer first, the topic and consumer into free corners away from the
+  controls, then presses React Flow's own "fit view" control before clicking.
+- The Inspector's labels are not tied to their controls, so a field is the
+  control right after its label text (`label:text-is("Group id") + *`), which
+  needs no UI change.
+- `data-testid="tail"` marks the whole drawer, not only its list: the instance
+  picker, Send and the scrolling box live there too.
+- The teardown reads each of the test's flows back through `/api` and deletes
+  exactly the topics and groups those files name, then retries the group delete
+  once after 3 s (a consumer may still be leaving).
+- `e2e/tsconfig.json` uses Node's types from `@types/node`, which `npm ci`
+  already installs (vite brings it in); no new dependency.

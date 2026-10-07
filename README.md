@@ -108,6 +108,7 @@ Try it: a Producer with source `timer`, a Topic and a Consumer; wire them, Save,
 - `GET /api/health` reports the Docker Engine version, reached through the mounted `/var/run/docker.sock`, and whether the broker answers. That socket is root-equivalent on the host, another reason the studio stays on `127.0.0.1`.
 - Native Linux: the setup assumes Docker Desktop. On Linux the socket is `root:docker 0660`, so `/api/health` stays 503 and `make up` fails: add `user: "0"` to the `studio` service, or `group_add` the host's docker gid and make `./flows` writable by that user.
 - UI development: `cd studio/ui && npm install && npm run dev` serves http://localhost:5173 and proxies `/api` to the running `studio` container. Go changes need `make up` (it rebuilds the image). `make test` runs the static checks and unit tests.
+- UI tests: `make verify-ui` drives the studio's page in Chromium (Playwright) against the running stack: building a flow in the editor, the node types, and the live view through a studio restart. `make verify` runs it too. The first run downloads Chromium (about 150 MB); a failed test leaves a trace and a screenshot in `studio/ui/test-results/` (`npx playwright show-trace <file>`).
 
 ## Connect from the host
 
