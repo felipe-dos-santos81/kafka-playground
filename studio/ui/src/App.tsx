@@ -35,9 +35,10 @@ function Studio() {
 
   const refresh = useCallback(() => api.list().then(setFlows).catch((e) => setError(describe(e))), [])
   // Re-read every 5 s, so flows deployed or stopped elsewhere (another tab, curl) show their state.
+  // The poll's own failure is silent: it must not set or overwrite the top-bar error.
   useEffect(() => {
     refresh()
-    const t = setInterval(refresh, 5000)
+    const t = setInterval(() => api.list().then(setFlows).catch(() => {}), 5000)
     return () => clearInterval(t)
   }, [refresh])
 

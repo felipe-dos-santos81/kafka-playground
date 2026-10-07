@@ -190,3 +190,43 @@ func TestConsumerHandle(t *testing.T) {
 		t.Fatal("want an error from a closed sink")
 	}
 }
+
+// Only a forward cut by a closed client leaves the record uncommitted.
+func TestConsumerHandleCommitDecision(t *testing.T) {
+	var fwdErr error
+	c := &consumer{
+		spec:    NodeSpec{Topic: "orders", Forward: "archive"},
+		tail:    &tail{},
+		counts:  &counters{},
+		produce: func(context.Context, *kgo.Record) error { return fwdErr },
+	}
+	rec := &kgo.Record{Topic: "orders", Value: []byte(`{}`)}
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{{nil, true}, {errors.New("broker down"), true}, {kgo.ErrClientClosed, false}, {fmt.Errorf("wrapped: %w", kgo.ErrClientClosed), false}} {
+		fwdErr = tc.err
+		if got := c.handle(context.Background(), rec); got != tc.want {
+			t.Errorf("forward error %v: handle = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+	if s := c.counts.stats("b", 0); s.Total != 4 || s.Errors != 3 {
+		t.Fatalf("every failure is still counted: %+v", s)
+	}
+}
+
+func TestPostJSONDoesNotFollowRedirects(t *testing.T) {
+	var gets int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/moved" {
+			gets++
+			return
+		}
+		http.Redirect(w, r, "/moved", http.StatusFound)
+	}))
+	defer srv.Close()
+	err := postJSON(context.Background(), srv.URL, []byte(`{}`))
+	if err == nil || !strings.Contains(err.Error(), "302 Found") || gets != 0 {
+		t.Fatalf("want an error \"answered 302 Found\" and no follow-up request; got %v, %d follow-ups", err, gets)
+	}
+}

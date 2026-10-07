@@ -231,7 +231,11 @@ type consumer struct {
 	produce func(context.Context, *kgo.Record) error                 // the forward
 }
 
-func (c *consumer) handle(ctx context.Context, r *kgo.Record) {
+// handle reports whether r may be committed: false only when the forward failed
+// because the client was closed (a stop that outlasted its grace), so the record is
+// redelivered rather than lost. Any other failure is counted and logged, and r is
+// still committed.
+func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
 	work := context.WithoutCancel(ctx)
 	c.counts.ok()
 	c.tail.push(r)
@@ -249,8 +253,10 @@ func (c *consumer) handle(ctx context.Context, r *kgo.Record) {
 		if err != nil {
 			c.counts.fail(fmt.Errorf("forward: %w", err))
 			log.Printf("forward to %s: %v", c.spec.Forward, err)
+			return !errors.Is(err, kgo.ErrClientClosed)
 		}
 	}
+	return true
 }
 
 // consume polls the group until ctx ends, handing every record to c.
@@ -265,14 +271,19 @@ func (c *consumer) consume(ctx context.Context, cl *kgo.Client) {
 			log.Printf("fetch %s[%d]: %v", topic, partition, err)
 		})
 		fs.EachRecord(func(r *kgo.Record) {
-			c.handle(ctx, r)
-			cl.MarkCommitRecords(r) // only a handled record may be committed
+			if c.handle(ctx, r) {
+				cl.MarkCommitRecords(r) // only a handled record may be committed
+			}
 		})
 	}
 }
 
+// sinkClient does not follow redirects: a 3xx would turn the POST into a GET and
+// could pass for success, so it is an error like any other non-2xx answer.
+var sinkClient = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
 // postJSON is the http sink: it POSTs body as JSON within 5 s; any answer but
-// 2xx is an error.
+// 2xx (a redirect included) is an error.
 func postJSON(ctx context.Context, url string, body []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -281,7 +292,7 @@ func postJSON(ctx context.Context, url string, body []byte) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	res, err := http.DefaultClient.Do(req)
+	res, err := sinkClient.Do(req)
 	if err != nil {
 		return err
 	}
