@@ -44,8 +44,9 @@ export function watch(id: string, onTick: (s: FlowState) => void, onStatus: (s: 
   let retry: ReturnType<typeof setTimeout> | undefined
   let closed = false
   const reopen = (why: string) => {
+    if (closed) return
     onStatus({ paused: why })
-    if (!closed) retry = setTimeout(open, 2000)
+    retry = setTimeout(open, 2000)
   }
   const open = () => {
     es = new EventSource(`/api/flows/${id}/events`)
@@ -58,7 +59,11 @@ export function watch(id: string, onTick: (s: FlowState) => void, onStatus: (s: 
       if (es.readyState !== EventSource.CLOSED) return onStatus({ paused: 'connection lost, reconnecting' })
       api.get(id).then(
         () => reopen('the stream was refused, retrying'),
-        (e) => (e instanceof ApiError && e.status === 404 ? onStatus({ gone: true }) : reopen(describe(e))),
+        (e) => {
+          if (closed) return
+          if (e instanceof ApiError && e.status === 404) return onStatus({ gone: true })
+          reopen(describe(e))
+        },
       )
     }
   }

@@ -375,10 +375,10 @@ func nodeStatsOf(ctx context.Context, url string) (nodeStats, error) {
 // node its partition count and end offset summed over partitions (with a warning
 // when the count is not the flow's; a topic with a failed partition is left out),
 // for each consumer node its group's lag on its topic (over the partitions the
-// group has committed; none committed yet, no lag) and the partitions whose group member is this node's client (or, for a
-// node whose snapshot state lists instances, each instance's client: the
-// containers that run, not what the file now says). Whatever the broker did not
-// answer is left out.
+// group has committed; none committed yet, no lag) and the partitions whose
+// group member is this node's client (or, for a node whose snapshot state lists
+// instances, each instance's client: the containers that run, not what the file
+// now says). Whatever the broker did not answer is left out.
 func applyKafka(st *FlowState, flow string, specs []NodeSpec, topics map[string]TopicData, lags kadm.DescribedGroupLags, ends kadm.ListedOffsets) {
 	if ends != nil {
 		for node, t := range topics {

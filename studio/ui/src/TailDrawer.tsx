@@ -57,6 +57,7 @@ export default function TailDrawer({ flowId, node, instance, instances, onInstan
       },
       (e) => {
         fetching.current = false
+        if (gen !== generation.current) return
         setError(describe(e))
       },
     )
