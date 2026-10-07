@@ -1,17 +1,18 @@
 // The editor: flows built and run through the UI.
-import { execFileSync } from 'node:child_process'
 import {
-  chain,
   connect,
   consumer,
+  deployFlow,
   expect,
   field,
+  flowItem,
   manual,
-  msgs,
+  messageCount,
   node,
   nodeOf,
   paletteItem,
   runtimeOf,
+  simple,
   tail,
   test,
   topBar,
@@ -51,35 +52,39 @@ test('build, run and stop a flow in the editor', async ({ page, studio }) => {
   await expect(topBar(page).getByText('running', { exact: true })).toBeVisible({ timeout: 15_000 })
 
   const line = runtimeOf(page, 'consumer-1')
-  await expect.poll(() => msgs(line), { timeout: 20_000 }).toBeGreaterThan(0)
-  const first = await msgs(line)
-  await expect.poll(() => msgs(line), { timeout: 10_000 }).toBeGreaterThan(first)
+  await expect.poll(() => messageCount(line), { timeout: 20_000 }).toBeGreaterThan(0)
+  const firstCount = (await messageCount(line)) ?? 0
+  await expect.poll(() => messageCount(line), { timeout: 10_000 }).toBeGreaterThan(firstCount)
 
   await nodeOf(page, 'consumer-1').click()
   await expect(tail(page).getByRole('listitem').first()).toBeVisible({ timeout: 10_000 })
 
   await page.getByRole('button', { name: 'Stop' }).click()
   await expect(topBar(page).getByText('stopped', { exact: true })).toBeVisible({ timeout: 15_000 })
-  const id = await studio.idOf(name)
-  expect(execFileSync('docker', ['ps', '-q', '-f', `label=studio.flow=${id}`], { encoding: 'utf8' }).trim()).toBe('')
+  expect(studio.containers(await studio.idOf(name))).toEqual([])
 })
 
 test('a wire the edge table refuses is not drawn', async ({ page, studio }) => {
   const name = studio.unique('wire')
   await studio.create({
     name,
-    nodes: [node('producer-1', 'producer', 0, manual), node('consumer-1', 'consumer', 300, consumer(name))],
+    nodes: [
+      node('producer-1', 'producer', 0, manual),
+      node('topic-1', 'topic', 250, topic(name)),
+      node('consumer-1', 'consumer', 500, consumer(name)),
+    ],
     edges: [],
   })
   await studio.open(page, name)
-  // The first test's two edges prove connect works, so a count of 0 here means the wire was refused.
-  await connect(page, 'producer-1', 'consumer-1')
+  await connect(page, 'producer-1', 'consumer-1') // producer → consumer: not in the edge table
   await expect(page.locator('.react-flow__edge')).toHaveCount(0)
+  await connect(page, 'producer-1', 'topic-1') // the same gesture on an allowed pair draws an edge
+  await expect(page.locator('.react-flow__edge')).toHaveCount(1)
 })
 
 test('a deploy refused for a node shows in the top bar', async ({ page, studio }) => {
   const name = studio.unique('refused')
-  const flow = chain(name, manual, topic(name), consumer(name))
+  const flow = simple(name)
   flow.edges = flow.edges.filter((e) => e.target !== 'consumer-1') // the consumer reads nothing
   await studio.create(flow)
   await studio.open(page, name)
@@ -89,29 +94,29 @@ test('a deploy refused for a node shows in the top bar', async ({ page, studio }
 })
 
 test('unsaved changes ask before another flow opens', async ({ page, studio }) => {
-  const a = studio.unique('edited')
-  const b = studio.unique('other')
-  for (const name of [a, b]) await studio.create(chain(name, manual, topic(name), consumer(name)))
-  await studio.open(page, a)
+  const edited = studio.unique('edited')
+  const other = studio.unique('other')
+  for (const name of [edited, other]) await studio.create(simple(name))
+  await studio.open(page, edited)
   const title = topBar(page).getByRole('textbox')
-  await title.fill(`${a}-renamed`)
+  await title.fill(`${edited}-renamed`)
   await expect(page.getByRole('button', { name: 'Save' })).toBeEnabled()
 
   page.once('dialog', (d) => d.dismiss())
-  await page.getByRole('listitem').filter({ hasText: b }).getByText(b).click()
-  await expect(title).toHaveValue(`${a}-renamed`)
+  await flowItem(page, other).click()
+  await expect(title).toHaveValue(`${edited}-renamed`)
 
   page.once('dialog', (d) => d.accept())
-  await page.getByRole('listitem').filter({ hasText: b }).getByText(b).click()
-  await expect(title).toHaveValue(b)
+  await flowItem(page, other).click()
+  await expect(title).toHaveValue(other)
 })
 
 test('a flow deployed elsewhere shows as running in the list', async ({ page, studio }) => {
   const name = studio.unique('elsewhere')
-  const id = await studio.create(chain(name, manual, topic(name), consumer(name)))
+  const id = await studio.create(simple(name))
   await page.goto('/')
   const item = page.getByRole('listitem').filter({ hasText: name })
   await expect(item).toContainText('(stopped)')
-  await studio.deploy(id) // another tab, or curl
-  await expect(item).toContainText('(running)', { timeout: 7_000 })
+  await deployFlow(id) // another tab, or curl
+  await expect(item).toContainText('(running)', { timeout: 6_000 }) // the list re-reads every 5 s
 })

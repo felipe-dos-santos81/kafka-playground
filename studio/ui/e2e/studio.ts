@@ -1,214 +1,157 @@
-// The UI tests' fixture and helpers. Flows are set up and removed through the
-// studio's API; tests that stop the studio or pause a node call docker on the
-// host. Every name a test makes is unique (studio-ui-<label>-<time>), and the
-// fixture removes what the test made (its flows by id or name; the topics and
-// groups those flows name, if studio-ui-…), even when the test fails.
-import { test as base, expect, type Locator, type Page } from '@playwright/test'
+// The UI tests' fixture. Tests that stop the studio or pause a node call docker on
+// the host. Every name a test makes is unique (studio-ui-<label>-<time>), and the
+// fixture removes what the test made, even when the test fails: its flows (by id,
+// or by name for one built in the editor), then the topics and consumer groups
+// they named, by literal name and only if they are studio-ui-….
+import { test as base, expect, type Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { STUDIO_URL, api, deleteFlow, flowIdOf, topicsAndGroups, type Flow } from './flows'
+import { flowItem, topBar } from './locators'
 
-const STUDIO_URL = process.env.STUDIO_URL ?? 'http://localhost:8082'
+export * from './flows'
+export * from './locators'
+export { expect }
+
 const COMPOSE_FILE = fileURLToPath(new URL('../../../docker-compose.yml', import.meta.url))
-
-export type FlowNode = { id: string; type: string; position: { x: number; y: number }; data: Record<string, unknown> }
-export type FlowEdge = { id: string; source: string; target: string }
-export type Flow = { name: string; nodes: FlowNode[]; edges: FlowEdge[] }
+const KAFKA_BOOTSTRAP = process.env.KAFKA_BOOTSTRAP ?? 'localhost:19092' // inside the kafka container
 
 const docker = (...args: string[]) => execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 const compose = (...args: string[]) => docker('compose', '-f', COMPOSE_FILE, ...args)
 const kafka = (tool: string, ...args: string[]) =>
-  compose('exec', '-T', 'kafka', `/opt/kafka/bin/${tool}`, '--bootstrap-server', 'localhost:19092', ...args)
+  compose('exec', '-T', 'kafka', `/opt/kafka/bin/${tool}`, '--bootstrap-server', KAFKA_BOOTSTRAP, ...args)
+// literal makes a name match itself only in kafka-topics.sh's --topic, which is a regex.
+const literal = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(STUDIO_URL + path, {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  const text = await res.text()
-  if (!res.ok) throw new Error(`${method} ${path}: ${res.status} ${text}`)
-  return (text ? JSON.parse(text) : undefined) as T
+// A flow's containers, by the labels the studio puts on them (studio.flow, studio.node).
+function containers(flowId: string, node?: string): string[] {
+  const filters = ['-f', `label=studio.flow=${flowId}`, ...(node ? ['-f', `label=studio.node=${node}`] : [])]
+  return docker('ps', '-q', ...filters).split('\n').filter(Boolean)
 }
 
-// A flow's parts, laid out left to right.
-export const node = (id: string, type: string, x: number, data: Record<string, unknown>): FlowNode => ({
-  id,
-  type,
-  position: { x, y: 0 },
-  data,
-})
-export const edge = (source: string, target: string): FlowEdge => ({ id: `${source}-${target}`, source, target })
-export const manual = { source: 'manual', key: '', value: '{"id": {{.Seq}}}' }
-export const timer = (ms: number) => ({ source: 'timer', interval_ms: ms, key: '{{.Seq}}', value: '{"id": {{.Seq}}}' })
-export const topic = (name: string, partitions = 1) => ({ name, partitions, replication_factor: 1 })
-export const consumer = (group: string, more: Record<string, unknown> = {}) => ({
-  group,
-  auto_offset_reset: 'earliest',
-  sink: { kind: 'log' },
-  ...more,
-})
+async function healthy() {
+  await expect
+    .poll(() => fetch(`${STUDIO_URL}/api/health`).then((r) => r.status, () => 0), { timeout: 45_000 })
+    .toBe(200)
+}
 
-// chain is the flow producer-1 → topic-1 → consumer-1.
-export function chain(name: string, p: Record<string, unknown>, t: Record<string, unknown>, c: Record<string, unknown>): Flow {
-  return {
-    name,
-    nodes: [node('producer-1', 'producer', 0, p), node('topic-1', 'topic', 250, t), node('consumer-1', 'consumer', 500, c)],
-    edges: [edge('producer-1', 'topic-1'), edge('topic-1', 'consumer-1')],
+// Runs one teardown step; a failing step never stops the ones after it.
+async function tolerate(step: () => unknown) {
+  try {
+    await step()
+  } catch {
+    // best effort: the next step may still clean up
   }
 }
 
 type Studio = {
   unique(label: string): string // a name to use for a flow, a topic or a group
   create(flow: Flow): Promise<string> // the new flow's id
-  deploy(id: string): Promise<void>
-  remove(id: string): Promise<void>
-  idOf(name: string): Promise<string>
+  idOf(name: string): Promise<string> // a flow built in the editor
   open(page: Page, name: string): Promise<void>
+  containers(flowId: string): string[]
   stopStudio(): void
   startStudio(): Promise<void>
-  pause(container: string): void
-  resume(container: string): void
-}
-
-async function healthy() {
-  await expect
-    .poll(() => fetch(`${STUDIO_URL}/api/health`).then((r) => r.status, () => 0), { timeout: 60_000 })
-    .toBe(200)
+  pause(flowId: string, node: string): void // SIGSTOP the node's container
+  resume(flowId: string, node: string): void
 }
 
 export const test = base.extend<{ studio: Studio }>({
-  // Its own timeout: a test-scoped fixture's teardown would otherwise share the test's budget.
-  studio: [async ({}, use) => {
-    const names = new Set<string>()
-    const ids = new Set<string>()
-    const paused = new Set<string>()
-    let stopped = false
-    const studio: Studio = {
-      unique(label) {
-        const name = `studio-ui-${label}-${Date.now()}`
-        names.add(name)
-        return name
-      },
-      async create(flow) {
-        names.add(flow.name)
-        const id = (await api<{ id: string }>('POST', '/api/flows', flow)).id
-        ids.add(id)
-        return id
-      },
-      async deploy(id) {
-        await api('POST', `/api/flows/${id}/deploy`)
-      },
-      async remove(id) {
-        await api('DELETE', `/api/flows/${id}`)
-      },
-      async idOf(name) {
-        const f = (await api<{ id: string; name: string }[]>('GET', '/api/flows')).find((f) => f.name === name)
-        if (!f) throw new Error(`no flow named ${name}`)
-        ids.add(f.id)
-        return f.id
-      },
-      async open(page, name) {
-        await page.goto('/')
-        await page.getByRole('listitem').filter({ hasText: name }).getByText(name).click()
-        await expect(page.getByRole('banner').getByRole('textbox')).toHaveValue(name)
-      },
-      stopStudio() {
-        stopped = true
-        compose('stop', 'studio')
-      },
-      async startStudio() {
-        compose('start', 'studio')
-        await healthy()
-        stopped = false
-      },
-      pause(container) {
-        paused.add(container)
-        docker('kill', '-s', 'STOP', container)
-      },
-      resume(container) {
-        docker('kill', '-s', 'CONT', container)
-        paused.delete(container)
-      },
-    }
-    await use(studio)
-
-    // Teardown, even after a failure: resume, restart, then remove what the test made.
-    // Every step runs whatever an earlier one did, and nothing is rethrown.
-    for (const c of paused) {
-      try {
-        docker('kill', '-s', 'CONT', c)
-      } catch {
-        // gone already
+  // Its own timeout: a test-scoped fixture's teardown would otherwise share the
+  // test's budget, and a restart alone may wait 45 s for the studio.
+  studio: [
+    async ({}, use) => {
+      const names = new Set<string>() // flows, topics and groups the test named
+      const ids = new Set<string>() // flows the test created or looked up
+      const topics = new Set<string>()
+      const groups = new Set<string>()
+      const paused = new Set<string>() // container ids
+      let stopped = false
+      const record = (flow: Flow) => {
+        const named = topicsAndGroups(flow)
+        named.topics.forEach((t) => topics.add(t))
+        named.groups.forEach((g) => groups.add(g))
       }
-    }
-    try {
-      if (stopped) await studio.startStudio()
-    } catch {
-      // the flows below cannot be reached; the topics and groups still can
-    }
-    const topics: string[] = []
-    const groups: string[] = []
-    let listed: { id: string; name: string }[] = []
-    try {
-      listed = await api('GET', '/api/flows')
-    } catch {
-      // only the ids recorded so far
-    }
-    const doomed = new Set([...ids, ...listed.filter((f) => names.has(f.name)).map((f) => f.id)])
-    for (const id of doomed) {
-      try {
-        const file = await api<Flow>('GET', `/api/flows/${id}`)
-        for (const n of file.nodes) {
-          if (n.type === 'topic' && n.data.name) topics.push(String(n.data.name))
-          if (n.type === 'consumer' && n.data.group) groups.push(String(n.data.group))
+      const studio: Studio = {
+        unique(label) {
+          const name = `studio-ui-${label}-${Date.now()}`
+          names.add(name)
+          return name
+        },
+        async create(flow) {
+          names.add(flow.name)
+          record(flow) // now, so a flow the test deletes itself still has its topics removed
+          const id = (await api<{ id: string }>('POST', '/api/flows', flow)).id
+          ids.add(id)
+          return id
+        },
+        async idOf(name) {
+          const id = await flowIdOf(name)
+          ids.add(id)
+          return id
+        },
+        async open(page, name) {
+          await page.goto('/')
+          await flowItem(page, name).click()
+          await expect(topBar(page).getByRole('textbox')).toHaveValue(name)
+        },
+        containers,
+        stopStudio() {
+          stopped = true
+          compose('stop', 'studio')
+        },
+        async startStudio() {
+          compose('start', 'studio')
+          await healthy()
+          stopped = false
+        },
+        pause(flowId, node) {
+          for (const c of containers(flowId, node)) {
+            paused.add(c)
+            docker('kill', '-s', 'STOP', c)
+          }
+        },
+        resume(flowId, node) {
+          for (const c of containers(flowId, node)) {
+            docker('kill', '-s', 'CONT', c)
+            paused.delete(c)
+          }
+        },
+      }
+      await use(studio)
+
+      // Teardown, even after a failure: resume, restart, then remove what the test made.
+      for (const c of paused) await tolerate(() => docker('kill', '-s', 'CONT', c))
+      if (stopped) await tolerate(() => studio.startStudio())
+      await tolerate(async () => {
+        for (const f of await api<{ id: string; name: string }[]>('GET', '/api/flows')) {
+          if (names.has(f.name)) ids.add(f.id) // built in the editor, never looked up
         }
-      } catch {
-        // already gone, or unreadable: still try to delete it
+      })
+      for (const id of ids) {
+        await tolerate(async () => record(await api<Flow>('GET', `/api/flows/${id}`)))
+        await tolerate(() => deleteFlow(id))
       }
-      try {
-        await studio.remove(id) // stops its containers first
-      } catch {
-        // already gone
+      // Only names this suite makes: a test that wires a shared topic such as orders never deletes it.
+      const suiteMade = (xs: Set<string>) => [...xs].filter((x) => x.startsWith('studio-ui-'))
+      const ownTopics = suiteMade(topics)
+      const ownGroups = suiteMade(groups)
+      if (ownTopics.length) {
+        await tolerate(() => kafka('kafka-topics.sh', '--delete', '--topic', ownTopics.map(literal).join('|')))
       }
-    }
-    // Only names this suite makes: a test that wires a shared topic such as orders never deletes it.
-    const ours = (xs: string[]) => [...new Set(xs.filter((x) => x.startsWith('studio-ui-')))]
-    const ourTopics = ours(topics)
-    const ourGroups = ours(groups)
-    try {
-      if (ourTopics.length) kafka('kafka-topics.sh', '--delete', '--topic', ourTopics.join('|'))
-    } catch {
-      // a topic the test never deployed does not exist
-    }
-    for (const attempt of [1, 2]) {
-      try {
-        if (ourGroups.length) kafka('kafka-consumer-groups.sh', '--delete', ...ourGroups.flatMap((g) => ['--group', g]))
-        break
-      } catch {
-        // a group still has a member leaving, or never existed: try once more
-        if (attempt === 1) await new Promise((r) => setTimeout(r, 3000))
+      if (ownGroups.length) {
+        const deleteGroups = () => kafka('kafka-consumer-groups.sh', '--delete', ...ownGroups.flatMap((g) => ['--group', g]))
+        await tolerate(async () => {
+          try {
+            deleteGroups()
+          } catch {
+            // a member may still be leaving: once more, a little later
+            await new Promise((r) => setTimeout(r, 3000))
+            deleteGroups()
+          }
+        })
       }
-    }
-  }, { timeout: 60_000 }],
+    },
+    { timeout: 120_000 },
+  ],
 })
-export { expect }
-
-// Locators for what has no accessible name.
-export const topBar = (page: Page) => page.getByRole('banner')
-export const nodeOf = (page: Page, id: string) => page.getByTestId(`node-${id}`)
-export const runtimeOf = (page: Page, id: string) => page.getByTestId(`runtime-${id}`)
-export const tail = (page: Page) => page.getByTestId('tail')
-export const paletteItem = (page: Page, type: string) => page.locator(`.palette-item.${type}`)
-// field is the Inspector's control right after a label: the labels are not tied to their controls.
-export const field = (page: Page, label: string) => page.locator('.inspector').locator(`label:text-is("${label}") + *`)
-
-// connect wires a node's output to another node's input, handle to handle.
-export async function connect(page: Page, from: string, to: string) {
-  await nodeOf(page, from).locator('.react-flow__handle.source').dragTo(nodeOf(page, to).locator('.react-flow__handle.target'))
-}
-
-// msgs reads the count from a runtime line ("12 msgs · 3.0/s"), or -1 without one.
-export async function msgs(line: Locator): Promise<number> {
-  const m = /(\d+) msgs/.exec((await line.textContent()) ?? '')
-  return m ? Number(m[1]) : -1
-}

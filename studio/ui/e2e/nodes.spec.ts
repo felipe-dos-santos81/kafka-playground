@@ -1,12 +1,12 @@
 // Node types and the tail drawer, on flows created through the API.
-import { chain, consumer, edge, expect, node, nodeOf, runtimeOf, tail, test, timer, topBar, topic } from './studio'
+import { chain, consumer, deployFlow, edge, expect, node, nodeOf, runtimeOf, tail, test, timer, topBar, topic } from './studio'
 
-// The producer's records: the first has qty and price, the second a null qty,
-// which the transform cannot multiply.
+// The producer's records: the first has qty and price, the second neither, so
+// the transform cannot multiply them.
 const twoOrders = {
   source: 'manual',
   key: '',
-  value: '{"id": {{.Seq}}, "qty": {{if eq .Seq 1}}2{{else}}null{{end}}, "price": 3}',
+  value: '{{if eq .Seq 1}}{"id": 1, "qty": 2, "price": 3}{{else}}{"id": {{.Seq}}}{{end}}',
 }
 
 function withTransform(name: string, expr: string) {
@@ -32,8 +32,9 @@ test('a transform shows its own counts and last error', async ({ page, studio })
     await tail(page).getByRole('button', { name: 'Send' }).click()
     await expect(tail(page)).toContainText(`at offset ${offset}`)
   }
-  await expect(runtimeOf(page, 'transform-1')).toContainText('2 msgs', { timeout: 15_000 })
-  await expect(runtimeOf(page, 'transform-1')).toContainText('1 errors')
+  const transform = runtimeOf(page, 'transform-1')
+  await expect(transform).toContainText(/(?<!\d)2 msgs/, { timeout: 15_000 })
+  await expect(transform).toContainText(/(?<!\d)1 errors/)
   await expect(nodeOf(page, 'transform-1')).toHaveAttribute('title', /invalid operation/)
 
   const bad = studio.unique('transform-bad')
@@ -44,15 +45,22 @@ test('a transform shows its own counts and last error', async ({ page, studio })
 })
 
 test('a consumer with instances shows each one and tails the one picked', async ({ page, studio }) => {
+  test.setTimeout(120_000) // three containers start, then the group rebalances
   const name = studio.unique('instances')
   const id = await studio.create(chain(name, timer(100), topic(name, 3), consumer(name, { instances: 3 })))
-  await studio.deploy(id)
+  await deployFlow(id)
   await studio.open(page, name)
 
   await expect(nodeOf(page, 'consumer-1')).toContainText('3/3 running', { timeout: 15_000 })
   const line = runtimeOf(page, 'consumer-1')
-  await expect(line).toHaveText(/#1 p\d.*#2 p\d.*#3 p\d/, { timeout: 45_000 })
-  const partition = /#2 p(\d)/.exec((await line.textContent()) ?? '')![1]
+  let partitionOf: Record<string, string> = {} // instance → the partition it holds
+  await expect(async () => {
+    const text = (await line.textContent()) ?? ''
+    partitionOf = Object.fromEntries([...text.matchAll(/#(\d) p([\d,]+)/g)].map((m) => [m[1], m[2]]))
+    expect(Object.keys(partitionOf).sort()).toEqual(['1', '2', '3'])
+    expect(new Set(Object.values(partitionOf)).size).toBe(3) // one partition each: no commas, no repeats
+    expect(Object.values(partitionOf).every((p) => !p.includes(','))).toBe(true)
+  }).toPass({ timeout: 45_000 })
 
   await nodeOf(page, 'consumer-1').click()
   const picker = tail(page).getByRole('combobox')
@@ -60,5 +68,5 @@ test('a consumer with instances shows each one and tails the one picked', async 
   await picker.selectOption('2')
   const records = tail(page).getByRole('listitem')
   await expect(records.first()).toBeVisible({ timeout: 10_000 })
-  for (const text of await records.allTextContents()) expect(text.startsWith(`p${partition}@`)).toBe(true)
+  for (const text of await records.allTextContents()) expect(text.startsWith(`p${partitionOf['2']}@`)).toBe(true)
 })

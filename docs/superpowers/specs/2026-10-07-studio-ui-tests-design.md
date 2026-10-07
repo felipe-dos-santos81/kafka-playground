@@ -22,7 +22,9 @@ tests, CI. The suite runs locally, like everything in this repository.
 
 - `@playwright/test` pinned exactly at `1.63.0` (the release current on
   2026-10-07) as a dev dependency of `studio/ui`; Chromium only, installed with
-  `npx playwright install chromium`. No other new dependency.
+  `npx playwright install chromium`. `@types/node` is declared at `24.19.1`,
+  the version vite already installs, so the tests' type-check does not rely on
+  a transitive package. No other new dependency.
 - The suite runs on the host, against the stack `make up` starts, at
   `STUDIO_URL` (default `http://localhost:8082`). Tests that stop containers
   call `docker` on the host.
@@ -36,8 +38,8 @@ tests, CI. The suite runs locally, like everything in this repository.
 
 ```
 make verify-ui
-  └─ cd studio/ui; npm ci if needed; npx playwright install chromium
-     └─ STUDIO_URL=… npx playwright test        (host, one worker)
+  └─ cd studio/ui; npm ci if the lockfile changed; npx playwright install chromium
+     └─ STUDIO_URL=… KAFKA_BOOTSTRAP=… npx playwright test   (host, one worker)
           ├─ chromium → $STUDIO_URL
           ├─ fetch → $STUDIO_URL/api            (set up and clean up flows)
           └─ execFileSync docker …              (stop/start studio, SIGSTOP/CONT a node,
@@ -45,20 +47,28 @@ make verify-ui
 ```
 
 - `studio/ui/playwright.config.ts`: `testDir: 'e2e'`, `workers: 1`,
-  `fullyParallel: false`, `retries: 0`, `timeout: 60_000`, `reporter: 'list'`,
+  `timeout: 60_000`, `reporter: 'list'`,
   `use: { baseURL, trace: 'retain-on-failure', screenshot: 'only-on-failure' }`,
   `outputDir: 'test-results'`, one project, Chromium.
-- `studio/ui/e2e/studio.ts`: the shared fixture (`test.extend`) and helpers:
-  create, deploy and delete flows through `/api`; unique names
+- `studio/ui/e2e/flows.ts`: `/api` calls (create, deploy, delete, look up) and
+  the parts flows are built from; `STUDIO_URL` comes from the config's
+  `baseURL`. `studio/ui/e2e/locators.ts`: where things are on the page.
+  `studio/ui/e2e/studio.ts`: the shared fixture (`test.extend`): unique names
   `studio-ui-<test>-<timestamp>` for flows, topics and groups; docker commands
-  through `execFileSync`; wait for `/api/health` 200.
+  through `execFileSync` (a node's container is found by its `studio.flow` and
+  `studio.node` labels, not by rebuilding its name); wait for `/api/health`
+  200; the teardown (§6). It re-exports the other two, so a test imports from
+  one place.
 - `studio/ui/e2e/*.spec.ts`: the tests (§5). `studio/ui/e2e/tsconfig.json`
   lets `make test` type-check them (`tsc -p e2e`) without a browser; the app's
   build (`tsc && vite build`) does not include `e2e/`, so the studio image is
   unchanged.
-- Makefile: `verify-ui: up ## …` runs the above; `verify: up verify-studio
-  verify-ui` (API check, then browser suite, then the kcat check); `test` gains
-  `tsc -p e2e`.
+- Makefile: `verify-ui: up ## …` runs the above and prints `UI OK`; `verify: up
+  verify-studio verify-ui` (API check, then browser suite, then the kcat check);
+  `test` gains `tsc -p e2e`. Both run `npm ci` only when `package-lock.json` is
+  newer than the last install (`NPM_CI`), so a checkout made before Playwright
+  was added installs it. `KAFKA_BOOTSTRAP` is the Makefile's `BOOTSTRAP`
+  address.
 - `.gitignore`: `studio/ui/test-results/`, `studio/ui/playwright-report/`.
 
 ## 4. Locating elements
@@ -93,7 +103,8 @@ is removed afterwards (§6).
    drawer lists records. Stop: the status reads `stopped`, and
    `docker ps -q -f label=studio.flow=<id>` prints nothing.
 2. **Refused wire.** Dragging from a Producer's output handle to a Consumer's
-   input (an edge the table refuses) creates no edge.
+   input (an edge the table refuses) creates no edge; the same gesture from the
+   Producer to a Topic then draws one, so the drag itself is known to work.
 3. **Deploy errors in the top bar.** Deploying a flow whose consumer has no
    incoming edge shows the 422 message in the top bar, naming the node; the
    canvas keeps the flow.
@@ -135,14 +146,18 @@ is removed afterwards (§6).
 
 ## 6. Cleanup, failures, timing
 
-- The fixture's teardown runs even when a test fails, in this order:
-  `docker kill -s CONT` every container the test stopped (errors ignored); if
-  the studio was stopped, `docker compose start studio` and wait for
-  `/api/health` 200; delete the test's flows through `/api` (which removes
-  their containers); delete the test's topics and consumer groups by exact
-  name (`kafka-topics.sh --delete`, `kafka-consumer-groups.sh --delete`). No
-  prefix matching: only names the test's flows hold, and of those only names
-  starting `studio-ui-`.
+- The fixture's teardown runs even when a test fails, and each step runs even
+  when an earlier one failed, in this order: `docker kill -s CONT` every
+  container the test stopped; if the studio was stopped, `docker compose start
+  studio` and wait up to 45 s for `/api/health` 200; delete the test's flows
+  through `/api` (which removes their containers); delete the topics and
+  consumer groups those flows name (`kafka-topics.sh --delete`,
+  `kafka-consumer-groups.sh --delete`). A flow created through the API has its
+  topics and groups recorded when it is created, so a test that deletes its own
+  flow still has them removed; one built in the editor is read back. A name is
+  matched literally (escaped, since `--topic` takes a regex), and only a name
+  starting `studio-ui-` is ever deleted, so a shared topic such as `orders` is
+  never touched. The fixture has its own 120 s budget, apart from the test's.
 - Waits use `expect(…).toHaveText/toBeVisible`, `expect.poll` or `toPass`
   with explicit timeouts. The only fixed wait is test 10's 6 s.
 - One worker: test 8 stops the studio every other test talks to, and its
@@ -185,10 +200,10 @@ is removed afterwards (§6).
   needs no UI change.
 - `data-testid="tail"` marks the whole drawer, not only its list: the instance
   picker, Send and the scrolling box live there too.
-- The teardown reads each of the test's flows back through `/api` and deletes
-  exactly the topics and groups those files name, then retries the group delete
-  once after 3 s (a consumer may still be leaving).
-- `e2e/tsconfig.json` uses Node's types from `@types/node`, which `npm ci`
-  already installs (vite brings it in); no new dependency.
+- The teardown removes the topics and groups the test's flows name: recorded
+  when a flow is created, read back for a flow built in the editor. It retries
+  the group delete once after 3 s (a consumer may still be leaving).
+- `e2e/tsconfig.json` uses Node's types from `@types/node`, declared at the
+  version vite already installs (`24.19.1`).
 - The tail-scroll test's timer runs at 250 ms: the drawer keeps 100 records, and a faster timer passes that cap during the check (100 ms gives only about 10 s), so the first record would change while scrolled up. At 250 ms the cap arrives about 25 s after start, and more than 20 records still arrive within the 20 s poll.
-- The fixture has its own 60 s timeout, so its teardown does not share the test's budget. Each teardown step runs even if an earlier one failed. It deletes the flows by recorded id or name, and only topics and groups whose names start with `studio-ui-`.
+- The fixture has its own 120 s timeout, so its teardown does not share the test's budget and a 45 s wait for a restarted studio still leaves time to clean up. The instances test sets its own 120 s: three containers start and the group rebalances before it can check one partition each.
