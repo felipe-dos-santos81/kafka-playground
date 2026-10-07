@@ -139,7 +139,7 @@ patterns, `embed` + `http.FileServerFS` for the UI, `encoding/json`, `os`.
 | `POST /api/flows/{id}/stop` | stop + remove the flow's containers | 404, 409 not running |
 | `POST /api/flows/{id}/nodes/{node}/send?key=` | body = JSON value (key from `?key=`), or empty to render the node's own key and value templates with the next `.Seq` (the UI's Send button); proxied to the producer container's `/send`; returns `{partition, offset}`. The body form is the webhook URL | 400 invalid JSON, 409 not running, 502 |
 | `GET /api/flows/{id}/nodes/{node}/tail?since=N` | last ≤ 100 records with `seq > N`, proxied from the node | 409 |
-| `GET /api/flows/{id}/state` | `{status, nodes: {<id>: {state}}}`: the flow's container states (Docker's `running`, `exited`, … or `missing`). From M2; the UI polls it once a second until M3's `events` | 404 |
+| `GET /api/flows/{id}/state` | the flow's snapshot, as an SSE tick carries it but without rates: container states, each running node's counters, consumer lag and partitions, topic partitions and end offsets | 404 |
 | `GET /api/flows/{id}/events` | SSE stream of `tick` snapshots (section 3.6) | |
 
 Request bodies are capped at 1 MiB (`http.MaxBytesReader`); every `/api`
@@ -257,11 +257,7 @@ Inside a node container:
   SIGTERM the client is closed, which commits and leaves the group. `docker
   rm -f` (SIGKILL) skips that, so uncommitted records are redelivered —
   at-least-once, on purpose, worth a README line.
-- **Stats (M3, with the poller that reads them; M2 nodes serve only /send and /tail):** `WithHooks` implementing `HookProduceRecordUnbuffered` and
-  `HookFetchRecordUnbuffered` feed atomic counters; `/stats` returns
-  `{state, total, errors, lastError, tailSeq, assigned}`; `/tail?since=`
-  returns records from a 100-entry ring buffer (values truncated to 4 KiB);
-  the HTTP server listens on `:9000` inside the compose network only.
+- **Stats:** counters count records where they pass — produced by a producer, fetched by a consumer — with fetch and produce errors and the last error; `/stats` returns `{boot, total, errors, lastError, tailSeq}`, where `boot` is random per process so a restarted container starts over visibly. `/tail?since=` returns records from a 100-entry ring buffer (values truncated to 4 KiB). The control plane adds the container state from Docker and lag and partitions from the broker. The HTTP server listens on `:9000` inside the compose network only.
 
 ### 3.5 State store
 
@@ -277,21 +273,14 @@ Inside a node container:
 
 ### 3.6 Live status to the browser: SSE
 
-One `EventSource` per open flow on `GET /api/flows/{id}/events`. A per-run
-**poller goroutine** ticks every second: `ContainerList` by label (container
-states), `GET /stats` on every node container, and every second tick
-`adm.Lag` for the flow's groups and `adm.ListEndOffsets` for its topics. It
-stores one snapshot per run with `rate = Δtotal / Δt`. SSE handlers send the
-snapshot every second and exit when `r.Context()` is done.
+One `EventSource` per open flow on `GET /api/flows/{id}/events`. Each open stream runs its own loop: every second it takes a snapshot — `ContainerList` by label (container states), `GET /stats` on every running node container, `adm.Lag` for the flow's groups and `adm.ListEndOffsets` for its topics — computes `rate = Δtotal / Δt` against its previous snapshot (none when a node's `boot` changed), and sends it as a `tick`. The loop ends when `r.Context()` is done. One tab is one loop; a poller shared between streams is an optimisation for many viewers. A consumer node's `assigned` partitions come from the group description in `adm.Lag`, whose members carry the node's container name as their client id; with M4's `instances` they move into an `instances` array.
 
 ```
 event: tick
 data: {"status":"running","nodes":{
-  "producer-1":{"state":"running","total":120,"rate":1.0,"errors":0,"lastError":"","tailSeq":120},
-  "topic-1":{"state":"ready","partitions":3,"endOffset":120,"warning":""},
-  "consumer-1":{"state":"running","total":118,"rate":1.0,"errors":0,"lag":2,"tailSeq":118,
-                "instances":[{"state":"running","assigned":{"orders":[0,1]}},
-                             {"state":"running","assigned":{"orders":[2]}}]}}}
+  "consumer-1":{"state":"running","total":118,"rate":1,"tailSeq":118,"boot":"3f9a0c1d","lag":2,"assigned":{"orders":[0,1,2]}},
+  "producer-1":{"state":"running","total":120,"rate":1,"tailSeq":120,"boot":"a1b2c3d4"},
+  "topic-1":{"state":"ready","partitions":3,"endOffset":120}}}
 ```
 
 The tail is **not** pushed. The drawer fetches
@@ -588,6 +577,7 @@ The user's split is kept with two moves: the timer source moves up to M3
   (state, msg/s, total, errors, lag); topic nodes show partitions and end
   offset; the tail drawer fetches on `tailSeq` change; timer producers with
   templates.
+- Built as decided in its plan: one snapshot loop per open stream, Kafka asked every tick, counters counted where records pass, assignment taken from the group description, `/state` returning the snapshot without rates.
 - **Demo:** timer at 10 msg/s, consumer badge ≈ 10/s; a second consumer node
   in the same group shows the partition split; a consumer deployed late with
   `earliest` shows lag that drains to 0; `docker rm -f` one of two group
