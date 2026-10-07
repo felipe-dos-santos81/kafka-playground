@@ -675,6 +675,7 @@ The M3 review leftovers, after M4 and M5.
   says why; start it again and the numbers come back; delete the flow with
   `curl` while its page is open: the page says it is gone; a 3-instance
   consumer's tick still arrives about once a second.
+- Built as decided in its plan: the `/stats` calls run in parallel under one 800 ms budget (`statsBudget`) while the broker calls run; a container created less than 5 s ago (`statsGrace`) that does not answer says nothing; a node with instances carries its first instance's warning, prefixed `#<i>: `; a partition counts toward lag only when kadm reports a commit for it (`Commit.At` ≥ 0; for the others kadm measures from the partition's start); the stream ends when its flow's file is gone, so the browser's reconnect gets the 404; the UI reopens a refused stream every 2 s unless the flow answers 404; the tail drawer retries a failed fetch on the next tick; `verify-studio` deletes the `studio-verify.*` topics when it exits.
 
 ### Not planned
 

@@ -73,7 +73,7 @@ scale: ## [STEP 4] Set the number of orders-workers group members (usage: make s
 
 # ── Verify ───────────────────────────────────────────────────────────────────
 
-verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail, lag, live ticks, chained flows, instances, transforms, stop, delete
+verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail, lag, live ticks, chained flows, instances, transforms, stop, delete; removes its flows and topics
 	@health=$$(curl -sS --fail-with-body $(STUDIO_URL)/api/health) || { echo "STUDIO FAILED: health: $$health"; exit 1; }; \
 	echo "studio health: $$health"; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows -H 'Sec-Fetch-Site: cross-site' --data '{"name":"x"}'); \
@@ -82,7 +82,7 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	manual='{"source":"manual","key":"","value":"{}"}'; \
 	flow=$$(flow3 verify "$$manual" studio-verify 1 '{"group":"studio-verify","auto_offset_reset":"earliest","sink":{"kind":"log"}}'); \
 	create() { out=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$1") || { echo "STUDIO FAILED: create $$2: $$out" >&2; return 1; }; echo "$$out" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'; }; \
-	flows=; trap 'for f in $$flows; do curl -sS -X DELETE $(STUDIO_URL)/api/flows/$$f >/dev/null 2>&1; done; docker rm -f studio-$$id-consumer-1 >/dev/null 2>&1' EXIT; \
+	flows=; trap 'for f in $$flows; do curl -sS -X DELETE $(STUDIO_URL)/api/flows/$$f >/dev/null 2>&1; done; docker rm -f studio-$$id-consumer-1 >/dev/null 2>&1; $(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --delete --topic "studio-verify.*" >/dev/null 2>&1' EXIT; \
 	id=$$(create "$$flow" "the verify flow") || exit 1; flows="$$id"; \
 	nodes() { docker ps -aq -f label=studio.flow=$$id | wc -l | tr -d ' '; }; \
 	[ -f "flows/$$id.json" ] || { echo "STUDIO FAILED: flows/$$id.json not written"; exit 1; }; \
@@ -105,7 +105,7 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 		[ "$$i" = 30 ] && { echo "STUDIO FAILED: the consumer tail never showed $$rec"; exit 1; }; sleep 1; \
 	done; \
 	for i in $$(seq 20); do \
-		curl -sS "$(STUDIO_URL)/api/flows/$$id/state" | grep -q '"consumer-1":{[^}]*"lag":0[,}]' && break; \
+		curl -sS "$(STUDIO_URL)/api/flows/$$id/state" | sed -E -e 's/\\"//g' -e 's/"(lastError|warning)":"[^"]*"//g' | grep -q '"consumer-1":{[^}]*"lag":0[,}]' && break; \
 		[ "$$i" = 20 ] && { echo "STUDIO FAILED: consumer lag never reached 0: $$(curl -sS $(STUDIO_URL)/api/flows/$$id/state)"; exit 1; }; sleep 1; \
 	done; \
 	echo "studio state: $$(curl -sS $(STUDIO_URL)/api/flows/$$id/state)"; \
@@ -180,6 +180,8 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	echo "$$out" | grep -qF 'total\":6' && ! echo "$$out" | grep -q "t2-$$rec" || { echo "STUDIO FAILED: want t1-$$rec transformed (total 6) and t2-$$rec not forwarded: $$out"; exit 1; }; \
 	echo "studio transform: $$(curl -sS $(STUDIO_URL)/api/flows/$$xid/state | grep -o '"transform-1":{[^}]*}')"; \
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$xid || { echo "STUDIO FAILED: delete the transform flow"; exit 1; }; \
+	code=$$(curl -sS -o /dev/null -w '%{http_code}' $(STUDIO_URL)/api/flows/$$xid/events); \
+	[ "$$code" = 404 ] || { echo "STUDIO FAILED: the events of a deleted flow answered $$code, want 404"; exit 1; }; \
 	echo "STUDIO OK ($$id)"
 
 # Waits until both groups have committed past the record (so it can no longer be
