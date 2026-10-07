@@ -248,7 +248,7 @@ func nodeStatsOf(ctx context.Context, flow, node string) (nodeStats, error) {
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return s, fmt.Errorf("stats: %s", res.Status)
+		return s, errors.New(res.Status)
 	}
 	err = json.NewDecoder(res.Body).Decode(&s)
 	return s, err
