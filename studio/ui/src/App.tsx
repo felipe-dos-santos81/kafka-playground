@@ -4,14 +4,11 @@ import Canvas from './Canvas'
 import FlowList from './FlowList'
 import Inspector from './Inspector'
 import Palette from './Palette'
-import { api, ApiError, type FlowState, type FlowSummary } from './flow/api'
+import { api, describe, type FlowState, type FlowSummary } from './flow/api'
 import { fileContent, fillDefaults, type CanvasEdge, type CanvasNode } from './flow/schema'
+import TailDrawer from './TailDrawer'
 import { RuntimeContext } from './nodes/StudioNodes'
 import type { StudioNode } from './nodes/types'
-
-function describe(e: unknown): string {
-  return e instanceof ApiError ? `${e.status}: ${e.message}` : String(e)
-}
 
 // Sorts object keys while stringifying, so a snapshot compares values, not key order.
 const sortKeys = (_: string, v: unknown) =>
@@ -207,6 +204,9 @@ function Studio() {
       <aside className="inspector">
         <Inspector node={node} onChange={updateData} />
       </aside>
+      {current && running && node && (node.type === 'producer' || node.type === 'consumer') && (
+        <TailDrawer key={`${current.id}/${node.id}`} flowId={current.id} node={node} />
+      )}
     </div>
   )
 }

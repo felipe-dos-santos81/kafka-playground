@@ -3,6 +3,8 @@ import { FlowSchema, type FlowFile } from './schema'
 export type FlowSummary = { id: string; name: string; status: string }
 // GET /api/flows/{id}/state: each producer's and consumer's container state while deployed.
 export type FlowState = { status: 'running' | 'stopped'; nodes: Record<string, { state: string }> }
+// One record of a node's tail (Go: tailEntry in node.go).
+export type TailEntry = { seq: number; time: string; partition: number; offset: number; key: string; value: string }
 type Problem = { node?: string; edge?: string; message: string }
 
 // No constructor parameter properties: the Vite template enables erasableSyntaxOnly.
@@ -41,4 +43,13 @@ export const api = {
   deploy: (id: string) => call<{ status: string }>(`/api/flows/${id}/deploy`, { method: 'POST' }),
   stop: (id: string) => call<{ status: string }>(`/api/flows/${id}/stop`, { method: 'POST' }),
   state: (id: string) => call<FlowState>(`/api/flows/${id}/state`),
+  // An empty body makes the producer render its own key and value templates.
+  send: (id: string, node: string) =>
+    call<{ partition: number; offset: number }>(`/api/flows/${id}/nodes/${node}/send`, { method: 'POST' }),
+  tail: (id: string, node: string, since: number) =>
+    call<TailEntry[]>(`/api/flows/${id}/nodes/${node}/tail?since=${since}`),
+}
+
+export function describe(e: unknown): string {
+  return e instanceof ApiError ? `${e.status}: ${e.message}` : String(e)
 }

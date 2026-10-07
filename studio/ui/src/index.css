@@ -3,9 +3,9 @@
 html, body, #root { margin: 0; height: 100%; }
 .studio {
   display: grid; height: 100%;
-  grid-template-rows: 44px 1fr;
+  grid-template-rows: 44px 1fr auto;
   grid-template-columns: 220px 1fr 320px;
-  grid-template-areas: "top top top" "side canvas inspector";
+  grid-template-areas: "top top top" "side canvas inspector" "side drawer drawer";
 }
 .topbar { grid-area: top; display: flex; gap: 8px; align-items: center; padding: 0 12px; border-bottom: 1px solid #ddd; }
 .topbar input { font: inherit; padding: 4px 6px; width: 240px; }
@@ -34,3 +34,8 @@ html, body, #root { margin: 0; height: 100%; }
 .node-state { font-weight: 400; font-size: 11px; padding: 0 4px; border-radius: 3px; background: #eee; text-transform: none; }
 .node-state.running { background: #c8e6c9; }
 .node-state.exited, .node-state.dead, .node-state.missing { background: #ffcdd2; }
+.drawer { grid-area: drawer; max-height: 220px; overflow: auto; padding: 8px 12px; border-top: 1px solid #ddd; font-size: 12px; }
+.drawer header { display: flex; gap: 8px; align-items: center; }
+.drawer ol { list-style: none; margin: 6px 0 0; padding: 0; }
+.drawer li { padding: 2px 0; }
+.drawer code { margin-right: 6px; }
