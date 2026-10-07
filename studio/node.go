@@ -264,7 +264,10 @@ func (c *consumer) consume(ctx context.Context, cl *kgo.Client) {
 			c.counts.fail(err)
 			log.Printf("fetch %s[%d]: %v", topic, partition, err)
 		})
-		fs.EachRecord(func(r *kgo.Record) { c.handle(ctx, r) })
+		fs.EachRecord(func(r *kgo.Record) {
+			c.handle(ctx, r)
+			cl.MarkCommitRecords(r) // only a handled record may be committed
+		})
 	}
 }
 
@@ -290,8 +293,10 @@ func postJSON(ctx context.Context, url string, body []byte) error {
 	return nil
 }
 
-// runNode is `studio node`: it runs until SIGTERM (Stop), then closes its client,
-// which for a consumer commits its offsets and leaves the group.
+// runNode is `studio node`: it runs until SIGTERM (Stop). A consumer then waits
+// up to 3 s for the batch in hand to finish its sink and forward, commits the
+// records it handled (it marks each one; unhandled ones are redelivered) and
+// closes its client, which leaves the group.
 func runNode() {
 	var spec NodeSpec
 	if err := json.Unmarshal([]byte(os.Getenv("STUDIO_NODE")), &spec); err != nil {
@@ -307,7 +312,7 @@ func runNode() {
 		if spec.AutoOffsetReset == "latest" {
 			reset = kgo.NewOffset().AtEnd()
 		}
-		opts = append(opts, kgo.ConsumerGroup(spec.Group), kgo.ConsumeTopics(spec.Topic), kgo.ConsumeResetOffset(reset))
+		opts = append(opts, kgo.ConsumerGroup(spec.Group), kgo.ConsumeTopics(spec.Topic), kgo.ConsumeResetOffset(reset), kgo.AutoCommitMarks())
 	}
 	cl, err := kgo.NewClient(opts...)
 	if err != nil {
@@ -317,6 +322,7 @@ func runNode() {
 	defer stop()
 
 	t, counts, boot := &tail{}, &counters{}, NewID()
+	var consuming chan struct{} // closed when a consumer's poll loop has returned; nil for a producer
 	produce := func(ctx context.Context, rec *kgo.Record) error {
 		return cl.ProduceSync(ctx, rec).FirstErr()
 	}
@@ -339,7 +345,11 @@ func runNode() {
 			fail(w, http.StatusConflict, "only producer nodes send")
 		})
 		c := &consumer{spec: spec, tail: t, counts: counts, post: postJSON, produce: produce}
-		go c.consume(ctx, cl)
+		consuming = make(chan struct{})
+		go func() {
+			c.consume(ctx, cl)
+			close(consuming)
+		}()
 	}
 	srv := &http.Server{Addr: nodeAddr, Handler: mux}
 	go func() {
@@ -350,7 +360,19 @@ func runNode() {
 	log.Printf("node %s (%s) on topic %s, boot %s", spec.Node, spec.Type, spec.Topic, boot)
 
 	<-ctx.Done()
-	shutdown, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if consuming != nil { // let the batch in hand finish its sink and forward (Stop gives 5 s)
+		select {
+		case <-consuming:
+		case <-time.After(3 * time.Second):
+			log.Print("stop: the batch in hand did not finish in 3 s; its unhandled records stay uncommitted")
+		}
+		commit, cancel := context.WithTimeout(context.Background(), time.Second)
+		if err := cl.CommitMarkedOffsets(commit); err != nil {
+			log.Printf("stop: commit: %v", err)
+		}
+		cancel()
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	srv.Shutdown(shutdown)
 	cl.Close()
