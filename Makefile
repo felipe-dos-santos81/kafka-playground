@@ -1,4 +1,4 @@
-# Makefile for Kafka Playground — KRaft broker, topic jobs, kcat consumers, producer page, Redpanda Console
+# Makefile for Kafka Playground — KRaft broker, topic jobs, kcat consumers, producer page, Redpanda Console, Pipeline Studio
 # Typical flow: up → produce → logs → scale → groups → down
 SERVICE = Kafka Playground
 
@@ -31,7 +31,7 @@ help: ## Print this help message
 
 # ── Stack ────────────────────────────────────────────────────────────────────
 
-up: ## [STEP 1] Start everything; returns when the broker and both pages are healthy
+up: ## [STEP 1] Start everything; returns when the broker and the producer, Console and Studio pages are healthy
 	$(COMPOSE) up -d --wait
 	@echo "Producer page: $(PRODUCER_URL)   Console: $(CONSOLE_URL)   Studio: $(STUDIO_URL)   Broker from the host: localhost:9092"
 

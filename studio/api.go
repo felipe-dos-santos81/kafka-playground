@@ -125,6 +125,7 @@ func (s *server) readFlow(w http.ResponseWriter, r *http.Request) (Flow, bool) {
 		fail(w, http.StatusBadRequest, "body: "+err.Error())
 		return f, false
 	}
+	f.normalize()
 	return f, true
 }
 

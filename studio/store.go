@@ -70,6 +70,7 @@ func (s Store) Get(id string) (Flow, error) {
 	if err := json.Unmarshal(b, &f); err != nil {
 		return f, err
 	}
+	f.normalize()
 	f.ID = id // the file name wins over whatever the file says
 	return f, nil
 }

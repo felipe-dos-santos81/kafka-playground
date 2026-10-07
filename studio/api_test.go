@@ -115,6 +115,14 @@ func TestFlowsAPI(t *testing.T) {
 	}
 }
 
+func TestFlowsAPICreateWithoutListsReturnsEmptyArrays(t *testing.T) {
+	ts := newTestServer(t)
+	code, body := call(t, ts, "POST", "/api/flows", map[string]any{"name": "t"})
+	if code != 201 || !strings.Contains(string(body), `"nodes":[]`) || !strings.Contains(string(body), `"edges":[]`) {
+		t.Fatalf("create: %d %s", code, body)
+	}
+}
+
 func TestFlowsAPIBodyLimit(t *testing.T) {
 	ts := newTestServer(t)
 	big := clone(good)

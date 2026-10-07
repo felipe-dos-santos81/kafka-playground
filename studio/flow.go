@@ -21,6 +21,17 @@ type Flow struct {
 	Viewport json.RawMessage `json:"viewport,omitempty"`
 }
 
+// normalize turns absent nodes/edges into empty lists so they serialize as []
+// (the UI schema rejects null).
+func (f *Flow) normalize() {
+	if f.Nodes == nil {
+		f.Nodes = []Node{}
+	}
+	if f.Edges == nil {
+		f.Edges = []Edge{}
+	}
+}
+
 type Node struct {
 	ID       string          `json:"id"`
 	Type     string          `json:"type"`

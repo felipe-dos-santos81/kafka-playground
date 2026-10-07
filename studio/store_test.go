@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -75,5 +76,18 @@ func TestStoreRejectsBadID(t *testing.T) {
 		if err := s.Delete(id); !errors.Is(err, ErrNotFound) {
 			t.Errorf("Delete(%q): want ErrNotFound, got %v", id, err)
 		}
+	}
+}
+
+func TestStoreGetNormalizesMissingLists(t *testing.T) {
+	s := Store{dir: t.TempDir()}
+	os.WriteFile(filepath.Join(s.dir, "0a1b2c3d.json"), []byte(`{"name":"t"}`), 0o644)
+	f, err := s.Get("0a1b2c3d")
+	if err != nil || f.Nodes == nil || f.Edges == nil {
+		t.Fatalf("want non-nil empty lists, got %+v %v", f, err)
+	}
+	b, _ := json.Marshal(f)
+	if !strings.Contains(string(b), `"nodes":[]`) || !strings.Contains(string(b), `"edges":[]`) {
+		t.Fatalf("want [] in %s", b)
 	}
 }

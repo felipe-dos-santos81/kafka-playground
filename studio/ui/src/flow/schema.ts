@@ -28,7 +28,7 @@ export const FlowSchema = z.object({
     }),
   ),
   edges: z.array(z.object({ id: z.string(), source: z.string(), target: z.string() })),
-  viewport: z.object({ x: z.number(), y: z.number(), zoom: z.number() }).optional(),
+  viewport: z.object({ x: z.number(), y: z.number(), zoom: z.number() }).nullish(),
 })
 export type FlowFile = z.infer<typeof FlowSchema>
 

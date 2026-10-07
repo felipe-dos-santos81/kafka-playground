@@ -33,7 +33,7 @@ function Studio() {
       // Hand-edited files may omit data fields: fill them from the defaults so the node components never crash.
       setNodes(f.nodes.map((n) => ({ ...n, data: { ...defaultData(n.type), ...n.data } })) as unknown as StudioNode[])
       setEdges(f.edges)
-      setCurrent({ id: f.id, name: f.name, viewport: f.viewport }) // Canvas mounts per flow and reads it as defaultViewport
+      setCurrent({ id: f.id, name: f.name, viewport: f.viewport ?? undefined }) // Canvas mounts per flow and reads it as defaultViewport
       setSelected(null)
       setDirty(false)
       setError('')

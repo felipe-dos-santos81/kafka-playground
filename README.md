@@ -73,7 +73,9 @@ Consumers sharing a `GROUP_ID` split the partitions; without one, each container
 
 ## Pipeline Studio
 
-http://localhost:8082 is a canvas for building flows: drag Producer, Topic and Consumer nodes from the palette, wire them (only Producer → Topic, Topic → Consumer and Consumer → Topic edges, plus Consumer → Transform → Topic used from M5, are accepted; the server rejects anything else on save), edit the selected node on the right, Save. Each flow is one file in `flows/` (`<id>.json`, React Flow's node/edge shape plus `name`); edit, copy or commit them like any other file — a file that does not parse is skipped and logged. `flows/0a1b2c3d.json` is an example.
+http://localhost:8082 is a canvas for building flows: drag Producer, Topic and Consumer nodes from the palette, wire them (only Producer → Topic, Topic → Consumer and Consumer → Topic edges, plus Consumer → Transform → Topic used from M5, are accepted; the server rejects anything else on save), edit the selected node on the right, Save. Each flow is one file in `flows/` (`<id>.json`, React Flow's node/edge shape plus `id`, `name` and an optional `viewport`); edit, copy or commit them like any other file — a file that does not parse is skipped and logged. `flows/0a1b2c3d.json` is an example.
+
+The compose setup assumes Docker Desktop (macOS/Windows). On native Linux `/var/run/docker.sock` is `root:docker 0660`, so the studio's default non-root user cannot reach it (`/api/health` stays 503 and `make up` fails): add `user: "0"` to the `studio` service (the socket mount already grants host root, so this changes nothing), or `group_add` with the host's docker group id, in which case `./flows` must be writable by that user.
 
 Deploying a flow is the next milestone. `GET /api/health` reports the Docker Engine version the studio can reach through `/var/run/docker.sock`; deploy will run each node as a container. That socket is root-equivalent on the host, one more reason the studio stays bound to `127.0.0.1`.
 
