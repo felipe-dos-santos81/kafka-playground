@@ -17,6 +17,7 @@ A local Kafka sandbox: produce JSON from a browser and watch partitions, consume
 ```sh
 make up        # start everything, wait until healthy
 make verify    # end-to-end check; ends with VERIFY OK
+make test      # static checks and unit tests, no Docker needed
 make help      # every target
 make down      # remove everything
 ```
@@ -73,27 +74,38 @@ Consumers sharing a `GROUP_ID` split the partitions; without one, each container
 
 ## Pipeline Studio
 
-On http://localhost:8082: drag Producer, Topic and Consumer nodes from the palette, wire them, edit the selected node on the right, Save, Deploy.
+On http://localhost:8082: drag nodes from the palette, wire them, edit the selected one on the right, Save, Deploy.
 
-Try it: a Producer with source `timer`, a Topic, a Consumer; wire them, Save, Deploy. Every node's numbers move once a second; select the consumer to watch its tail. Stop removes the containers.
+Try it: a Producer with source `timer`, a Topic and a Consumer; wire them, Save, Deploy. Every node's numbers move once a second; select the consumer to watch its tail. Stop removes the containers. `flows/0a1b2c3d.json` is a bigger example: a timer into `orders`, read by a two-instance consumer that forwards to `orders-archive`.
 
-- Allowed edges: Producer → Topic, Topic → Consumer, Consumer → Topic. Consumer → Transform → Topic is reserved for a later milestone: a Transform node in a flow file shows and edits, but the palette doesn't offer it yet. The editor refuses other wires; the server rejects them on save.
-- Opening a flow file that lacks some node fields fills in the defaults and marks the flow unsaved; the file changes only when you Save.
-- Each flow is `flows/<id>.json`: React Flow's nodes and edges (each edge with a unique `id`) plus `id`, `name` and `viewport`. Edit, copy or commit them; a file that does not parse is skipped and logged. `flows/0a1b2c3d.json` is an example: a timer producing to `orders` once a second, read by a two-instance consumer that forwards to `orders-archive`. The flow list shows each flow's state, re-read every 5 s.
-- **Deploy** runs the saved flow: it creates the topics (a topic that exists is used as it is) and starts one container per producer and consumer, named `studio-<flow>-<node>` (a consumer with instances runs one per instance, `…-<i>`), and labelled `studio.flow`. `make nodes` lists them; `docker logs`, `docker stop` and `docker rm -f` work on them, and the node's badge turns `exited` or `missing`. **Stop** removes them. Topics and committed offsets stay, so a redeployed consumer carries on where its group left off.
-- Select a deployed producer or consumer to open its tail: its last 100 records, fetched whenever the node's count moves and started over when its container restarts. A producer's tail has **Send**, which renders its key and value templates. From the command line, `curl -X POST 'localhost:8082/api/flows/<id>/nodes/producer-1/send?key=k1' --data '{"id": 1}'` sends that JSON body as the value.
-- Producers send by hand or on a timer (`interval_ms`, at least 10, rendering the key and value templates with `{{.Seq}}`, `{{.Now}}` and `{{.Rand}}`). The Inspector shows a producer's webhook: a `curl` line for `…/nodes/<node>/send`. Node containers reach the studio as `http://studio:8082`.
-- A consumer's sink is `log` (its tail and `docker logs`) or `http`, which POSTs each value as JSON within 5 s; any answer but 2xx counts as an error. Wire a consumer to a topic and it forwards every record there with the same key. A failed sink or forward is counted and logged, not retried, and the offset still commits: the sink and the forward are independent, and a record whose forward fails is not forwarded (at-most-once). A deploy refuses a flow whose forwards loop back to a topic they read from (directly or through other consumers), since records would circulate forever.
-- `instances` (1–10) runs that many containers of a consumer, `studio-<flow>-<node>-<i>`, in its group; they split the topic's partitions. The node shows how many run (`2/3 running`) and which partitions each holds; the tail drawer picks an instance (`…/tail?instance=<i>`). A deploy refuses node ids whose container names would clash (a consumer `consumer-1` with two instances next to a node `consumer-1-2`), naming the node (422).
-- Flows feed each other through an http sink pointed at another flow's producer `send` URL, as `make verify` does with two flows. A deploy still refuses transforms (M5), naming the node.
-- Studio consumers (franz-go, cooperative-sticky assignor) cannot share a group with the compose kcat consumers (librdkafka, range/roundrobin): the broker refuses the join with `INCONSISTENT_GROUP_PROTOCOL`, which shows as the node's errors. Give studio consumers their own groups.
-- While a flow runs, every node shows live numbers, streamed once a second from `GET /api/flows/<id>/events` (server-sent events): producers and consumers their record count, rate and errors (the last error as a tooltip); consumers their group's lag and the partitions they hold; topics their partition count and end offset, with a warning when an existing topic has a different partition count from the flow's. `GET /api/flows/<id>/state` returns the same snapshot without rates.
-- Node containers outlive the studio: `docker compose restart studio` keeps flows running. They are not compose services, so stop the stack with `make down`, which removes them first; `docker compose down` alone cannot remove the network while they are attached.
-- A consumer commits only the records it handled. On Stop it finishes the batch in hand (up to 3 s) and commits those, so nothing is skipped (at-least-once). `docker rm -f` skips that, so its uncommitted records are delivered again on the next deploy.
+### Flows
+
+- Edges: Producer → Topic, Topic → Consumer, Consumer → Topic (a forward). The editor refuses other wires and the server rejects them on save. Transform (Consumer → Transform → Topic) arrives in M5: it shows and edits in a flow file, but the palette doesn't offer it and a deploy refuses it.
+- Each flow is a file, `flows/<id>.json`: React Flow's nodes and edges plus `id`, `name` and `viewport`. Edit, copy or commit them; a file that doesn't parse is skipped and logged, and missing node fields are filled in on open (the flow shows unsaved).
+- A deploy also refuses forwards that loop back to a topic they read (records would circulate forever) and node ids whose container names would clash (a consumer `consumer-1` with two instances next to a node `consumer-1-2`), naming the node (422).
+
+### Nodes
+
+- **Producer**: sends by hand (Send in its tail, or the webhook `curl` line in the Inspector) or on a timer (`interval_ms`, at least 10). Key and value are templates with `{{.Seq}}`, `{{.Now}}` and `{{.Rand}}`. `curl -X POST 'localhost:8082/api/flows/<id>/nodes/producer-1/send?key=k1' --data '{"id": 1}'` sends that body as the value.
+- **Topic**: created on deploy; one that exists is used as it is, with a warning when its partition count differs.
+- **Consumer**: a group, `earliest` or `latest`, a sink, and optionally a forward to a topic with the same key. The sink is `log` (its tail and `docker logs`) or `http` (POST each value as JSON within 5 s; any answer but 2xx is an error). Sink and forward are independent; a failure is counted and logged, not retried, and the record still commits, so a failed forward is lost (at-most-once). `instances` (1–10) runs that many containers in the group, splitting the partitions.
+- Flows feed each other through an http sink pointed at another flow's producer `send` URL; node containers reach the studio as `http://studio:8082`.
+- Studio consumers (franz-go) cannot share a group with the compose kcat consumers (librdkafka): their assignors differ, so the broker refuses the join with `INCONSISTENT_GROUP_PROTOCOL`, shown as the node's errors. Give them their own groups.
+
+### Running
+
+- Deploy starts one container per producer and consumer (one per instance), named `studio-<flow>-<node>` (`…-<i>` for an instance) and labelled `studio.flow`. `make nodes` lists them; `docker logs`, `docker stop` and `docker rm -f` work on them, and the node turns `exited` or `missing`. Stop removes them; topics and committed offsets stay, so a redeployed consumer carries on where its group left off.
+- Live numbers stream once a second from `GET /api/flows/<id>/events` (server-sent events): record count, rate and errors (the last error as a tooltip); a consumer's lag and the partitions it holds (per instance, with `2/3 running` when some are down); a topic's partitions and end offset. `GET /api/flows/<id>/state` returns the same snapshot without rates. The flow list refreshes every 5 s.
+- The tail shows a node's last 100 records, fetched when its count moves and started over when its container restarts; a consumer with instances has an instance picker (`…/tail?instance=<i>`).
+- A consumer commits only the records it handled. On Stop it finishes the batch in hand (up to 3 s), so nothing is skipped (at-least-once); `docker rm -f` skips that, and its uncommitted records come again on the next deploy.
+- Node containers outlive the studio: `docker compose restart studio` keeps flows running. They are not compose services, so stop the stack with `make down`, which removes them first.
+
+### API, security, development
+
 - The API lives under `/api` and always answers JSON: an unknown path is 404, a wrong method 405, errors are `{"error": "..."}`. Browsers may only write from the studio's own page: a cross-site POST, PUT or DELETE gets 403. curl and the node containers are not affected.
-- `GET /api/health` reports the Docker Engine version reachable through the mounted `/var/run/docker.sock` and whether the broker answers. That socket is root-equivalent on the host, another reason the studio stays on `127.0.0.1`.
-- Native Linux: the setup assumes Docker Desktop. There the socket is `root:docker 0660`, so `/api/health` stays 503 and `make up` fails. Add `user: "0"` to the `studio` service (the socket already grants root), or `group_add` the host's docker gid and make `./flows` writable by that user.
-- UI development: `cd studio/ui && npm install && npm run dev` serves http://localhost:5173 and proxies `/api` to the running `studio` container. Go changes need `make up` (rebuilds the image).
+- `GET /api/health` reports the Docker Engine version, reached through the mounted `/var/run/docker.sock`, and whether the broker answers. That socket is root-equivalent on the host, another reason the studio stays on `127.0.0.1`.
+- Native Linux: the setup assumes Docker Desktop. On Linux the socket is `root:docker 0660`, so `/api/health` stays 503 and `make up` fails: add `user: "0"` to the `studio` service, or `group_add` the host's docker gid and make `./flows` writable by that user.
+- UI development: `cd studio/ui && npm install && npm run dev` serves http://localhost:5173 and proxies `/api` to the running `studio` container. Go changes need `make up` (it rebuilds the image). `make test` runs the static checks and unit tests.
 
 ## Connect from the host
 

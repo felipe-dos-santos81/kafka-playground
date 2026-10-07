@@ -1,5 +1,6 @@
-# Kafka Playground: KRaft broker, topic jobs, kcat consumers, producer page, Redpanda Console, Pipeline Studio
-# Typical flow: up → produce → logs → scale → groups → down
+# Makefile for Kafka Playground — local Kafka sandbox
+# KRaft broker, topic jobs, kcat consumers, producer page, Redpanda Console, Pipeline Studio.
+# Typical flow: up → produce → logs → scale → groups → down; verify checks it all end to end.
 SERVICE = Kafka Playground
 
 # Variables
@@ -18,7 +19,7 @@ svc ?= orders-workers orders-audit
 # Single-quote $(1) for the shell; fed $(value var), quotes, spaces and $ pass through untouched.
 shq = '$(subst ','\'',$(1))'
 
-.PHONY: help up down ps logs topics groups nodes produce scale verify verify-studio
+.PHONY: help up down ps logs topics groups nodes produce scale verify verify-studio test
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
@@ -53,7 +54,7 @@ topics: ## Describe every topic: partitions, leaders, replicas
 groups: ## [STEP 5] Describe every consumer group: members, partitions, lag
 	$(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --describe --all-groups
 
-nodes: ## List Studio node containers: one per producer and consumer of each deployed flow (one per instance for a consumer with instances)
+nodes: ## List Studio node containers: one per deployed producer, consumer and consumer instance
 	docker ps -a -f label=studio.flow
 
 # ── Produce ──────────────────────────────────────────────────────────────────
@@ -70,7 +71,7 @@ produce: ## [STEP 2] Produce one JSON record via the producer page (usage: make 
 scale: ## [STEP 4] Set the number of orders-workers group members (usage: make scale n=3)
 	$(COMPOSE) up -d --scale orders-workers=$(n) orders-workers
 
-# ── Studio ───────────────────────────────────────────────────────────────────
+# ── Verify ───────────────────────────────────────────────────────────────────
 
 verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail, lag, live ticks, chained flows, instances, stop, delete
 	@health=$$(curl -sS --fail-with-body $(STUDIO_URL)/api/health) || { echo "STUDIO FAILED: health: $$health"; exit 1; }; \
@@ -159,8 +160,6 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$cid || { echo "STUDIO FAILED: delete the instances flow"; exit 1; }; \
 	echo "STUDIO OK ($$id)"
 
-# ── Verify ───────────────────────────────────────────────────────────────────
-
 # Waits until both groups have committed past the record (so it can no longer be
 # redelivered), then counts it in the logs: exactly once per group.
 verify: up verify-studio ## End-to-end check: studio API, then one record seen exactly once per consumer group
@@ -179,3 +178,12 @@ verify: up verify-studio ## End-to-end check: studio API, then one record seen e
 	workers=$$(seen orders-workers); audit=$$(seen orders-audit); \
 	echo "orders-workers: $$workers, orders-audit: $$audit"; \
 	if [ "$$workers" = 1 ] && [ "$$audit" = 1 ]; then echo "VERIFY OK"; else echo "VERIFY FAILED"; exit 1; fi
+
+# ── Development ──────────────────────────────────────────────────────────────
+
+# gofmt -l lists unformatted files; tee shows them, and a non-empty list fails the step.
+test: ## Static checks and unit tests, no running stack needed: go vet, gofmt, go test, UI build (tsc), compose config
+	cd producer && go vet ./... && test -z "$$(gofmt -l . | tee /dev/stderr)"
+	cd studio && go vet ./... && test -z "$$(gofmt -l . | tee /dev/stderr)" && go test ./...
+	cd studio/ui && { [ -d node_modules ] || npm ci; } && npm run build
+	$(COMPOSE) config --quiet

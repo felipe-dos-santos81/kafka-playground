@@ -1,6 +1,8 @@
-# Go build output (go build in producer/ or studio/)
+# Go build and test output (go build in producer/ or studio/; go test -c, -coverprofile)
 /producer/producer
 /studio/studio
+*.test
+*.out
 
 # Studio UI: dependencies and build output (keep the placeholder go:embed needs)
 /studio/ui/node_modules/
