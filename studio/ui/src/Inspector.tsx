@@ -91,6 +91,13 @@ export default function Inspector({ node, onChange }: Props) {
           </select>
         </>
       )}
+      {node.type === 'transform' && (
+        <>
+          <label>Expression</label>
+          <textarea value={node.data.expr} onChange={(e) => set({ expr: e.target.value })} />
+          <p className="hint">An expr-lang expression over msg; it runs once deploy lands (M5).</p>
+        </>
+      )}
     </div>
   )
 }

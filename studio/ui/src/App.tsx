@@ -5,7 +5,7 @@ import FlowList from './FlowList'
 import Inspector from './Inspector'
 import Palette from './Palette'
 import { api, ApiError, type FlowSummary } from './flow/api'
-import { defaultData, type FlowFile } from './flow/schema'
+import { withDefaults, type FlowFile } from './flow/schema'
 import type { StudioNode } from './nodes/types'
 
 function describe(e: unknown): string {
@@ -27,20 +27,28 @@ function Studio() {
     refresh()
   }, [refresh])
 
-  const load = async (id: string) => {
+  // Runs an API action, showing any failure in the top bar.
+  const attempt = async (action: () => Promise<void>) => {
     try {
-      const f = await api.get(id)
-      // Hand-edited files may omit data fields: fill them from the defaults so the node components never crash.
-      setNodes(f.nodes.map((n) => ({ ...n, data: { ...defaultData(n.type), ...n.data } })) as unknown as StudioNode[])
-      setEdges(f.edges)
-      setCurrent({ id: f.id, name: f.name, viewport: f.viewport ?? undefined }) // Canvas mounts per flow and reads it as defaultViewport
-      setSelected(null)
-      setDirty(false)
-      setError('')
+      await action()
     } catch (e) {
       setError(describe(e))
     }
   }
+
+  const load = (id: string) =>
+    attempt(async () => {
+      const f = await api.get(id)
+      // Hand-edited files may omit data fields: fill them from the defaults so the node
+      // components never crash, and mark the flow unsaved so the difference is visible.
+      const loaded = f.nodes.map((n) => ({ node: n, ...withDefaults(n.type, n.data) }))
+      setNodes(loaded.map(({ node, data }) => ({ ...node, data })) as unknown as StudioNode[])
+      setEdges(f.edges)
+      setCurrent({ id: f.id, name: f.name, viewport: f.viewport ?? undefined }) // Canvas mounts per flow and reads it as defaultViewport
+      setSelected(null)
+      setDirty(loaded.some((l) => l.filled))
+      setError('')
+    })
 
   // React Flow's shape is the file format: only drop runtime-only fields.
   const toFile = (id: string, name: string): FlowFile => ({
@@ -51,17 +59,14 @@ function Studio() {
     viewport: getViewport(),
   })
 
-  const save = async () => {
-    if (!current) return
-    try {
+  const save = () =>
+    attempt(async () => {
+      if (!current) return
       await api.save(toFile(current.id, current.name))
       setDirty(false)
       setError('')
       refresh()
-    } catch (e) {
-      setError(describe(e))
-    }
-  }
+    })
 
   const discard = () => !dirty || window.confirm('Discard unsaved changes?')
 
@@ -73,18 +78,16 @@ function Studio() {
     if (!discard()) return
     const name = window.prompt('Flow name')?.trim()
     if (!name) return
-    try {
+    await attempt(async () => {
       const f = await api.create({ name, nodes: [], edges: [] })
       await refresh()
       await load(f.id)
-    } catch (e) {
-      setError(describe(e))
-    }
+    })
   }
 
   const remove = async (id: string) => {
     if (!window.confirm('Delete this flow?')) return
-    try {
+    await attempt(async () => {
       await api.remove(id)
       if (current?.id === id) {
         setCurrent(null)
@@ -93,13 +96,11 @@ function Studio() {
         setEdges([])
       }
       refresh()
-    } catch (e) {
-      setError(describe(e))
-    }
+    })
   }
 
   // Selection and measurement changes are not edits.
-  const touch = (changes: { type: string }[]) => {
+  const markDirtyOnEdit = (changes: { type: string }[]) => {
     if (changes.some((c) => c.type !== 'select' && c.type !== 'dimensions')) setDirty(true)
   }
 
@@ -142,11 +143,11 @@ function Studio() {
             nodes={nodes}
             edges={edges}
             onNodesChange={(c) => {
-              touch(c)
+              markDirtyOnEdit(c)
               onNodesChange(c)
             }}
             onEdgesChange={(c) => {
-              touch(c)
+              markDirtyOnEdit(c)
               onEdgesChange(c)
             }}
             setNodes={setNodes}

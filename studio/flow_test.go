@@ -56,7 +56,13 @@ func TestValidate(t *testing.T) {
 			f.Edges = []Edge{edge("consumer-1", "consumer-2")}
 		}, "not allowed"},
 		{"self edge", Save, func(f *Flow) { f.Edges = []Edge{edge("topic-1", "topic-1")} }, "self edge"},
-		{"duplicate edge", Save, func(f *Flow) { f.Edges = append(f.Edges, edge("producer-1", "topic-1")) }, "duplicate"},
+		{"duplicate edge", Save, func(f *Flow) {
+			f.Edges = append(f.Edges, Edge{ID: "again", Source: "producer-1", Target: "topic-1"})
+		}, "topic-1: duplicate"},
+		{"edge without id", Save, func(f *Flow) { f.Edges = append(f.Edges, Edge{Source: "topic-1", Target: "consumer-1"}) }, "id is required"},
+		{"duplicate edge id", Save, func(f *Flow) {
+			f.Edges = append(f.Edges, Edge{ID: "producer-1-topic-1", Source: "topic-1", Target: "consumer-1"})
+		}, "duplicate edge id"},
 		{"unknown endpoint", Save, func(f *Flow) { f.Edges[0].Target = "nope" }, "unknown node"},
 		{"producer without topic", Deploy, func(f *Flow) { f.Edges = f.Edges[1:] }, "exactly one edge to a topic"},
 		{"bad source", Deploy, func(f *Flow) { f.Nodes[0].Data = json.RawMessage(`{"source":"cron","value":"{}"}`) }, "source must be"},

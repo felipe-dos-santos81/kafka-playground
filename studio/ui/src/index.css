@@ -29,3 +29,4 @@ html, body, #root { margin: 0; height: 100%; }
 .producer { border-color: #2e7d32; }
 .topic { border-color: #ef6c00; }
 .consumer { border-color: #1565c0; }
+.transform { border-color: #6a1b9a; }

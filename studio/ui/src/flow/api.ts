@@ -31,7 +31,6 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  health: () => call<{ docker: string }>('/api/health'),
   list: () => call<FlowSummary[]>('/api/flows'),
   get: async (id: string) => FlowSchema.parse(await call<unknown>(`/api/flows/${id}`)),
   create: (flow: Omit<FlowFile, 'id'>) =>

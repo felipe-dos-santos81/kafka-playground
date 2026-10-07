@@ -9,8 +9,10 @@ export type ConsumerData = {
   instances?: number
   sink: { kind: 'log' | 'http'; url?: string }
 }
+export type TransformData = { expr: string }
 
 export type ProducerNode = Node<ProducerData, 'producer'>
 export type TopicNode = Node<TopicData, 'topic'>
 export type ConsumerNode = Node<ConsumerData, 'consumer'>
-export type StudioNode = ProducerNode | TopicNode | ConsumerNode
+export type TransformNode = Node<TransformData, 'transform'>
+export type StudioNode = ProducerNode | TopicNode | ConsumerNode | TransformNode

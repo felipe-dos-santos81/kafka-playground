@@ -138,10 +138,20 @@ func Validate(f *Flow, level Level) []Problem {
 			types[n.ID] = n.Type
 		}
 	}
-	in := map[string]int{}       // node id → number of incoming edges
-	out := map[string][]string{} // node id → target node ids
+	inDegree := map[string]int{}        // node id → number of incoming edges
+	outTargets := map[string][]string{} // node id → target node ids
+	edgeIDs := map[string]bool{}
 	seen := map[[2]string]bool{}
 	for _, e := range f.Edges {
+		switch {
+		case e.ID == "":
+			add("", "", "edge %s → %s: id is required", e.Source, e.Target)
+			continue
+		case edgeIDs[e.ID]:
+			add("", e.ID, "duplicate edge id %q", e.ID)
+			continue
+		}
+		edgeIDs[e.ID] = true
 		st, tt := types[e.Source], types[e.Target]
 		switch {
 		case st == "" || tt == "":
@@ -158,8 +168,8 @@ func Validate(f *Flow, level Level) []Problem {
 			continue
 		}
 		seen[[2]string{e.Source, e.Target}] = true
-		in[e.Target]++
-		out[e.Source] = append(out[e.Source], e.Target)
+		inDegree[e.Target]++
+		outTargets[e.Source] = append(outTargets[e.Source], e.Target)
 	}
 	if level == Save {
 		return ps
@@ -189,7 +199,7 @@ func Validate(f *Flow, level Level) []Problem {
 			if err := checkTemplate(d.Key, false); err != nil {
 				add(n.ID, "", "key: %v", err)
 			}
-			if len(out[n.ID]) != 1 {
+			if len(outTargets[n.ID]) != 1 {
 				add(n.ID, "", "a producer needs exactly one edge to a topic")
 			}
 		case "topic":
@@ -234,10 +244,10 @@ func Validate(f *Flow, level Level) []Problem {
 			default:
 				add(n.ID, "", `sink kind must be "log" or "http"`)
 			}
-			if in[n.ID] != 1 {
+			if inDegree[n.ID] != 1 {
 				add(n.ID, "", "a consumer needs exactly one edge from a topic")
 			}
-			if len(out[n.ID]) > 1 {
+			if len(outTargets[n.ID]) > 1 {
 				add(n.ID, "", "a consumer may forward to at most one topic or transform")
 			}
 		case "transform":
@@ -248,7 +258,7 @@ func Validate(f *Flow, level Level) []Problem {
 			if strings.TrimSpace(d.Expr) == "" {
 				add(n.ID, "", "expr is required")
 			}
-			if in[n.ID] != 1 || len(out[n.ID]) != 1 {
+			if inDegree[n.ID] != 1 || len(outTargets[n.ID]) != 1 {
 				add(n.ID, "", "a transform needs one edge from a consumer and one edge to a topic")
 			}
 		}

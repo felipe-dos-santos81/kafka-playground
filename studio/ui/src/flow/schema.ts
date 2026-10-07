@@ -46,6 +46,28 @@ export function defaultData(type: NodeType): Record<string, unknown> {
   }
 }
 
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+// data with every missing default field filled in (one level into objects such as
+// sink); filled reports whether anything was added, i.e. whether the file lacked it.
+export function withDefaults(type: NodeType, data: Record<string, unknown>) {
+  const out = { ...data }
+  let filled = false
+  for (const [k, v] of Object.entries(defaultData(type))) {
+    if (!(k in out)) {
+      out[k] = v
+      filled = true
+    } else if (isObject(v) && isObject(out[k])) {
+      const inner = { ...v, ...out[k] }
+      if (Object.keys(inner).length > Object.keys(out[k]).length) {
+        out[k] = inner
+        filled = true
+      }
+    }
+  }
+  return { data: out, filled }
+}
+
 // Smallest unused "<type>-<n>"; ids must match the Go nodeIDRe.
 export function nextId(type: NodeType, nodes: { id: string }[]): string {
   const used = new Set(nodes.map((n) => n.id))

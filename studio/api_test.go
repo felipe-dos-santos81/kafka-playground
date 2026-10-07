@@ -157,3 +157,22 @@ func TestHealthWithoutDocker(t *testing.T) {
 		t.Fatalf("health without docker: %d %s", code, body)
 	}
 }
+
+func TestUnroutedAPIAnswersJSON(t *testing.T) {
+	ts := newTestServer(t)
+	for _, c := range []struct {
+		method, path string
+		want         int
+	}{
+		{"GET", "/api/typo", 404},
+		{"POST", "/api/typo", 404},
+		{"POST", "/api/health", 405},
+		{"PATCH", "/api/flows/deadbeef", 405},
+	} {
+		code, body := call(t, ts, c.method, c.path, nil)
+		var e struct{ Error string }
+		if code != c.want || json.Unmarshal(body, &e) != nil || e.Error == "" {
+			t.Errorf("%s %s: want %d with a JSON error, got %d %s", c.method, c.path, c.want, code, body)
+		}
+	}
+}

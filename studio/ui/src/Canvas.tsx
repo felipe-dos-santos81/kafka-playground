@@ -17,9 +17,10 @@ import { canConnect, defaultData, nextId, type NodeType } from './flow/schema'
 import ProducerNode from './nodes/ProducerNode'
 import TopicNode from './nodes/TopicNode'
 import ConsumerNode from './nodes/ConsumerNode'
+import TransformNode from './nodes/TransformNode'
 import type { StudioNode } from './nodes/types'
 
-const nodeTypes = { producer: ProducerNode, topic: TopicNode, consumer: ConsumerNode }
+const nodeTypes = { producer: ProducerNode, topic: TopicNode, consumer: ConsumerNode, transform: TransformNode }
 
 type Props = {
   nodes: StudioNode[]

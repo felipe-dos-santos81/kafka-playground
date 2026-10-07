@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/moby/moby/client"
@@ -25,7 +26,7 @@ type flowSummary struct {
 	Status string `json:"status"`
 }
 
-func newMux(s *server, ui fs.FS) *http.ServeMux {
+func newMux(s *server, ui fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/flows", s.listFlows)
@@ -34,7 +35,33 @@ func newMux(s *server, ui fs.FS) *http.ServeMux {
 	mux.HandleFunc("PUT /api/flows/{id}", s.putFlow)
 	mux.HandleFunc("DELETE /api/flows/{id}", s.deleteFlow)
 	mux.Handle("GET /", http.FileServerFS(ui))
-	return mux
+	return apiJSON(mux)
+}
+
+// apiJSON answers unrouted /api/ requests with JSON errors; the mux alone would
+// answer in plain text, or hand GETs to the UI's catch-all.
+func apiJSON(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") || routed(mux, r, r.Method) {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		for _, m := range []string{"GET", "POST", "PUT", "DELETE"} {
+			if routed(mux, r, m) {
+				fail(w, http.StatusMethodNotAllowed, r.Method+" is not allowed on "+r.URL.Path)
+				return
+			}
+		}
+		fail(w, http.StatusNotFound, "no such endpoint: "+r.URL.Path)
+	})
+}
+
+// routed reports whether method on r's path reaches an API route, not the UI catch-all.
+func routed(mux *http.ServeMux, r *http.Request, method string) bool {
+	c := r.Clone(r.Context())
+	c.Method = method
+	_, pattern := mux.Handler(c)
+	return pattern != "" && pattern != "GET /"
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
@@ -71,15 +98,7 @@ func (s *server) createFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.ID = NewID()
-	if ps := Validate(&f, Save); ps != nil {
-		reply(w, http.StatusUnprocessableEntity, map[string]any{"errors": ps})
-		return
-	}
-	if err := s.store.Put(f); err != nil {
-		fail(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	reply(w, http.StatusCreated, f)
+	s.saveFlow(w, f, http.StatusCreated)
 }
 
 func (s *server) getFlow(w http.ResponseWriter, r *http.Request) {
@@ -100,6 +119,18 @@ func (s *server) putFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.ID = id // the URL wins over the body
+	s.saveFlow(w, f, http.StatusOK)
+}
+
+func (s *server) deleteFlow(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.Delete(r.PathValue("id")); s.storeErr(w, err) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// saveFlow validates f at save level and stores it, answering 422, 500 or status with the flow.
+func (s *server) saveFlow(w http.ResponseWriter, f Flow, status int) {
 	if ps := Validate(&f, Save); ps != nil {
 		reply(w, http.StatusUnprocessableEntity, map[string]any{"errors": ps})
 		return
@@ -108,14 +139,7 @@ func (s *server) putFlow(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	reply(w, http.StatusOK, f)
-}
-
-func (s *server) deleteFlow(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.Delete(r.PathValue("id")); s.storeErr(w, err) {
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	reply(w, status, f)
 }
 
 // readFlow decodes a flow from a body capped at 1 MiB; on failure it has already answered 400.

@@ -546,16 +546,21 @@ The user's split is kept with two moves: the timer source moves up to M3
 - Palette → canvas → wire; invalid edges refused while dragging; inspector
   forms for the three types; Save → `flows/<id>.json`; flow list; reload
   restores the flow; `PUT` with a bad edge answers 422.
-- `flow_test.go` covers the edge rules.
-- **Demo:** build the example flow from section 4.1 by hand, save, `cat
-  flows/<id>.json`, refresh the page, see it back. `make up` ends healthy.
+- `Validate` lands complete (both levels, every rule in 4.2 and 4.3) and
+  `flow_test.go` covers it; the API uses `Save`, M2's deploy uses `Deploy`.
+- `make verify-studio` checks the API (health, create, a bad edge answers
+  422, read back, delete); M2 extends it with deploy.
+- **Demo:** build a Producer → Topic → Consumer flow by hand, save, `cat
+  flows/<id>.json`, refresh the page, see it back; the full section 4.1
+  example ships as `flows/0a1b2c3d.json` (its `instances` field gets a form
+  in M4). `make up` ends healthy.
 
 ### M2 — Deploy `Producer(manual) → Topic → Consumer(log)`, stop.
 
 - Deploy: validation, `kadm.CreateTopics`, one container per node, rollback;
   Stop; reconcile on start; `send` and `tail` proxied (the tail drawer polls
   `tail` every second in M2; SSE arrives in M3).
-- `make verify-studio`: create a flow by `curl`, deploy, `send` a unique
+- `make verify-studio` grows: create a flow by `curl`, deploy, `send` a unique
   record, poll the consumer's `tail` until it shows up, stop, assert the
   containers are gone. `make verify` runs the existing check and this one.
 - **Demo:** Deploy; `docker ps` lists `studio-<flow>-producer-1` and
@@ -658,7 +663,8 @@ Open questions to answer before M2 starts (defaults in bold):
 
 - Unit: `flow_test.go` table test over `Validate` (every rule in 4.2 and 4.3,
   one failing input each). Nothing else is unit-tested; the rest is I/O.
-- End to end: `make verify-studio` (M2 onward) as described in M2; extended in
+- End to end: `make verify-studio`, an API round trip from M1 and deploy as
+  described in M2; extended in
   M3 with a timer flow asserting `rate > 0` and `lag == 0` from a `tick`, and
   in M4 with the two-flow chain.
 - Static: `go vet`, `gofmt -l`, `tsc --noEmit`, `npm run build`, `docker
