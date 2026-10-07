@@ -186,9 +186,8 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	[ "$$code" = 404 ] || { echo "STUDIO FAILED: the events of a deleted flow answered $$code, want 404"; exit 1; }; \
 	echo "STUDIO OK ($$id)"
 
-verify-ui: up studio/ui/node_modules ## Check the studio's UI in a browser (Playwright, Chromium): editor, node types, live view; installs Chromium once
-	@cd studio/ui && npx playwright install chromium && \
-		STUDIO_URL=$(STUDIO_URL) KAFKA_BOOTSTRAP=$(lastword $(BOOTSTRAP)) npx playwright test && echo "UI OK"
+verify-ui: up studio/ui/.chromium ## Check the studio's UI in a browser (Playwright, Chromium): editor, node types, live view; installs Chromium once
+	@cd studio/ui && STUDIO_URL=$(STUDIO_URL) KAFKA_BOOTSTRAP=$(lastword $(BOOTSTRAP)) npx playwright test && echo "UI OK"
 
 # Waits until both groups have committed past the record (so it can no longer be
 # redelivered), then counts it in the logs: exactly once per group.
@@ -212,12 +211,16 @@ verify: up verify-studio verify-ui ## End-to-end check: studio API, studio UI, t
 # ── Development ──────────────────────────────────────────────────────────────
 
 # gofmt -l lists unformatted files; tee shows them, and a non-empty list fails the step.
-test: studio/ui/node_modules ## Static checks and unit tests, no running stack needed: go vet, gofmt, go test, UI build (tsc), UI tests type-check, compose config
+test: studio/ui/node_modules ## Static checks and unit tests, no running stack needed: go vet, gofmt, go test, UI build and UI tests type-check (tsc), compose config
 	cd producer && go vet ./... && test -z "$$(gofmt -l . | tee /dev/stderr)"
 	cd studio && go vet ./... && test -z "$$(gofmt -l . | tee /dev/stderr)" && go test ./...
-	cd studio/ui && npm run build && npx tsc -p e2e
+	cd studio/ui && npm run build
 	$(COMPOSE) config --quiet
 
 # The UI's packages, installed again whenever the lockfile is newer than the last install.
 studio/ui/node_modules: studio/ui/package-lock.json
 	cd studio/ui && npm ci && touch node_modules
+
+# Chromium for the UI tests, installed again when the lockfile changes (a new Playwright wants its own build).
+studio/ui/.chromium: studio/ui/package-lock.json | studio/ui/node_modules
+	cd studio/ui && npx playwright install chromium && touch .chromium

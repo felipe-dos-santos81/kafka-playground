@@ -1,4 +1,4 @@
-import { useCallback, type DragEvent, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useState, type DragEvent, type Dispatch, type SetStateAction } from 'react'
 import {
   Background,
   Controls,
@@ -24,11 +24,14 @@ type Props = {
   onEdgesChange: OnEdgesChange
   setNodes: Dispatch<SetStateAction<StudioNode[]>>
   setEdges: Dispatch<SetStateAction<Edge[]>>
-  defaultViewport?: Viewport // initial viewport (read on mount); fits the view when absent
+  defaultViewport?: Viewport // initial viewport (read on mount); fits the view when absent and the flow has nodes
 }
 
 export default function Canvas({ nodes, edges, onNodesChange, onEdgesChange, setNodes, setEdges, defaultViewport }: Props) {
   const { screenToFlowPosition, getNode } = useReactFlow()
+  // Fit only a flow opened with nodes: on an empty canvas React Flow would fit
+  // (and zoom in on) the first node dropped.
+  const [fitOnOpen] = useState(() => !defaultViewport && nodes.length > 0)
 
   // Only the pairs flow.go allows and no self edges; the backend re-checks on save.
   // addEdge drops duplicates itself.
@@ -66,7 +69,7 @@ export default function Canvas({ nodes, edges, onNodesChange, onEdgesChange, set
       }}
       deleteKeyCode={['Backspace', 'Delete']}
       defaultViewport={defaultViewport}
-      fitView={!defaultViewport}
+      fitView={fitOnOpen}
     >
       <Background />
       <Controls />

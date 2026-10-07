@@ -5,6 +5,7 @@ import {
   expectGrowing,
   expect,
   field,
+  flowIdOf,
   flowItem,
   flowRow,
   messageCount,
@@ -24,14 +25,10 @@ test('build, run and stop a flow in the editor', async ({ page, studio }) => {
   await page.getByRole('button', { name: 'New' }).click()
   await expect(topBar(page).getByRole('textbox')).toHaveValue(name)
 
-  // The canvas zooms in on the first node it gets and centres it, so the other
-  // two go to the free corners; fit view then shows all three.
   const pane = page.locator('.react-flow__pane')
-  await paletteItem(page, 'producer').dragTo(pane, { targetPosition: { x: 150, y: 100 } })
-  await expect(nodeOf(page, 'producer-1')).toBeVisible()
-  await paletteItem(page, 'topic').dragTo(pane, { targetPosition: { x: 40, y: 40 } })
-  await paletteItem(page, 'consumer').dragTo(pane, { targetPosition: { x: 80, y: 480 } })
-  await page.getByRole('button', { name: 'fit view' }).click()
+  await paletteItem(page, 'producer').dragTo(pane, { targetPosition: { x: 60, y: 60 } })
+  await paletteItem(page, 'topic').dragTo(pane, { targetPosition: { x: 60, y: 200 } })
+  await paletteItem(page, 'consumer').dragTo(pane, { targetPosition: { x: 60, y: 340 } })
 
   await nodeOf(page, 'producer-1').click()
   await field(page, 'Source').selectOption('timer')
@@ -58,7 +55,7 @@ test('build, run and stop a flow in the editor', async ({ page, studio }) => {
 
   await page.getByRole('button', { name: 'Stop' }).click()
   await expect(topBar(page).getByText('stopped', { exact: true })).toBeVisible({ timeout: 15_000 })
-  expect(studio.containers(await studio.idOf(name))).toEqual([])
+  expect(studio.containers(await flowIdOf(name))).toEqual([])
 })
 
 test('a wire the edge table refuses is not drawn', async ({ page, studio }) => {

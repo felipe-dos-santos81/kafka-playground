@@ -29,7 +29,9 @@ tests, CI. The suite runs locally, like everything in this repository.
   `STUDIO_URL` (default `http://localhost:8082`). Tests that stop containers
   call `docker` on the host.
 - No change to Go code, the API, the images or `docker-compose.yml`. The UI
-  changes only by the `data-testid` attributes in §4.
+  changes by the `data-testid` attributes in §4, and by two fixes the tests
+  surfaced (§9): the Inspector's labels are tied to their controls, and a new
+  flow's canvas no longer zooms in on its first node.
 - Local-only, as the rest of the repository: no auth, nothing leaves the host.
 - Makefile style as in `AGENTS.md` (GNU make 3.81, BSD tools, real tabs, `##`
   help, `$$`).
@@ -38,10 +40,10 @@ tests, CI. The suite runs locally, like everything in this repository.
 
 ```
 make verify-ui
-  └─ cd studio/ui; npm ci if the lockfile changed; npx playwright install chromium
+  └─ npm ci and Chromium, each only when the lockfile changed
      └─ STUDIO_URL=… KAFKA_BOOTSTRAP=… npx playwright test   (host, one worker)
           ├─ chromium → $STUDIO_URL
-          ├─ fetch → $STUDIO_URL/api            (set up and clean up flows)
+          ├─ Playwright request → $STUDIO_URL/api   (set up and clean up flows)
           └─ execFileSync docker …              (stop/start studio, SIGSTOP/CONT a node,
                                                  delete topics and groups)
 ```
@@ -50,32 +52,36 @@ make verify-ui
   `timeout: 60_000`, `reporter: 'list'`,
   `use: { baseURL, trace: 'retain-on-failure', screenshot: 'only-on-failure' }`,
   `outputDir: 'test-results'`, one project, Chromium.
-- `studio/ui/e2e/flows.ts`: `/api` calls (create, deploy, delete, look up) and
-  the parts flows are built from; `STUDIO_URL` comes from the config's
-  `baseURL`. `studio/ui/e2e/locators.ts`: where things are on the page.
-  `studio/ui/e2e/studio.ts`: the shared fixture (`test.extend`): unique names
+- `studio/ui/e2e/flows.ts`: `/api` calls (create, deploy, delete, look up)
+  through one Playwright `request` client on the config's `baseURL`, and the
+  parts flows are built from, typed by the app's own `FlowFile`. `studio/ui/e2e/locators.ts`: where things are on the page.
+  `studio/ui/e2e/studio.ts`: the fixtures (`test.extend`): unique names
   `studio-ui-<test>-<timestamp>` for flows, topics and groups; docker commands
   through `execFileSync` (a node's container is found by its `studio.flow` and
   `studio.node` labels, not by rebuilding its name); wait for `/api/health`
   200; the teardown (§6). It re-exports the other two, so a test imports from
   one place.
-- `studio/ui/e2e/*.spec.ts`: the tests (§5). `studio/ui/e2e/tsconfig.json`
-  lets `make test` type-check them (`tsc -p e2e`) without a browser; the app's
-  build (`tsc && vite build`) does not include `e2e/`, so the studio image is
-  unchanged.
+- `studio/ui/e2e/*.spec.ts`: the tests (§5). The app's build type-checks them
+  too, in the same compiler run (`tsc -b . e2e && vite build`), so `make test`
+  catches a broken test without a browser; Vite bundles only `src/`, so the
+  studio image is unchanged.
 - Makefile: `verify-ui: up ## …` runs the above and prints `UI OK`; `verify: up
   verify-studio verify-ui` (API check, then browser suite, then the kcat check);
-  `test` gains `tsc -p e2e`. Both depend on a `studio/ui/node_modules` target
-  that runs `npm ci` whenever `package-lock.json` is newer than the last
-  install, so a checkout made before Playwright was added installs it. `KAFKA_BOOTSTRAP` is the Makefile's `BOOTSTRAP`
-  address.
-- `.gitignore`: `studio/ui/test-results/`, `studio/ui/playwright-report/`.
+  `test` builds the UI as before. A `studio/ui/node_modules` target runs `npm
+  ci` whenever `package-lock.json` is newer than the last install, so a checkout
+  made before Playwright was added installs it; a `studio/ui/.chromium` stamp
+  runs `npx playwright install chromium` only when the lockfile changed (a new
+  Playwright wants its own Chromium). `KAFKA_BOOTSTRAP` is the Makefile's
+  `BOOTSTRAP` address.
+- `.gitignore`: `studio/ui/test-results/`, `studio/ui/playwright-report/`,
+  `studio/ui/.chromium`, `*.tsbuildinfo` (the compiler's cache).
 
 ## 4. Locating elements
 
 Accessible locators first: buttons and inputs by role and name
-(`getByRole('button', { name: 'Deploy' })`), messages by text. A
-`data-testid` only where the UI has no accessible name:
+(`getByRole('button', { name: 'Deploy' })`), Inspector fields by their label
+(`getByLabel('Group id', { exact: true })`), messages by text. A `data-testid`
+only where the UI has no accessible name:
 
 | `data-testid` | Element | File |
 |---|---|---|
@@ -146,21 +152,21 @@ is removed afterwards (§6).
 
 ## 6. Cleanup, failures, timing
 
+- `studio-ui-` is a namespace the suite owns: every flow, topic and group a
+  test makes starts with it, and nothing else does.
 - Each test's fixture teardown runs even when the test fails, and each step
   runs even when an earlier one failed: if the studio was stopped, `docker
   compose start studio` and wait up to 45 s for `/api/health` 200; then, for
-  each of the test's flows, `docker kill -s CONT` its containers (a paused one
+  every `studio-ui-` flow, `docker kill -s CONT` its containers (a paused one
   would make its removal wait) and delete it through `/api` (which removes its
-  containers). The fixture has its own 120 s budget, apart from the test's.
-- The topics and consumer groups the run's flows name are deleted once, after
-  the last test, by a worker-scoped fixture: one `kafka-topics.sh --delete` and
-  one `kafka-consumer-groups.sh --delete` (each starts a JVM in the broker, so
-  this saves seconds per test). A flow created through the API has its names
-  recorded when it is created, so a test that deletes its own flow still has
-  them removed; one built in the editor is read back. A name is matched
-  literally (escaped, since `--topic` takes a regex), and only a name starting
-  `studio-ui-` is ever deleted, so a shared topic such as `orders` is never
-  touched.
+  containers). One worker runs the tests in turn, so those are this test's
+  flows, plus any an interrupted earlier run left. The fixture has its own
+  120 s budget, apart from the test's.
+- After the last test, a worker-scoped fixture lists the broker's topics and
+  consumer groups and deletes every `studio-ui-` one: a listing and a delete per
+  Kafka tool (each starts a JVM in the broker), not a delete per test. A topic
+  name is escaped, since `--topic` takes a regex, so it matches only itself; a
+  shared topic such as `orders` is never touched.
 - Waits use `expect(…).toHaveText/toBeVisible`, `expect.poll` or `toPass`
   with explicit timeouts. The only fixed wait is test 10's 6 s.
 - One worker: test 8 stops the studio every other test talks to, and its
@@ -194,19 +200,19 @@ is removed afterwards (§6).
 
 - `dragTo` drives both the palette's HTML5 drop and React Flow's handle-to-handle
   connection in Chromium; no `page.mouse` fallback was needed (checked live).
-- A new flow's canvas zooms in on, and centres, the first node it gets
-  (React Flow's `fitView` on an empty canvas). The editor test therefore drops
-  the producer first, the topic and consumer into free corners away from the
-  controls, then presses React Flow's own "fit view" control before clicking.
-- The Inspector's labels are not tied to their controls, so a field is the
-  control right after its label text (`label:text-is("Group id") + *`), which
-  needs no UI change.
+- A new flow's canvas used to zoom in on, and centre, the first node dropped
+  on it (React Flow's `fitView` on an empty canvas). `Canvas.tsx` now fits only
+  a flow opened with nodes, so the editor test drops its nodes where it means
+  to.
+- The Inspector's labels were not tied to their controls. Each now names its
+  control (`htmlFor` and `id`), which screen readers use too, so the tests find
+  a field with `getByLabel`.
 - `data-testid="tail"` marks the whole drawer, not only its list: the instance
   picker, Send and the scrolling box live there too.
-- The topics and groups the tests' flows name are deleted after the last test,
-  in one run of each Kafka tool: recorded when a flow is created, read back for
-  a flow built in the editor. The group delete is retried once after 3 s (the
-  last test's consumers may still be leaving).
+- Cleanup goes by the `studio-ui-` namespace rather than by remembering names:
+  the fixture keeps no record of what a test made, and a run also clears what an
+  interrupted one left. Two runs of the suite at once would remove each other's
+  flows; one worker and one run at a time is the design.
 - `e2e/tsconfig.json` uses Node's types from `@types/node`, declared at the
   version vite already installs (`24.19.1`).
 - The tail-scroll test's timer runs at 250 ms: the drawer keeps 100 records, and a faster timer passes that cap during the check (100 ms gives only about 10 s), so the first record would change while scrolled up. At 250 ms the cap arrives about 25 s after start, and more than 20 records still arrive within the 20 s poll.

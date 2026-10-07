@@ -1,4 +1,5 @@
 // Flows through the studio's API, and the parts the tests build them from.
+import { request, type APIRequestContext } from '@playwright/test'
 import config from '../playwright.config'
 import type { FlowFile, NodeType } from '../src/flow/schema'
 
@@ -10,14 +11,13 @@ type FlowNode = Flow['nodes'][number]
 type FlowEdge = Flow['edges'][number]
 type Data = Record<string, unknown>
 
+// One Playwright request client for the run, on the config's baseURL.
+let client: Promise<APIRequestContext> | undefined
 export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(STUDIO_URL + path, {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+  client ??= request.newContext({ baseURL: STUDIO_URL })
+  const res = await (await client).fetch(path, { method, data: body })
   const text = await res.text()
-  if (!res.ok) throw new Error(`${method} ${path}: ${res.status} ${text}`)
+  if (!res.ok()) throw new Error(`${method} ${path}: ${res.status()} ${text}`)
   return (text ? JSON.parse(text) : undefined) as T
 }
 
@@ -53,10 +53,3 @@ export function chain(name: string, producerData: Data, topicData: Data, consume
 
 // simple is a chain whose topic and consumer group are both named after the flow.
 export const simple = (name: string, producerData: Data = manual) => chain(name, producerData, topic(name), consumer(name))
-
-// The topics and consumer groups a flow file names.
-export function topicsAndGroups(flow: Flow): { topics: string[]; groups: string[] } {
-  const names = (type: string, field: string) =>
-    flow.nodes.filter((n) => n.type === type && n.data[field]).map((n) => String(n.data[field]))
-  return { topics: names('topic', 'name'), groups: names('consumer', 'group') }
-}

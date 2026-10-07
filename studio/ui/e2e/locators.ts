@@ -9,8 +9,7 @@ export const nodeOf = (page: Page, id: string) => page.getByTestId(`node-${id}`)
 export const runtimeOf = (page: Page, id: string) => page.getByTestId(`runtime-${id}`)
 export const tail = (page: Page) => page.getByTestId('tail')
 export const paletteItem = (page: Page, type: string) => page.locator(`.palette-item.${type}`)
-// field is the Inspector's control right after a label: the labels are not tied to their controls.
-export const field = (page: Page, label: string) => page.locator('.inspector').locator(`label:text-is("${label}") + *`)
+export const field = (page: Page, label: string) => page.locator('.inspector').getByLabel(label, { exact: true })
 
 // connect wires a node's output to another node's input, handle to handle.
 export async function connect(page: Page, from: string, to: string) {

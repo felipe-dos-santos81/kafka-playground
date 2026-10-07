@@ -10,6 +10,8 @@
 !/studio/ui/dist/.gitkeep
 /studio/ui/test-results/
 /studio/ui/playwright-report/
+/studio/ui/.chromium
+*.tsbuildinfo
 
 # Agent scratch space and worktrees
 /.superpowers/
