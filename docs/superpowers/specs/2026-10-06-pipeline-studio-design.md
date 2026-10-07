@@ -1,7 +1,8 @@
 # Pipeline Studio — design
 
-Date: 2026-10-06. Status: approved in conversation; the implementation plan
-follows in `docs/superpowers/plans/`.
+Date: 2026-10-06. Status: approved in conversation; the implementation plans
+follow in `docs/superpowers/plans/`. M1–M3 shipped; M4, M5 and the new M6
+were detailed on 2026-10-07 (section 7).
 
 A Node-RED/n8n-style web app inside this playground: drag Producer, Topic and
 Consumer nodes (later Transform) onto a canvas, wire them, save the flow as
@@ -138,7 +139,7 @@ patterns, `embed` + `http.FileServerFS` for the UI, `encoding/json`, `os`.
 | `POST /api/flows/{id}/deploy` | validate → create topics → start containers | 422 `{errors:[{node, message}]}`, 409 already running, 502 Docker/Kafka failure (after rollback) |
 | `POST /api/flows/{id}/stop` | stop + remove the flow's containers | 404, 409 not running |
 | `POST /api/flows/{id}/nodes/{node}/send?key=` | body = JSON value (key from `?key=`), or empty to render the node's own key and value templates with the next `.Seq` (the UI's Send button); proxied to the producer container's `/send`; returns `{partition, offset}`. The body form is the webhook URL | 400 invalid JSON, 409 not running, 502 |
-| `GET /api/flows/{id}/nodes/{node}/tail?since=N` | last ≤ 100 records with `seq > N`, proxied from the node | 409 |
+| `GET /api/flows/{id}/nodes/{node}/tail?since=N&instance=I` | last ≤ 100 records with `seq > N`, proxied from the node; `instance` (M4, default 1) picks one of a consumer's instances | 409 |
 | `GET /api/flows/{id}/state` | the flow's snapshot, as an SSE tick carries it but without rates: container states, each running node's counters, consumer lag and partitions, topic partitions and end offsets | 404 |
 | `GET /api/flows/{id}/events` | SSE stream of `tick` snapshots (section 3.6) | 404 |
 
@@ -251,12 +252,16 @@ Inside a node container:
 - **Consumer:** one `kgo.Client` with `ConsumerGroup`, `ConsumeTopics`,
   `ConsumeResetOffset`; a `PollFetches` loop; per record: append to the tail, then the
   sink — `log` (each record also goes to the container's stdout, so `docker logs` shows it), `http` (POST the value, 5 s timeout, non-2xx
-  counts as an error), and if the node has a forward edge, `Produce` to that
-  topic with the same key (through the same client). Default autocommit; on
+  counts as an error), then the transform if any (M5), and if the node forwards, `ProduceSync` to that
+  topic with the same key (through the same client). A failed sink, transform
+  or forward counts as an error and is not retried; the offset still commits,
+  so a failed forward loses that record (at-most-once for forwards). The
+  `http` sink sends `Content-Type: application/json`; the image carries a CA
+  bundle from M4 so `https` works. Default autocommit; on
   SIGTERM the client is closed, which commits and leaves the group. `docker
   rm -f` (SIGKILL) skips that, so uncommitted records are redelivered —
   at-least-once, on purpose, worth a README line.
-- **Stats:** counters count records where they pass — produced by a producer, fetched by a consumer — with fetch and produce errors and the last error; `/stats` returns `{boot, total, errors, lastError, tailSeq}`, where `boot` is random per process so a restarted container starts over visibly. `/tail?since=` returns records from a 100-entry ring buffer (values truncated to 4 KiB). The control plane adds the container state from Docker and lag and partitions from the broker. The HTTP server listens on `:9000` inside the compose network only.
+- **Stats:** counters count records where they pass — produced by a producer, fetched by a consumer — with fetch and produce errors and the last error; `/stats` returns `{boot, total, errors, lastError, tailSeq}` (from M5 also `steps: {<transform id>: {total, errors, lastError}}` on a consumer that runs a transform), where `boot` is random per process so a restarted container starts over visibly. `/tail?since=` returns records from a 100-entry ring buffer (values truncated to 4 KiB). The control plane adds the container state from Docker and lag and partitions from the broker. The HTTP server listens on `:9000` inside the compose network only.
 
 ### 3.5 State store
 
@@ -272,7 +277,7 @@ Inside a node container:
 
 ### 3.6 Live status to the browser: SSE
 
-One `EventSource` per open flow on `GET /api/flows/{id}/events`. Each open stream runs its own loop: every second it takes a snapshot — `ContainerList` by label (container states), `GET /stats` on every running node container, `adm.Lag` for the flow's groups and `adm.ListEndOffsets` for its topics — computes `rate = Δtotal / Δt` against its previous snapshot (none when a node's `boot` changed), and sends it as a `tick`. The loop ends when `r.Context()` is done. One tab is one loop; a poller shared between streams is an optimisation for many viewers. A consumer node's `assigned` partitions come from the group description in `adm.Lag`, whose members carry the node's container name as their client id; with M4's `instances` they move into an `instances` array.
+One `EventSource` per open flow on `GET /api/flows/{id}/events`. Each open stream runs its own loop: every second it takes a snapshot — `ContainerList` by label (container states), `GET /stats` on every running node container, `adm.Lag` for the flow's groups and `adm.ListEndOffsets` for its topics — computes `rate = Δtotal / Δt` against its previous snapshot (none when a node's `boot` changed), and sends it as a `tick`. The loop ends when `r.Context()` is done. One tab is one loop; a poller shared between streams is an optimisation for many viewers. A consumer node's `assigned` partitions come from the group description in `adm.Lag`, whose members carry the node's container name as their client id. From M4, a consumer with `instances` > 1 also carries `instances: [{instance, state, total, rate, errors, lastError, tailSeq, boot, assigned}]`, one entry per container; its node-level `total`, `rate` and `errors` are the sums, `lag` stays the group's, and its `state` is `running` only when every instance runs (otherwise the first instance's state that is not). From M5 a transform node carries its consumer's state and the counters the consumer reports for it under `steps`.
 
 ```
 event: tick
@@ -406,7 +411,7 @@ record and forward it to `orders-archive`.
 | | `auto_offset_reset` | M2 | `earliest` (default) or `latest` |
 | | `sink` | M2 | `{"kind":"log"}` (M2) or `{"kind":"http","url":"…"}` (M4), `url` must parse with scheme `http` or `https` |
 | | `instances` | M4 | integer 1–10, default 1 |
-| transform | `expr` | M5 | an `expr-lang/expr` program over `msg` (the decoded JSON value) returning the new value; must compile on deploy |
+| transform | `expr` | M5 | an `expr-lang/expr` program over `msg` (the decoded JSON value) returning the new value, or `nil` to drop the record; must compile on deploy |
 
 "From" is the milestone whose runtime first uses a field. Save accepts every
 field from M1, so the editor shows and edits the ones it has a form for (the
@@ -530,7 +535,8 @@ never an empty match).
 Each milestone ends in a `make verify`-style check and a demo you can run.
 The user's split is kept with two moves: the timer source moves up to M3
 (msg/s is meaningless without it), and Transform moves out to its own M5
-(it brings a dependency and is a nice-to-have).
+(it brings a dependency and is a nice-to-have). M6 hardens what M3 left
+open; it runs last, by the user's choice, so M4 lands on M3's snapshot loop.
 
 ### M1 — Editor, save/load, Docker smoke. No Kafka client.
 
@@ -580,24 +586,92 @@ The user's split is kept with two moves: the timer source moves up to M3
 
 ### M4 — Chaining, HTTP sink, webhook, instances, two flows at once.
 
-- Consumer → Topic forwarding; `http` sink (CA certificates copied into the
-  image so `https` works); the producer node shows its `send` URL as a
-  `curl` line (the webhook); `instances: N`; flow list shows running state
-  for every flow.
+- Deploy stops refusing the http sink, `instances` > 1 and consumer → topic
+  forwarding (Transform stays refused until M5).
+- Forwarding: per record tail → sink → forward, `ProduceSync` with the same
+  key through the consumer's client; a failed forward is an error, not
+  retried, and the offset still commits (section 3.4).
+- `http` sink: POST the value as JSON, 5 s timeout, non-2xx is an error, no
+  retry; the image gains a CA bundle so `https` works; the Inspector gets a
+  log/http picker with a URL field.
+- Webhook: the producer's Inspector shows its copyable `curl …/send?key=…`
+  line; no new endpoint (assumption 5).
+- `instances: N`: N containers `studio-<flow>-<node>-<i>` (no suffix when
+  N = 1) in one group, each with its container name as client id; the
+  snapshot's `instances` array and summed node fields (section 3.6); the node
+  shows `2/3 running` when some are down; the tail drawer gets an instance
+  picker (`tail?instance=`); the Inspector gets an instances field.
+- Flow list: the UI re-reads `GET /api/flows` every 5 s, so flows deployed or
+  stopped elsewhere show their real state.
+- Snapshot cost stays as M3 built it until M6: with several instances a tick
+  can take longer than 1 s; rates stay correct because Δt is measured.
+- `make verify-studio` grows the chain demo below and the instances check.
 - **Demo:** flow A `timer → orders → consumer(forward) → orders-archive`;
   flow B `producer(manual) → audit → consumer(http → http://studio:8082/api/flows/<A>/nodes/producer-1/send)`
-  — flow B's consumer feeds flow A's producer with no extra image; both show
-  live stats; `instances: 3` on A's consumer → three containers, three
-  partitions, one each.
+  — flow B's consumer feeds flow A's producer with no extra image (and node
+  containers pass the cross-site write guard); both show live stats;
+  `instances: 3` on a 3-partition topic → three containers, one partition each.
 
-### M5 — Transform (nice-to-have).
+### M5 — Transform.
 
-- Transform node type and edge rules; `expr` compiled at deploy, run in the
-  upstream consumer container; its counters reported under the transform's
-  node id.
+- `expr-lang/expr`, pinned exactly (API confirmed through Context7 when the
+  plan is written): the only new Go dependency.
+- Deploy compiles every `expr` and answers 422 naming the node with the
+  compile error.
+- Runs inside the upstream consumer: tail → sink → transform → forward. `msg`
+  is the JSON-decoded value; the result, JSON-encoded, is the forwarded value
+  (key unchanged); `nil` drops the record quietly (a filter). A value that is
+  not JSON, a runtime error or a result that cannot be encoded counts as an
+  error on the transform, and the record is not forwarded.
+- The consumer's `/stats` gains `steps` under the transform's node id; the
+  snapshot reports them on the Transform node with the consumer's container
+  state (summed across instances).
+- The palette offers Transform; the "from M5" hints go; a consumer →
+  transform edge deploys.
 - **Demo:** `{id: msg.id, total: msg.qty * msg.price}` between a consumer and
-  the next topic; a failing expression shows an error count and the last
-  error on the Transform node, and the record is not forwarded.
+  the next topic; a good record arrives downstream with `total`; a record
+  without `qty` raises the Transform node's error count and its last error,
+  and is not forwarded.
+
+### M6 — Hardening.
+
+The M3 review leftovers, after M4 and M5.
+
+- Honest live view: the UI handles the stream's `problem` events and
+  connection errors by greying the numbers and saying "live numbers paused:
+  <reason>" in the top bar until the next tick; a deleted flow's stream ends
+  in 404, so the UI says the flow is gone, closes the stream and refreshes
+  the list. `/events` flushes its headers before the first snapshot.
+- Lag counts only partitions the group has committed; a group with no commit
+  yet (not created, or a `latest` consumer before its first commit) shows no
+  lag.
+- A node that does not answer `/stats` has its numbers left out and the
+  reason in its `warning` (not `lastError`); in the first 5 s after its
+  container starts, nothing is shown.
+- `/stats` calls run in parallel under one 800 ms budget, alongside the Kafka
+  calls; Δt for rates is measured between snapshot starts.
+- Tail drawer: follows the newest record only when scrolled to the bottom; one
+  fetch in flight, then again if `tailSeq` moved past it; a failed fetch is
+  retried on the next tick.
+- Timer: template render failures are logged; a send cut by Stop is neither
+  counted nor logged as an error; rendered output that is not JSON counts as
+  an error on the timer and on a template `/send` (500).
+- Tests: the timer test cannot block; streaming covers a failed flush and
+  Δt ≤ 0; `/events` answers 404 JSON for an unknown flow; a non-200 `/stats`
+  is an error (the stats fetch takes a URL). `verify-studio` deletes the
+  topics it creates and its lag check survives braces in error text. README
+  wording on what moves the tail is corrected.
+- **Demo:** deploy, then `docker compose stop studio`: the page greys and
+  says why; start it again and the numbers come back; delete the flow with
+  `curl` while its page is open: the page says it is gone; a 3-instance
+  consumer's tick still arrives about once a second.
+
+### Not planned
+
+A "reset group" action (open question 2), a choice of partitioner (open
+question 3), a separate webhook node with a stable path and secret
+(assumption 5), auth (section 3.7), and the browser's six-connections-per-host
+limit with many studio tabs open. Each is its own request later.
 
 ## 8. Risks and open questions before M2
 
@@ -664,7 +738,9 @@ Open questions to answer before M2 starts (defaults in bold):
 - End to end: `make verify-studio`, an API round trip from M1 and deploy as
   described in M2; extended in
   M3 with a timer flow asserting `rate > 0` and `lag == 0` from a `tick`, and
-  in M4 with the two-flow chain.
+  in M4 with the two-flow chain and three instances, in M5 with a transform
+  (one record through, one error), and in M6 with `/events` answering 404
+  once its flow is deleted and with the test topics removed at the end.
 - Static: `go vet`, `gofmt -l`, `tsc --noEmit`, `npm run build`, `docker
   compose config --quiet`, all listed in `AGENTS.md`.
 - Every milestone ends with `make down && make verify` printing `VERIFY OK`.
