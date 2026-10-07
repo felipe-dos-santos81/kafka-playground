@@ -641,7 +641,7 @@ open; it runs last, by the user's choice, so M4 lands on M3's snapshot loop.
   the next topic; a good record arrives downstream with `total`; a record
   without `qty` raises the Transform node's error count and its last error,
   and is not forwarded.
-- Built as decided in its plan: `expr-lang/expr` v1.17.8; `msg` is declared as `any`, so field access, indexing and arithmetic all compile, and is at run time whatever the value decodes to (numbers as float64); compile and run errors keep their first line; the transform's `total` counts every record it got, dropped ones included; a Transform node's `boot` joins its consumer containers', so its rate behaves like any node's; nothing is refused for its milestone any more.
+- Built as decided in its plan: `expr-lang/expr` v1.17.8; `msg` is declared as `any`, so field access, indexing and arithmetic all compile, and is at run time whatever the value decodes to (an integer as an int, so it passes through exact, any other number as a float64); compile and run errors keep their first line; the transform's `total` counts every record it got, dropped ones included, and a failure counts on the Transform node and as its consumer's error; a Transform node's `boot` joins its consumer containers', so its rate behaves like any node's; nothing is refused for its milestone any more.
 
 ### M6 — Hardening.
 

@@ -262,7 +262,7 @@ func TestConsumerTransform(t *testing.T) {
 	if step.Total != 4 || step.Errors != 2 || !strings.Contains(step.LastError, "not valid JSON") {
 		t.Fatalf("the transform got 4 records and failed on 2, the last not JSON; got %+v", step)
 	}
-	if s := c.counts.stats("b", c.tail.last()); s.Total != 4 || s.Errors != 0 || s.TailSeq != 4 {
-		t.Fatalf("the consumer still counts and tails every record, with no errors of its own; got %+v", s)
+	if s := c.counts.stats("b", c.tail.last()); s.Total != 4 || s.Errors != 2 || s.TailSeq != 4 || !strings.HasPrefix(s.LastError, "transform: ") {
+		t.Fatalf("the consumer still counts and tails every record, and counts the transform's failures as its own; got %+v", s)
 	}
 }

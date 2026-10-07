@@ -30,7 +30,10 @@ func TestRunTransform(t *testing.T) {
 		{`msg`, `[1,2]`, `[1,2]`, ""},
 		{`msg * 2`, `3`, `6`, ""},
 		{`msg[0]`, `[7,8]`, `7`, ""},
+		{`msg`, `{"id":9007199254740993,"price":1.5}`, `{"id":9007199254740993,"price":1.5}`, ""},
+		{`msg.qty * 1.5`, `{"qty":2}`, `3`, ""},
 		{`msg`, `{`, "", "not valid JSON"},
+		{`msg`, `{} {}`, "", "not valid JSON"},
 		{`msg.a / 0`, `{"a":1}`, "", "result:"},
 	} {
 		p, err := compileTransform(c.src)

@@ -140,9 +140,8 @@ func (c *counters) step() stepStats {
 }
 
 func (c *counters) stats(boot string, tailSeq int64) nodeStats {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return nodeStats{Boot: boot, Total: c.total.Load(), Errors: c.errors.Load(), LastError: c.lastError, TailSeq: tailSeq}
+	s := c.step()
+	return nodeStats{Boot: boot, Total: s.Total, Errors: s.Errors, LastError: s.LastError, TailSeq: tailSeq}
 }
 
 // producer serves /send and runs the timer for one producer node.
@@ -277,6 +276,7 @@ func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
 		out, keep, err := runTransform(c.transform, value)
 		if err != nil {
 			c.steps.fail(err)
+			c.counts.fail(fmt.Errorf("transform: %w", err))
 			log.Printf("transform: %v", err)
 		}
 		if !keep {

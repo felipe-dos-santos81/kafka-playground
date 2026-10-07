@@ -325,10 +325,7 @@ func applySteps(st *FlowState, specs []NodeSpec) {
 			t.Total += step.Total
 			t.Errors += step.Errors
 			if t.LastError == "" && step.LastError != "" {
-				t.LastError = step.LastError
-				if c.Instance > 0 {
-					t.LastError = fmt.Sprintf("#%d: %s", c.Instance, step.LastError)
-				}
+				t.LastError = instanceError(c.Instance, step.LastError)
 			}
 			boots = append(boots, c.Boot)
 		}
@@ -572,10 +569,19 @@ func (ns *NodeState) sumInstances() {
 		ns.Errors += in.Errors
 		ns.Rate += in.Rate
 		if ns.LastError == "" && in.LastError != "" {
-			ns.LastError = fmt.Sprintf("#%d: %s", in.Instance, in.LastError)
+			ns.LastError = instanceError(in.Instance, in.LastError)
 		}
 	}
 	ns.Rate = math.Round(ns.Rate*10) / 10
+}
+
+// instanceError prefixes a container's last error with its instance; a node's
+// single container (instance 0) has no prefix.
+func instanceError(instance int, err string) string {
+	if instance == 0 {
+		return err
+	}
+	return fmt.Sprintf("#%d: %s", instance, err)
 }
 
 // streamTicks is the body of GET /api/flows/{id}/events: every period it writes

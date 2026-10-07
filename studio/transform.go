@@ -5,9 +5,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/expr-lang/expr"
@@ -16,7 +18,7 @@ import (
 
 // transformEnv declares msg as any, so field access, indexing and arithmetic all
 // compile; at run time msg is whatever the value decodes to (an object, an
-// array, a string, a number).
+// array, a string, a number: an int when it is one, else a float64).
 type transformEnv struct {
 	Msg any `expr:"msg"`
 }
@@ -33,11 +35,16 @@ func compileTransform(src string) (*vm.Program, error) {
 // runTransform runs p over a record's value. keep is false when the program
 // returned nil: the record is dropped, which is not an error.
 func runTransform(p *vm.Program, value []byte) (out []byte, keep bool, err error) {
+	d := json.NewDecoder(bytes.NewReader(value))
+	d.UseNumber()
 	var msg any
-	if err := json.Unmarshal(value, &msg); err != nil {
+	if err := d.Decode(&msg); err != nil {
 		return nil, false, errInvalidJSON
 	}
-	res, err := expr.Run(p, transformEnv{Msg: msg})
+	if _, err := d.Token(); err != io.EOF {
+		return nil, false, errInvalidJSON // trailing data after the value
+	}
+	res, err := expr.Run(p, transformEnv{Msg: numbers(msg)})
 	if err != nil {
 		return nil, false, firstLine(err)
 	}
@@ -48,6 +55,28 @@ func runTransform(p *vm.Program, value []byte) (out []byte, keep bool, err error
 		return nil, false, fmt.Errorf("result: %w", err)
 	}
 	return out, true, nil
+}
+
+// numbers turns every JSON number in v into an int when it is one (so an id above
+// 2^53 passes through exact) and a float64 otherwise.
+func numbers(v any) any {
+	switch v := v.(type) {
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return int(i)
+		}
+		f, _ := v.Float64() // out of range: ±Inf, which the result's encoding refuses
+		return f
+	case map[string]any:
+		for k, x := range v {
+			v[k] = numbers(x)
+		}
+	case []any:
+		for i, x := range v {
+			v[i] = numbers(x)
+		}
+	}
+	return v
 }
 
 // firstLine keeps an expr error's first line; the rest repeats the expression
