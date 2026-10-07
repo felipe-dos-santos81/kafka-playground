@@ -12,11 +12,13 @@ import (
 	"time"
 
 	"github.com/moby/moby/client"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 type server struct {
 	store  Store
 	docker *client.Client // nil until main wires it; health then answers 503
+	kafka  *kgo.Client    // likewise
 }
 
 type flowSummary struct {
@@ -62,8 +64,12 @@ func newMux(s *server, ui fs.FS) http.Handler {
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
-	if s.docker == nil {
+	switch {
+	case s.docker == nil:
 		fail(w, http.StatusServiceUnavailable, "docker: not configured")
+		return
+	case s.kafka == nil:
+		fail(w, http.StatusServiceUnavailable, "kafka: not configured")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -73,7 +79,11 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusServiceUnavailable, "docker: "+err.Error())
 		return
 	}
-	reply(w, http.StatusOK, map[string]string{"docker": v})
+	if err := s.kafka.Ping(ctx); err != nil {
+		fail(w, http.StatusServiceUnavailable, "kafka: "+err.Error())
+		return
+	}
+	reply(w, http.StatusOK, map[string]any{"docker": v, "kafka": true})
 }
 
 func (s *server) listFlows(w http.ResponseWriter, r *http.Request) {

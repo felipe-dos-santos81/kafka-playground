@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 // all: keeps the pattern valid while dist holds only .gitkeep.
@@ -41,7 +43,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	s := &server{store: Store{dir: dir}, docker: cli}
+	brokers := os.Getenv("KAFKA_BROKERS")
+	if brokers == "" {
+		log.Fatal("KAFKA_BROKERS is required")
+	}
+	kafka, err := kgo.NewClient(kgo.SeedBrokers(brokers))
+	if err != nil {
+		log.Fatal(err)
+	}
+	s := &server{store: Store{dir: dir}, docker: cli, kafka: kafka}
 	log.Println("studio on", addr, "flows in", dir)
 	log.Fatal(http.ListenAndServe(addr, newMux(s, ui)))
 }
