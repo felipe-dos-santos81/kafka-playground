@@ -101,6 +101,11 @@ verify-studio: up ## Check the studio end to end: health, cross-site refusal, sa
 		curl -sS "$(STUDIO_URL)/api/flows/$$id/nodes/consumer-1/tail?since=0" | grep -q "\"key\":\"$$rec\"" && break; \
 		[ "$$i" = 30 ] && { echo "STUDIO FAILED: the consumer tail never showed $$rec"; exit 1; }; sleep 1; \
 	done; \
+	for i in $$(seq 20); do \
+		curl -sS "$(STUDIO_URL)/api/flows/$$id/state" | grep -q '"consumer-1":{[^}]*"lag":0[,}]' && break; \
+		[ "$$i" = 20 ] && { echo "STUDIO FAILED: consumer lag never reached 0: $$(curl -sS $(STUDIO_URL)/api/flows/$$id/state)"; exit 1; }; sleep 1; \
+	done; \
+	echo "studio state: $$(curl -sS $(STUDIO_URL)/api/flows/$$id/state)"; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows/$$id/deploy); \
 	[ "$$code" = 409 ] && [ "$$(nodes)" = 2 ] || { echo "STUDIO FAILED: second deploy: $$code with $$(nodes) containers (want 409, 2)"; exit 1; }; \
 	$(COMPOSE) restart studio >/dev/null 2>&1 && $(COMPOSE) up -d --wait studio >/dev/null 2>&1 || { echo "STUDIO FAILED: restart"; exit 1; }; \

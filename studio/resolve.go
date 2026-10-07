@@ -22,6 +22,12 @@ type NodeSpec struct {
 // containerName is a node's container name and, on the compose network, its host name.
 func containerName(flow, node string) string { return "studio-" + flow + "-" + node }
 
+// nodeURL is path on a node container's own API, reached by container name on
+// the compose network.
+func nodeURL(flow, node, path string) string {
+	return "http://" + containerName(flow, node) + nodeAddr + path
+}
+
 // Resolve assumes Validate(&f, Deploy) passed: every data field decodes and every
 // producer and consumer has exactly one edge to or from a topic.
 func Resolve(f Flow) ([]NodeSpec, []TopicData) {

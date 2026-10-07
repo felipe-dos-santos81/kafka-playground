@@ -195,7 +195,7 @@ func (s *server) stopFlow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) flowState(w http.ResponseWriter, r *http.Request) {
-	st, err := s.engine.State(r.Context(), r.PathValue("id"))
+	st, err := s.engine.Snapshot(r.Context(), r.PathValue("id"))
 	if err != nil {
 		engineErr(w, err)
 		return
@@ -212,7 +212,7 @@ func (s *server) nodeProxy(path string) http.HandlerFunc {
 			engineErr(w, err)
 			return
 		}
-		proxy(w, r, "http://"+containerName(id, node)+nodeAddr+path+"?"+r.URL.RawQuery)
+		proxy(w, r, nodeURL(id, node, path+"?"+r.URL.RawQuery))
 	}
 }
 

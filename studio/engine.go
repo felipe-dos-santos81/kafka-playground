@@ -5,10 +5,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
+	"slices"
 	"sync"
+	"time"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -42,9 +46,24 @@ type FlowState struct {
 	Nodes  map[string]NodeState `json:"nodes"`
 }
 
-// NodeState.State is Docker's container state (running, exited, …) or "missing".
+// NodeState is one node in a snapshot. State is Docker's container state
+// (running, exited, …) or "missing" for producers and consumers, and "ready" or
+// "missing" for topics. The other fields are filled while the flow runs; zero
+// values are left out of the JSON, except Lag, which is nil only when the broker
+// did not answer.
 type NodeState struct {
-	State string `json:"state"`
+	State      string             `json:"state"`
+	Total      int64              `json:"total,omitempty"`
+	Rate       float64            `json:"rate,omitempty"` // records per second, set by the SSE stream
+	Errors     int64              `json:"errors,omitempty"`
+	LastError  string             `json:"lastError,omitempty"`
+	TailSeq    int64              `json:"tailSeq,omitempty"`
+	Boot       string             `json:"boot,omitempty"`
+	Lag        *int64             `json:"lag,omitempty"`        // consumers: the group's lag on the node's topic
+	Assigned   map[string][]int32 `json:"assigned,omitempty"`   // consumers: partitions this node holds, by topic
+	Partitions int32              `json:"partitions,omitempty"` // topics
+	EndOffset  int64              `json:"endOffset,omitempty"`  // topics: summed over partitions
+	Warning    string             `json:"warning,omitempty"`
 }
 
 // Deploy validates the saved flow, creates its topics and starts one container
@@ -116,15 +135,9 @@ func (e *Engine) stop(ctx context.Context, id string) error {
 	return removeContainers(ctx, e.docker, cs)
 }
 
-// State reports the flow's container states. A producer or consumer with no
-// container in a running flow is "missing" (removed with docker rm -f, or added
-// to the file after the deploy).
-func (e *Engine) State(ctx context.Context, id string) (FlowState, error) {
-	f, err := e.store.Get(id)
-	if err != nil {
-		return FlowState{}, err
-	}
-	cs, err := flowContainers(ctx, e.docker, id)
+// stateOf is State for a flow already read from the store.
+func (e *Engine) stateOf(ctx context.Context, f Flow) (FlowState, error) {
+	cs, err := flowContainers(ctx, e.docker, f.ID)
 	if err != nil {
 		return FlowState{}, err
 	}
@@ -142,6 +155,142 @@ func (e *Engine) State(ctx context.Context, id string) (FlowState, error) {
 		st.Nodes[c.Labels[labelNode]] = NodeState{State: string(c.State)}
 	}
 	return st, nil
+}
+
+// State reports the flow's container states. A producer or consumer with no
+// container in a running flow is "missing" (removed with docker rm -f, or added
+// to the file after the deploy).
+func (e *Engine) State(ctx context.Context, id string) (FlowState, error) {
+	f, err := e.store.Get(id)
+	if err != nil {
+		return FlowState{}, err
+	}
+	return e.stateOf(ctx, f)
+}
+
+// Snapshot is State plus, while the flow runs, each running node's counters
+// (/stats) and the broker's view (consumer lag and partitions, topic partitions
+// and end offsets). The SSE stream adds rates.
+func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
+	f, err := e.store.Get(id)
+	if err != nil {
+		return FlowState{}, err
+	}
+	st, err := e.stateOf(ctx, f)
+	if err != nil || st.Status != "running" {
+		return st, err
+	}
+	for node, ns := range st.Nodes {
+		if ns.State != "running" {
+			continue
+		}
+		s, err := nodeStatsOf(ctx, id, node)
+		if err != nil {
+			ns.LastError = "stats: " + err.Error()
+		} else {
+			ns.Total, ns.Errors, ns.LastError, ns.TailSeq, ns.Boot = s.Total, s.Errors, s.LastError, s.TailSeq, s.Boot
+		}
+		st.Nodes[node] = ns
+	}
+
+	specs, _ := Resolve(f)
+	topics := map[string]TopicData{} // topic node id → its data
+	var groups, names []string
+	for _, n := range f.Nodes {
+		if n.Type == "topic" {
+			var d TopicData
+			json.Unmarshal(n.Data, &d)
+			topics[n.ID] = d
+			names = append(names, d.Name)
+		}
+	}
+	for _, s := range specs {
+		if s.Type == "consumer" {
+			groups = append(groups, s.Group)
+		}
+	}
+	slices.Sort(groups)
+	groups = slices.Compact(groups)
+	kctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	// Errors leave the broker's fields out of this snapshot; called with no names
+	// these list every group or topic on the broker, hence the guards.
+	var lags kadm.DescribedGroupLags
+	var ends kadm.ListedOffsets
+	if len(groups) > 0 {
+		lags, _ = e.adm.Lag(kctx, groups...)
+	}
+	if len(names) > 0 {
+		ends, _ = e.adm.ListEndOffsets(kctx, names...)
+	}
+	applyKafka(&st, id, specs, topics, lags, ends)
+	return st, nil
+}
+
+// nodeStatsOf asks a running node container for its counters (1 s budget).
+func nodeStatsOf(ctx context.Context, flow, node string) (nodeStats, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	var s nodeStats
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, nodeURL(flow, node, "/stats"), nil)
+	if err != nil {
+		return s, err
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return s, err
+	}
+	defer res.Body.Close()
+	err = json.NewDecoder(res.Body).Decode(&s)
+	return s, err
+}
+
+// applyKafka adds the broker's view to a running flow's snapshot: for each topic
+// node its partition count and end offset summed over partitions (with a warning
+// when the count is not the flow's), for each consumer node its group's lag on its
+// topic and the partitions whose group member is this node's client. Whatever the
+// broker did not answer is left out.
+func applyKafka(st *FlowState, flow string, specs []NodeSpec, topics map[string]TopicData, lags kadm.DescribedGroupLags, ends kadm.ListedOffsets) {
+	if ends != nil {
+		for node, t := range topics {
+			ns := NodeState{State: "missing"}
+			for p, o := range ends[t.Name] {
+				if p >= 0 && o.Err == nil {
+					ns.Partitions++
+					ns.EndOffset += o.Offset
+				}
+			}
+			if ns.Partitions > 0 {
+				ns.State = "ready"
+				if int(ns.Partitions) != t.Partitions {
+					ns.Warning = fmt.Sprintf("the topic has %d partitions; the flow asks for %d", ns.Partitions, t.Partitions)
+				}
+			}
+			st.Nodes[node] = ns
+		}
+	}
+	for _, s := range specs {
+		gl, ok := lags[s.Group]
+		if s.Type != "consumer" || !ok || gl.Error() != nil {
+			continue
+		}
+		ns := st.Nodes[s.Node]
+		var lag int64
+		for _, ml := range gl.Lag[s.Topic] {
+			if ml.Err == nil && ml.Lag > 0 {
+				lag += ml.Lag
+			}
+			if ml.Member != nil && ml.Member.ClientID == containerName(flow, s.Node) {
+				if ns.Assigned == nil {
+					ns.Assigned = map[string][]int32{}
+				}
+				ns.Assigned[s.Topic] = append(ns.Assigned[s.Topic], ml.Partition)
+			}
+		}
+		slices.Sort(ns.Assigned[s.Topic])
+		ns.Lag = &lag
+		st.Nodes[s.Node] = ns
+	}
 }
 
 // Running is the set of flows that have node containers, in any state.
