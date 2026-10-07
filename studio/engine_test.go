@@ -318,6 +318,9 @@ func TestApplySteps(t *testing.T) {
 		{Node: "consumer-1", Type: "consumer", Instance: 2, TransformNode: "transform-1"},
 		{Node: "consumer-2", Type: "consumer", TransformNode: "transform-2"},
 		{Node: "consumer-3", Type: "consumer"},
+		{Node: "consumer-4", Type: "consumer", Instance: 1, TransformNode: "transform-3"},
+		{Node: "consumer-4", Type: "consumer", Instance: 2, TransformNode: "transform-3"},
+		{Node: "consumer-5", Type: "consumer", TransformNode: "transform-4"},
 	}
 	st := FlowState{Status: "running", Nodes: map[string]NodeState{
 		"consumer-1": {State: "exited", Instances: []NodeState{
@@ -326,18 +329,25 @@ func TestApplySteps(t *testing.T) {
 		}},
 		"consumer-2": {State: "running", Boot: "c", steps: map[string]stepStats{"transform-2": {Total: 3}}},
 		"consumer-3": {State: "running"},
+		"consumer-4": {State: "running", Instances: []NodeState{
+			{Instance: 1, State: "running", Boot: "a", steps: map[string]stepStats{"transform-3": {Total: 5, Errors: 1, LastError: "first"}}},
+			{Instance: 2, State: "running", Boot: "b", steps: map[string]stepStats{"transform-3": {Total: 3, LastError: "second"}}},
+		}},
+		"consumer-5": {State: "running", Boot: "d"}, // runs, but no container reports transform-4
 	}}
 	applySteps(&st, specs)
 	want := map[string]NodeState{
 		"transform-1": {State: "exited", Total: 5, Errors: 1, LastError: "#1: invalid operation", Boot: "a"},
 		"transform-2": {State: "running", Total: 3, Boot: "c"},
+		"transform-3": {State: "running", Total: 8, Errors: 1, LastError: "#1: first", Boot: "a,b"},
+		"transform-4": {State: "missing"},
 	}
 	for id, w := range want {
 		if got := st.Nodes[id]; !reflect.DeepEqual(got, w) {
 			t.Errorf("%s:\n got %+v\nwant %+v", id, got, w)
 		}
 	}
-	if len(st.Nodes) != 5 {
-		t.Fatalf("only the two transform nodes are added, got %v", st.Nodes)
+	if len(st.Nodes) != 9 {
+		t.Fatalf("only the four transform nodes are added, got %v", st.Nodes)
 	}
 }

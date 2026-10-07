@@ -124,7 +124,7 @@ export default function Inspector({ node, flowId, onChange }: Props) {
               <p className="hint">Each value is POSTed as JSON within 5 s; any answer but 2xx counts as an error.</p>
             </>
           )}
-          <p className="hint">Wire it to a topic to forward every record there with the same key.</p>
+          <p className="hint">Wire it to a topic to forward every record there with the same key, or through a Transform to reshape or drop records first.</p>
         </>
       )}
       {node.type === 'transform' && (

@@ -305,6 +305,8 @@ func withStats(ctx context.Context, r nodeRef, ns NodeState) NodeState {
 // the consumer's containers report for it, summed (a last error is the first
 // container's that has one, prefixed with its instance). Its boot joins theirs,
 // so a container that restarted gives the transform no rate rather than a wrong one.
+// A transform whose consumer runs but that no container reports (added or renamed
+// after deploy) is "missing" until one does.
 func applySteps(st *FlowState, specs []NodeSpec) {
 	done := map[string]bool{}
 	for _, s := range specs {
@@ -331,6 +333,9 @@ func applySteps(st *FlowState, specs []NodeSpec) {
 			boots = append(boots, c.Boot)
 		}
 		t.Boot = strings.Join(boots, ",")
+		if len(boots) == 0 && t.State == "running" {
+			t.State = "missing"
+		}
 		st.Nodes[s.TransformNode] = t
 	}
 }
