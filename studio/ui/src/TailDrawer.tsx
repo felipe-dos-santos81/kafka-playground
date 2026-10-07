@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type UIEvent } from 'react'
 import { api, describe, type TailEntry } from './flow/api'
 import type { StudioNode } from './nodes/types'
 
@@ -10,18 +10,26 @@ type Props = {
   onInstance: (i: number) => void
   tailSeq?: number
   boot?: string
+  tick: number // counts the flow's ticks
 }
 
 // The selected node's last records. It fetches only when the node's tailSeq (from
-// the SSE tick) moves past what it has, and starts over when boot changes: the
-// container restarted and numbers its records from 1 again. A producer's drawer
-// also has Send, which renders the node's own key and value templates. A consumer
-// with instances tails one of them, picked in the header.
-export default function TailDrawer({ flowId, node, instance, instances, onInstance, tailSeq = 0, boot = '' }: Props) {
+// the SSE tick) moves past what it has, one fetch at a time (when one ends, it
+// fetches again if tailSeq moved meanwhile; a failed one is retried on the next
+// tick), and starts over when boot changes: the container restarted and numbers
+// its records from 1 again. It follows the newest record only while scrolled to
+// the bottom. A producer's drawer also has Send, which renders the node's own key
+// and value templates. A consumer with instances tails one of them, picked in the
+// header.
+export default function TailDrawer({ flowId, node, instance, instances, onInstance, tailSeq = 0, boot = '', tick }: Props) {
   const [entries, setEntries] = useState<TailEntry[]>([])
   const [error, setError] = useState('')
   const [sent, setSent] = useState('')
+  const [fetched, setFetched] = useState(0) // counts fetches that brought records, to chase tailSeq
   const since = useRef(0)
+  const fetching = useRef(false)
+  const generation = useRef(0) // bumped on a restart: a fetch from before it is dropped
+  const atBottom = useRef(true)
   const box = useRef<HTMLElement>(null)
 
   // A tick without stats carries boot "": only a different non-empty boot is a restart.
@@ -29,34 +37,39 @@ export default function TailDrawer({ flowId, node, instance, instances, onInstan
   useEffect(() => {
     if (!boot || boot === lastBoot.current) return
     lastBoot.current = boot
+    generation.current++
     since.current = 0
     setEntries([])
   }, [boot])
 
   useEffect(() => {
-    if (tailSeq <= since.current) return
-    let live = true
+    if (fetching.current || tailSeq <= since.current) return
+    fetching.current = true
+    const gen = generation.current
     api.tail(flowId, node.id, since.current, instance).then(
       (got) => {
-        if (!live) return
+        fetching.current = false
         setError('')
-        if (got.length === 0) return
+        if (gen !== generation.current || got.length === 0) return
         since.current = got[got.length - 1].seq
         setEntries((es) => [...es, ...got].slice(-100))
+        setFetched((n) => n + 1)
       },
       (e) => {
-        if (live) setError(describe(e))
+        fetching.current = false
+        setError(describe(e))
       },
     )
-    return () => {
-      live = false
-    }
-  }, [flowId, node.id, instance, boot, tailSeq])
+  }, [flowId, node.id, instance, boot, tailSeq, tick, fetched])
 
-  // Keep the newest record in view.
+  // Follow the newest record, unless scrolled up to read an older one.
   useEffect(() => {
-    box.current?.scrollTo({ top: box.current.scrollHeight })
+    if (atBottom.current) box.current?.scrollTo({ top: box.current.scrollHeight })
   }, [entries])
+  const onScroll = (e: UIEvent<HTMLElement>) => {
+    const el = e.currentTarget
+    atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 8
+  }
 
   const send = () =>
     api.send(flowId, node.id).then(
@@ -65,7 +78,7 @@ export default function TailDrawer({ flowId, node, instance, instances, onInstan
     )
 
   return (
-    <section className="drawer" ref={box}>
+    <section className="drawer" ref={box} onScroll={onScroll}>
       <header>
         <strong>{node.id}</strong> tail
         {instances.length > 0 && (

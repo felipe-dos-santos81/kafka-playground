@@ -4,7 +4,7 @@ import Canvas from './Canvas'
 import FlowList from './FlowList'
 import Inspector from './Inspector'
 import Palette from './Palette'
-import { api, containersOf, describe, watch, type FlowState, type FlowSummary, type NodeRuntime } from './flow/api'
+import { api, containersOf, describe, watch, type FlowState, type FlowSummary, type LiveStatus, type NodeRuntime } from './flow/api'
 import { fileContent, fillDefaults, type CanvasEdge, type CanvasNode } from './flow/schema'
 import TailDrawer from './TailDrawer'
 import { RuntimeContext } from './nodes/StudioNodes'
@@ -29,6 +29,8 @@ function Studio() {
   const [savedSnapshot, setSavedSnapshot] = useState('') // the flow as last loaded or saved
   const [error, setError] = useState('')
   const [flowState, setFlowState] = useState<FlowState | null>(null)
+  const [tick, setTick] = useState(0) // counts ticks: the tail drawer retries a failed fetch on the next one
+  const [paused, setPaused] = useState('') // why the live numbers stopped, until the next tick
   const [deployedSnapshot, setDeployedSnapshot] = useState('') // savedSnapshot at the last Deploy from this page
   const [pickedInstance, setPickedInstance] = useState(0) // the tail drawer's instance, for a consumer with instances
   const dirty = current !== null && snapshot(current.name, nodes, edges) !== savedSnapshot
@@ -46,13 +48,28 @@ function Studio() {
     return () => clearInterval(t)
   }, [refresh])
 
-  // The open flow's live snapshot: one `tick` a second over SSE (spec 3.6).
+  // The open flow's live snapshot: one `tick` a second over SSE (spec 3.6). When
+  // the flow is deleted elsewhere (another tab, curl), it closes and says so.
   const flowId = current?.id
   useEffect(() => {
     setFlowState(null)
+    setPaused('')
     if (!flowId) return
-    return watch(flowId, setFlowState)
-  }, [flowId])
+    const onTick = (s: FlowState) => {
+      setFlowState(s)
+      setTick((n) => n + 1)
+    }
+    const onStatus = (s: LiveStatus) => {
+      setPaused(s.paused ?? '')
+      if (!s.gone) return
+      setError('the open flow was deleted')
+      setCurrent(null)
+      setNodes([])
+      setEdges([])
+      refresh()
+    }
+    return watch(flowId, onTick, onStatus)
+  }, [flowId, refresh, setNodes, setEdges])
   const running = flowState?.status === 'running'
 
   // Runs an API action, showing any failure in the top bar.
@@ -170,6 +187,7 @@ function Studio() {
               Stop
             </button>
             <span className="status">{running ? 'running' : 'stopped'}</span>
+            {paused && <span className="paused">live numbers paused: {paused}</span>}
             {running && deployedSnapshot !== '' && savedSnapshot !== deployedSnapshot && (
               <span className="hint">saved changes apply on redeploy</span>
             )}
@@ -181,7 +199,7 @@ function Studio() {
         <FlowList flows={flows} currentId={current?.id ?? null} onOpen={open} onCreate={create} onDelete={remove} />
         <Palette />
       </aside>
-      <main className="canvas">
+      <main className={paused ? 'canvas paused' : 'canvas'}>
         {current ? (
           <RuntimeContext.Provider value={flowState?.nodes ?? NO_NODES}>
             <Canvas
@@ -214,6 +232,7 @@ function Studio() {
           onInstance={setPickedInstance}
           tailSeq={tailed?.tailSeq}
           boot={tailed?.boot}
+          tick={tick}
         />
       )}
     </div>

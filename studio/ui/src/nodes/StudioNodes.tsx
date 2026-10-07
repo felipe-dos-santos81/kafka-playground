@@ -12,6 +12,7 @@ function runtimeLine(type: NodeType, rt: NodeRuntime): string {
   if (type === 'topic') {
     return [`${rt.partitions ?? 0} partitions`, `end ${rt.endOffset ?? 0}`, rt.warning].filter(Boolean).join(' · ')
   }
+  if (rt.warning && rt.total === undefined) return rt.warning // no numbers: say why
   const parts = [`${rt.total ?? 0} msgs`, `${(rt.rate ?? 0).toFixed(1)}/s`]
   if (rt.errors) parts.push(`${rt.errors} errors`)
   if (rt.lag !== undefined) parts.push(`lag ${rt.lag}`)
@@ -19,6 +20,7 @@ function runtimeLine(type: NodeType, rt: NodeRuntime): string {
     const held = Object.values(c.assigned ?? {}).flat() // partitions this container's client holds
     if (held.length > 0) parts.push(`${c.instance ? `#${c.instance} ` : ''}p${held.join(',')}`)
   }
+  if (rt.warning) parts.push(rt.warning)
   return parts.join(' · ')
 }
 

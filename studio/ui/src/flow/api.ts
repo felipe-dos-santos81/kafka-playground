@@ -29,12 +29,45 @@ export const containersOf = (rt: NodeRuntime): NodeRuntime[] => rt.instances ?? 
 // The snapshot GET /api/flows/{id}/state answers and every SSE tick carries.
 export type FlowState = { status: 'running' | 'stopped'; nodes: Record<string, NodeRuntime> }
 
-// watch opens the flow's event stream: onTick gets a snapshot once a second.
-// EventSource reconnects by itself; the returned function closes the stream.
-export function watch(id: string, onTick: (s: FlowState) => void): () => void {
-  const es = new EventSource(`/api/flows/${id}/events`)
-  es.addEventListener('tick', (e) => onTick(JSON.parse((e as MessageEvent<string>).data)))
-  return () => es.close()
+// What the live view says besides its ticks: paused (and why) until the next
+// tick, or gone when the flow was deleted.
+export type LiveStatus = { paused?: string; gone?: boolean }
+
+// watch opens the flow's event stream: onTick gets a snapshot once a second, and
+// onStatus hears whenever the numbers stop being live. A `problem` event or a
+// dropped connection pauses them until the next tick (EventSource reconnects by
+// itself). A stream the server refused is either gone (the flow answers 404) or
+// reopened every 2 s (Vite's proxy answers 502 while studio is down). The
+// returned function closes the stream.
+export function watch(id: string, onTick: (s: FlowState) => void, onStatus: (s: LiveStatus) => void): () => void {
+  let es: EventSource
+  let retry: ReturnType<typeof setTimeout> | undefined
+  let closed = false
+  const reopen = (why: string) => {
+    onStatus({ paused: why })
+    if (!closed) retry = setTimeout(open, 2000)
+  }
+  const open = () => {
+    es = new EventSource(`/api/flows/${id}/events`)
+    es.addEventListener('tick', (e) => {
+      onStatus({})
+      onTick(JSON.parse((e as MessageEvent<string>).data))
+    })
+    es.addEventListener('problem', (e) => onStatus({ paused: JSON.parse((e as MessageEvent<string>).data).error }))
+    es.onerror = () => {
+      if (es.readyState !== EventSource.CLOSED) return onStatus({ paused: 'connection lost, reconnecting' })
+      api.get(id).then(
+        () => reopen('the stream was refused, retrying'),
+        (e) => (e instanceof ApiError && e.status === 404 ? onStatus({ gone: true }) : reopen(describe(e))),
+      )
+    }
+  }
+  open()
+  return () => {
+    closed = true
+    clearTimeout(retry)
+    es.close()
+  }
 }
 
 // One record of a node's tail (Go: tailEntry in node.go).
