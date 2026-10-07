@@ -105,6 +105,24 @@ func TestValidate(t *testing.T) {
 			f.Nodes = append(f.Nodes, node("transform-1", "transform", `{"expr":" "}`), node("topic-2", "topic", topic("x")))
 			f.Edges = append(f.Edges, edge("consumer-1", "transform-1"), edge("transform-1", "topic-2"))
 		}, "expr is required"},
+		{"forward to the topic it reads", Deploy, func(f *Flow) { f.Edges = append(f.Edges, edge("consumer-1", "topic-1")) }, `forwarding loops back to topic "orders"`},
+		{"forward to the topic it reads saves", Save, func(f *Flow) { f.Edges = append(f.Edges, edge("consumer-1", "topic-1")) }, ""},
+		{"two consumer cycle", Deploy, func(f *Flow) {
+			f.Nodes = append(f.Nodes, node("topic-2", "topic", topic("archive")), node("consumer-2", "consumer", `{"group":"g2"}`))
+			f.Edges = append(f.Edges, edge("consumer-1", "topic-2"), edge("topic-2", "consumer-2"), edge("consumer-2", "topic-1"))
+		}, `forwarding loops back to topic "orders"`},
+		{"two consumer cycle saves", Save, func(f *Flow) {
+			f.Nodes = append(f.Nodes, node("topic-2", "topic", topic("archive")), node("consumer-2", "consumer", `{"group":"g2"}`))
+			f.Edges = append(f.Edges, edge("consumer-1", "topic-2"), edge("topic-2", "consumer-2"), edge("consumer-2", "topic-1"))
+		}, ""},
+		{"cycle through a transform", Deploy, func(f *Flow) {
+			f.Nodes = append(f.Nodes, node("transform-1", "transform", `{"expr":"msg"}`))
+			f.Edges = append(f.Edges, edge("consumer-1", "transform-1"), edge("transform-1", "topic-1"))
+		}, `forwarding loops back to topic "orders"`},
+		{"forward chain valid", Deploy, func(f *Flow) {
+			f.Nodes = append(f.Nodes, node("topic-2", "topic", topic("archive")), node("consumer-2", "consumer", `{"group":"g2"}`))
+			f.Edges = append(f.Edges, edge("consumer-1", "topic-2"), edge("topic-2", "consumer-2"))
+		}, ""},
 		{"data missing", Deploy, func(f *Flow) { f.Nodes[0].Data = nil }, "data is required"},
 		{"data wrong shape", Deploy, func(f *Flow) { f.Nodes[1].Data = json.RawMessage(`{"partitions":"three"}`) }, "data:"},
 	}

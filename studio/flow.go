@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"text/template"
 )
@@ -140,6 +141,7 @@ func Validate(f *Flow, level Level) []Problem {
 	}
 	inDegree := map[string]int{}  // node id → number of incoming edges
 	outDegree := map[string]int{} // node id → number of outgoing edges
+	next := map[string][]string{} // node id → targets of its valid edges, for the loop check
 	edgeIDs := map[string]bool{}
 	seen := map[[2]string]bool{}
 	for _, e := range f.Edges {
@@ -170,15 +172,18 @@ func Validate(f *Flow, level Level) []Problem {
 		seen[[2]string{e.Source, e.Target}] = true
 		inDegree[e.Target]++
 		outDegree[e.Source]++
+		next[e.Source] = append(next[e.Source], e.Target)
 	}
 	if level == Save {
 		return ps
 	}
 	topicNames := map[string]string{} // topic name → node id
+	nodeByID := map[string]Node{}
 	for _, n := range f.Nodes {
 		if types[n.ID] == "" {
 			continue // already reported
 		}
+		nodeByID[n.ID] = n
 		switch n.Type {
 		case "producer":
 			var d ProducerData
@@ -261,6 +266,41 @@ func Validate(f *Flow, level Level) []Problem {
 			if inDegree[n.ID] != 1 || outDegree[n.ID] != 1 {
 				add(n.ID, "", "a transform needs one edge from a consumer and one edge to a topic")
 			}
+		}
+	}
+	// A forward loop (topic → consumer → … → the same topic) makes records circulate
+	// forever: one problem per cycle, on its first consumer.
+	state := map[string]int{} // 0 new, 1 on the path, 2 done
+	var path []string
+	var visit func(id string)
+	visit = func(id string) {
+		state[id] = 1
+		path = append(path, id)
+		for _, to := range next[id] {
+			switch state[to] {
+			case 0:
+				visit(to)
+			case 1:
+				var consumer, topic string
+				for _, c := range path[slices.Index(path, to):] {
+					if types[c] == "consumer" && consumer == "" {
+						consumer = c
+					}
+					if types[c] == "topic" && topic == "" {
+						topic = c
+					}
+				}
+				var d TopicData
+				json.Unmarshal(nodeByID[topic].Data, &d)
+				add(consumer, "", "forwarding loops back to topic %q: records would circulate forever", d.Name)
+			}
+		}
+		path = path[:len(path)-1]
+		state[id] = 2
+	}
+	for _, n := range f.Nodes {
+		if types[n.ID] != "" && state[n.ID] == 0 {
+			visit(n.ID)
 		}
 	}
 	return ps

@@ -439,6 +439,7 @@ flowchart LR
 | consumer: exactly one incoming edge; at most one outgoing edge in total, to either a topic or a transform | Go, deploy |
 | transform: exactly one incoming (from a consumer) and one outgoing (to a topic) | Go, deploy |
 | topic: any number of edges; a topic feeding no consumer or fed by nothing is fine (warning in the UI, not an error) | Go, deploy |
+| no cycle through forwards (a consumer forwarding, directly or through other consumers, back to a topic it reads from) | Go, deploy |
 | no self edges, no duplicate edges, every edge endpoint exists, every edge id present and unique | Go, save |
 
 Save validates shape and edge pairs so a half-built flow can be saved;

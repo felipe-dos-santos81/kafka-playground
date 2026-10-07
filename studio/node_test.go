@@ -165,6 +165,18 @@ func TestConsumerHandle(t *testing.T) {
 		t.Fatalf("want 3 records, 2 errors (sink 500, forward), the last a forward error; got %+v", s)
 	}
 
+	// A stop cancels the context mid-batch: the record is still posted and forwarded.
+	before := s.Errors
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.handle(cancelled, &kgo.Record{Topic: "orders", Key: []byte("k4"), Value: []byte(`{"id":4}`)})
+	if len(posted) != 4 || len(forwarded) != 3 || string(forwarded[2].Key) != "k4" {
+		t.Fatalf("a cancelled context must not skip the record: posted %q, forwarded %d", posted, len(forwarded))
+	}
+	if after := c.counts.stats("b", c.tail.last()); after.Total != 4 || after.Errors != before {
+		t.Fatalf("a cancelled context must add no errors: %+v", after)
+	}
+
 	// Without a sink or a forward, a record is only counted and tailed.
 	bare := &consumer{spec: NodeSpec{Topic: "orders"}, tail: &tail{}, counts: &counters{}}
 	bare.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{}`)})

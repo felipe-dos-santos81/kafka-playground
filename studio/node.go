@@ -220,7 +220,9 @@ func (p *producer) run(ctx context.Context, every time.Duration) {
 
 // consumer takes each fetched record of one consumer node through the tail, the
 // http sink (when set) and the forward (when set). A failed sink or forward is
-// counted and logged, not retried: autocommit still moves past the record.
+// counted and logged, not retried: autocommit still moves past the record. The
+// sink and the forward run under context.WithoutCancel: a stop (SIGTERM) must not
+// fail them with "context canceled" before Close commits past this record.
 type consumer struct {
 	spec    NodeSpec
 	tail    *tail
@@ -230,17 +232,18 @@ type consumer struct {
 }
 
 func (c *consumer) handle(ctx context.Context, r *kgo.Record) {
+	work := context.WithoutCancel(ctx)
 	c.counts.ok()
 	c.tail.push(r)
 	log.Printf("%s[%d]@%d key=%s %s", r.Topic, r.Partition, r.Offset, r.Key, r.Value)
 	if c.spec.SinkURL != "" {
-		if err := c.post(ctx, c.spec.SinkURL, r.Value); err != nil {
+		if err := c.post(work, c.spec.SinkURL, r.Value); err != nil {
 			c.counts.fail(fmt.Errorf("sink: %w", err))
 			log.Printf("sink: %v", err)
 		}
 	}
 	if c.spec.Forward != "" {
-		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		pctx, cancel := context.WithTimeout(work, 10*time.Second)
 		err := c.produce(pctx, &kgo.Record{Topic: c.spec.Forward, Key: r.Key, Value: r.Value})
 		cancel()
 		if err != nil {
