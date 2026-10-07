@@ -140,7 +140,7 @@ patterns, `embed` + `http.FileServerFS` for the UI, `encoding/json`, `os`.
 | `POST /api/flows/{id}/nodes/{node}/send?key=` | body = JSON value (key from `?key=`), or empty to render the node's own key and value templates with the next `.Seq` (the UI's Send button); proxied to the producer container's `/send`; returns `{partition, offset}`. The body form is the webhook URL | 400 invalid JSON, 409 not running, 502 |
 | `GET /api/flows/{id}/nodes/{node}/tail?since=N` | last ≤ 100 records with `seq > N`, proxied from the node | 409 |
 | `GET /api/flows/{id}/state` | the flow's snapshot, as an SSE tick carries it but without rates: container states, each running node's counters, consumer lag and partitions, topic partitions and end offsets | 404 |
-| `GET /api/flows/{id}/events` | SSE stream of `tick` snapshots (section 3.6) | |
+| `GET /api/flows/{id}/events` | SSE stream of `tick` snapshots (section 3.6) | 404 |
 
 Request bodies are capped at 1 MiB (`http.MaxBytesReader`); every `/api`
 response is JSON (an unknown path is 404, a known path with the wrong method
@@ -157,7 +157,7 @@ studio/
   store.go       JSON files: list, read, write via temp file + os.Rename
   resolve.go     flow → topics and one NodeSpec per container; what this milestone cannot run yet
   kafka.go       idempotent topic creation
-  engine.go      Deploy/Stop/Reconcile; runs map; Snapshot; per-stream rates
+  engine.go      Deploy/Stop/Reconcile; Snapshot; per-stream rates
   docker.go      thin wrapper over moby client: self-inspect, create, start, list, stop, remove
   node.go        `studio node`: producer and consumer loops; /stats /tail /send
   flow_test.go   table test for Validate
@@ -249,8 +249,7 @@ Inside a node container:
   with `.Seq`, `.Now`, `.Rand`) and calls `Produce` with a callback that
   updates counters and the tail. `/send` is accepted in both modes.
 - **Consumer:** one `kgo.Client` with `ConsumerGroup`, `ConsumeTopics`,
-  `ConsumeResetOffset`, `OnPartitionsAssigned/Revoked` recording the
-  assignment; a `PollFetches` loop; per record: append to the tail, then the
+  `ConsumeResetOffset`; a `PollFetches` loop; per record: append to the tail, then the
   sink — `log` (each record also goes to the container's stdout, so `docker logs` shows it), `http` (POST the value, 5 s timeout, non-2xx
   counts as an error), and if the node has a forward edge, `Produce` to that
   topic with the same key (through the same client). Default autocommit; on
