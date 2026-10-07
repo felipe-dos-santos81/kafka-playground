@@ -370,7 +370,7 @@ into typed structs (unknown React Flow fields such as `measured` or
       "type": "consumer",
       "position": { "x": 640, "y": 160 },
       "data": {
-        "group": "orders-workers",
+        "group": "orders-studio",
         "auto_offset_reset": "earliest",
         "instances": 2,
         "sink": { "kind": "log" }
@@ -393,7 +393,7 @@ into typed structs (unknown React Flow fields such as `measured` or
 ```
 
 This flow: a timer produces keyed JSON to `orders` once a second; two
-instances of group `orders-workers` share its three partitions, log every
+instances of group `orders-studio` share its three partitions, log every
 record and forward it to `orders-archive`.
 
 ### 4.2 Per-type `data`

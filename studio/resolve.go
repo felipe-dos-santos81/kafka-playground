@@ -61,7 +61,8 @@ func instancesOf(n Node) []int {
 }
 
 // Resolve assumes Validate(&f, Deploy) passed: every data field decodes and every
-// producer and consumer has exactly one edge to or from a topic.
+// producer has one edge to a topic, and every consumer has one edge from a topic
+// and at most one out (to a topic or a transform).
 func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 	byID := map[string]Node{}
 	topicName := map[string]string{} // topic node id → topic name
