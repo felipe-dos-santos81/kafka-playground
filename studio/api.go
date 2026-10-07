@@ -214,6 +214,9 @@ func (s *server) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	rc := http.NewResponseController(w)
+	if rc.Flush() != nil { // the headers, now: the browser's EventSource opens before the first snapshot
+		return
+	}
 	streamTicks(r.Context(), w, rc.Flush, func(ctx context.Context) (FlowState, error) {
 		return s.engine.Snapshot(ctx, id)
 	}, time.Second)

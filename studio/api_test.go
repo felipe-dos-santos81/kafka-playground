@@ -295,3 +295,12 @@ func TestProxy(t *testing.T) {
 		t.Fatalf("unreachable node: want 502 JSON, got %d %s", w.Code, w.Body)
 	}
 }
+
+func TestEventsOfAnUnknownFlow(t *testing.T) {
+	ts := newTestServer(t)
+	code, body := call(t, ts, "GET", "/api/flows/deadbeef/events", nil)
+	var e struct{ Error string }
+	if code != 404 || json.Unmarshal(body, &e) != nil || e.Error == "" {
+		t.Fatalf("events of an unknown flow: want 404 with a JSON error, got %d %s", code, body)
+	}
+}

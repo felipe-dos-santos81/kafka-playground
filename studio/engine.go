@@ -74,8 +74,17 @@ type NodeState struct {
 	Warning    string             `json:"warning,omitempty"`
 	Instances  []NodeState        `json:"instances,omitempty"`
 
-	step *stepStats // a consumer container's transform counts; applySteps puts them on the transform node
+	step    *stepStats // a consumer container's transform counts; applySteps puts them on the transform node
+	created int64      // when the container was created (Unix seconds): withStats gives it statsGrace
 }
+
+// A snapshot asks every running container for /stats in parallel, all within
+// statsBudget. A container that does not answer gets a warning, unless it was
+// created less than statsGrace ago: it is still starting.
+const (
+	statsBudget = 800 * time.Millisecond
+	statsGrace  = 5 * time.Second
+)
 
 // Deploy validates the saved flow, creates its topics and starts one container
 // per producer and consumer; on any failure it removes what it started.
@@ -164,12 +173,12 @@ func (e *Engine) stateOf(ctx context.Context, f Flow) (FlowState, error) {
 // deploy, what the deploy ran decides between one container and instances: the
 // other kind's empty slots are dropped.
 func nodeStates(f Flow, cs []container.Summary) map[string]NodeState {
-	slots := map[string]map[int]string{} // node id → instance → container state
+	slots := map[string]map[int]container.Summary{} // node id → instance → its container
 	for _, n := range f.Nodes {
 		if n.Type == "producer" || n.Type == "consumer" {
-			slots[n.ID] = map[int]string{}
+			slots[n.ID] = map[int]container.Summary{}
 			for _, i := range instancesOf(n) {
-				slots[n.ID][i] = "missing"
+				slots[n.ID][i] = container.Summary{State: "missing"}
 			}
 		}
 	}
@@ -178,17 +187,17 @@ func nodeStates(f Flow, cs []container.Summary) map[string]NodeState {
 		node := c.Labels[labelNode]
 		i, _ := strconv.Atoi(c.Labels[labelInstance]) // no label: a node's only container, 0
 		if slots[node] == nil {
-			slots[node] = map[int]string{}
+			slots[node] = map[int]container.Summary{}
 		}
-		slots[node][i] = string(c.State)
+		slots[node][i] = c
 		ranInstances[node] = i > 0
 	}
 	nodes := map[string]NodeState{}
 	for node, insts := range slots {
 		if asInstances, deployed := ranInstances[node]; deployed {
-			for i, state := range insts {
+			for i, c := range insts {
 				isInstance := i > 0
-				if state == "missing" && isInstance != asInstances {
+				if c.State == "missing" && isInstance != asInstances {
 					delete(insts, i)
 				}
 			}
@@ -198,19 +207,19 @@ func nodeStates(f Flow, cs []container.Summary) map[string]NodeState {
 	return nodes
 }
 
-// nodeOf folds a node's container states into one NodeState: a lone instance 0
-// is the node itself; otherwise every instance is an entry of Instances, in
-// order, and the node runs only when all of them run (else it takes the first
-// other state).
-func nodeOf(insts map[int]string) NodeState {
-	if s, ok := insts[0]; ok && len(insts) == 1 {
-		return NodeState{State: s}
+// nodeOf folds a node's containers into one NodeState: a lone instance 0 is the
+// node itself; otherwise every instance is an entry of Instances, in order, and
+// the node runs only when all of them run (else it takes the first other state).
+func nodeOf(insts map[int]container.Summary) NodeState {
+	if c, ok := insts[0]; ok && len(insts) == 1 {
+		return NodeState{State: string(c.State), created: c.Created}
 	}
 	ns := NodeState{State: "running"}
 	for _, i := range slices.Sorted(maps.Keys(insts)) {
-		ns.Instances = append(ns.Instances, NodeState{Instance: i, State: insts[i]})
-		if ns.State == "running" && insts[i] != "running" {
-			ns.State = insts[i]
+		c := insts[i]
+		ns.Instances = append(ns.Instances, NodeState{Instance: i, State: string(c.State), created: c.Created})
+		if ns.State == "running" && c.State != "running" {
+			ns.State = string(c.State)
 		}
 	}
 	return ns
@@ -239,17 +248,21 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 	if err != nil || st.Status != "running" {
 		return st, err
 	}
+	// Every running container's /stats at once, under one budget, while the broker
+	// calls below run; each goroutine writes only its own container's state.
+	sctx, cancelStats := context.WithTimeout(ctx, statsBudget)
+	defer cancelStats()
+	var wg sync.WaitGroup
+	nodes := map[string]*NodeState{}
 	for node, ns := range st.Nodes {
+		nodes[node] = &ns
 		for _, c := range ns.containers() {
 			if c.State == "running" {
-				*c = withStats(ctx, nodeRef{id, node, c.Instance}, *c)
+				wg.Go(func() { *c = withStats(sctx, nodeRef{id, node, c.Instance}.url("/stats"), *c) })
 			}
 		}
-		ns.sumInstances()
-		st.Nodes[node] = ns
 	}
 	specs, _ := Resolve(f)
-	applySteps(&st, specs)
 	topics := map[string]TopicData{} // topic node id → its data
 	var groups, names []string
 	for _, n := range f.Nodes {
@@ -283,16 +296,25 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 			ends = got
 		}
 	}
+	wg.Wait()
+	for node, ns := range nodes {
+		ns.sumInstances()
+		st.Nodes[node] = *ns
+	}
+	applySteps(&st, specs)
 	applyKafka(&st, id, specs, topics, lags, ends)
 	return st, nil
 }
 
 // withStats is ns (a node, or one of its instances) with the counters its
-// container r reports on /stats.
-func withStats(ctx context.Context, r nodeRef, ns NodeState) NodeState {
-	s, err := nodeStatsOf(ctx, r)
+// container reports at url. A container that does not answer keeps no numbers,
+// and its warning says why once it is older than statsGrace.
+func withStats(ctx context.Context, url string, ns NodeState) NodeState {
+	s, err := nodeStatsOf(ctx, url)
 	if err != nil {
-		ns.LastError = "stats: " + err.Error()
+		if time.Since(time.Unix(ns.created, 0)) >= statsGrace {
+			ns.Warning = "stats: " + err.Error()
+		}
 		return ns
 	}
 	ns.Total, ns.Errors, ns.LastError, ns.TailSeq, ns.Boot = s.Total, s.Errors, s.LastError, s.TailSeq, s.Boot
@@ -329,12 +351,11 @@ func applySteps(st *FlowState, specs []NodeSpec) {
 	}
 }
 
-// nodeStatsOf asks a running node container for its counters (1 s budget).
-func nodeStatsOf(ctx context.Context, r nodeRef) (nodeStats, error) {
-	ctx, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
+// nodeStatsOf asks a node container's /stats at url for its counters, within ctx;
+// any answer but 200 is an error.
+func nodeStatsOf(ctx context.Context, url string) (nodeStats, error) {
 	var s nodeStats
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.url("/stats"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return s, err
 	}
@@ -353,8 +374,8 @@ func nodeStatsOf(ctx context.Context, r nodeRef) (nodeStats, error) {
 // applyKafka adds the broker's view to a running flow's snapshot: for each topic
 // node its partition count and end offset summed over partitions (with a warning
 // when the count is not the flow's; a topic with a failed partition is left out),
-// for each consumer node its group's lag on its
-// topic and the partitions whose group member is this node's client (or, for a
+// for each consumer node its group's lag on its topic (over the partitions the
+// group has committed; none committed yet, no lag) and the partitions whose group member is this node's client (or, for a
 // node whose snapshot state lists instances, each instance's client: the
 // containers that run, not what the file now says). Whatever the broker did not
 // answer is left out.
@@ -397,10 +418,12 @@ func applyKafka(st *FlowState, flow string, specs []NodeSpec, topics map[string]
 			client[nodeRef{flow, s.Node, c.Instance}.name()] = c
 		}
 		var lag int64
+		committed := false
 		held := map[*NodeState][]int32{} // container → partitions its client holds
 		for _, ml := range gl.Lag[s.Topic] {
-			if ml.Err == nil && ml.Lag > 0 {
-				lag += ml.Lag
+			if ml.Err == nil && ml.Commit.At >= 0 { // At -1: no commit, so kadm's lag runs from the start
+				committed = true
+				lag += max(ml.Lag, 0)
 			}
 			if ml.Member != nil {
 				if c, ok := client[ml.Member.ClientID]; ok {
@@ -408,7 +431,9 @@ func applyKafka(st *FlowState, flow string, specs []NodeSpec, topics map[string]
 				}
 			}
 		}
-		ns.Lag = &lag
+		if committed {
+			ns.Lag = &lag
+		}
 		for c, ps := range held {
 			slices.Sort(ps)
 			c.Assigned = map[string][]int32{s.Topic: ps}
@@ -548,11 +573,20 @@ func (ns *NodeState) container(i int) *NodeState {
 	return nil
 }
 
-// sumInstances gives a node with instances the sums of their counters and rates;
-// a node with one container is its container already.
+// sumInstances gives a node with instances the sums of their counters and rates,
+// and the first of their warnings, prefixed with its instance; a node with one
+// container is its container already.
 func (ns *NodeState) sumInstances() {
-	if len(ns.Instances) > 0 {
-		ns.sumCounts(ns.Instances)
+	if len(ns.Instances) == 0 {
+		return
+	}
+	ns.sumCounts(ns.Instances)
+	ns.Warning = ""
+	for _, in := range ns.Instances {
+		if in.Warning != "" {
+			ns.Warning = instanceError(in.Instance, in.Warning)
+			break
+		}
 	}
 }
 
@@ -582,26 +616,27 @@ func instanceError(instance int, err string) string {
 
 // streamTicks is the body of GET /api/flows/{id}/events: every period it writes
 // the flow's snapshot as an SSE `tick` event with rates against the previous
-// tick; a failed snapshot is a `problem` event and the stream goes on. It returns
-// when ctx ends (the browser went away) or a flush fails. Each open stream polls
-// on its own: one tab, one loop.
+// tick (Δt between the two snapshots' starts); a failed snapshot is a `problem`
+// event and the stream goes on. It returns when ctx ends (the browser went
+// away), a flush fails, or the flow is gone: the browser's reconnect then gets
+// a 404. Each open stream polls on its own: one tab, one loop.
 func streamTicks(ctx context.Context, w io.Writer, flush func() error, snap func(context.Context) (FlowState, error), every time.Duration) {
 	var prev FlowState
 	last := time.Now()
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
+		start := time.Now()
 		st, err := snap(ctx)
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || errors.Is(err, ErrNotFound) {
 			return
 		}
 		if err != nil {
 			b, _ := json.Marshal(map[string]string{"error": err.Error()})
 			fmt.Fprintf(w, "event: problem\ndata: %s\n\n", b)
 		} else {
-			now := time.Now()
-			withRates(&st, prev, now.Sub(last).Seconds())
-			prev, last = st, now
+			withRates(&st, prev, start.Sub(last).Seconds())
+			prev, last = st, start
 			b, _ := json.Marshal(st)
 			fmt.Fprintf(w, "event: tick\ndata: %s\n\n", b)
 		}

@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
@@ -238,6 +241,24 @@ func TestApplyKafka(t *testing.T) {
 		t.Fatalf("topic-1 is unaffected by topic-3's failure, got %+v", n)
 	}
 
+	// Lag counts only the partitions the group has committed (kadm says At -1 for
+	// the others, with a lag from the partition's start); none committed, no lag.
+	uncommitted := kadm.GroupMemberLag{Topic: "orders", Partition: 0, Lag: 7, Commit: kadm.Offset{At: -1}}
+	committed := kadm.GroupMemberLag{Topic: "orders", Partition: 1, Lag: 2, Commit: kadm.Offset{At: 3}}
+	for _, c := range []struct {
+		lag  map[int32]kadm.GroupMemberLag
+		want *int64
+	}{
+		{map[int32]kadm.GroupMemberLag{0: uncommitted}, nil},
+		{map[int32]kadm.GroupMemberLag{0: uncommitted, 1: committed}, &committed.Lag},
+	} {
+		fresh := FlowState{Status: "running", Nodes: map[string]NodeState{"consumer-1": {State: "running"}}}
+		applyKafka(&fresh, "f", specs[1:2], nil, kadm.DescribedGroupLags{"g": {Group: "g", Lag: kadm.GroupLag{"orders": c.lag}}}, nil)
+		if got := fresh.Nodes["consumer-1"].Lag; (got == nil) != (c.want == nil) || got != nil && *got != *c.want {
+			t.Fatalf("lag over %v: got %v, want %v", c.lag, got, c.want)
+		}
+	}
+
 	// A non-nil but empty answer means the broker answered and knows no such topic
 	// (a failed call is dropped by Snapshot, so it never reaches here as empty).
 	empty := FlowState{Status: "running", Nodes: map[string]NodeState{}}
@@ -260,6 +281,9 @@ func TestWithRates(t *testing.T) {
 		"new":       {Boot: "a", Total: 5},
 		"topic-1":   {State: "ready", EndOffset: 99},
 	}}
+	if withRates(&cur, prev, 0); cur.Nodes["steady"].Rate != 0 {
+		t.Fatalf("Δt 0 (a clock step): want no rate, got %v", cur.Nodes["steady"].Rate)
+	}
 	withRates(&cur, prev, 2)
 	for node, want := range map[string]float64{"steady": 10.5, "restarted": 0, "fell": 0, "new": 0, "topic-1": 0} {
 		if got := cur.Nodes[node].Rate; got != want {
@@ -349,5 +373,62 @@ func TestApplySteps(t *testing.T) {
 	}
 	if len(st.Nodes) != 9 {
 		t.Fatalf("only the four transform nodes are added, got %v", st.Nodes)
+	}
+}
+
+func TestStreamTicksEnds(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		snap  func(context.Context) (FlowState, error)
+		flush func() error
+		want  string // what was written before the stream ended
+	}{
+		{"a failed flush", func(context.Context) (FlowState, error) { return FlowState{Status: "stopped"}, nil },
+			func() error { return errors.New("broken pipe") }, "event: tick\ndata: {\"status\":\"stopped\",\"nodes\":null}\n\n"},
+		{"the flow deleted", func(context.Context) (FlowState, error) { return FlowState{}, ErrNotFound },
+			func() error { return nil }, ""},
+	} {
+		var out bytes.Buffer
+		done := make(chan struct{})
+		go func() {
+			streamTicks(context.Background(), &out, c.flush, c.snap, time.Millisecond)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: the stream did not end", c.name)
+		}
+		if out.String() != c.want {
+			t.Fatalf("%s: wrote %q, want %q", c.name, out.String(), c.want)
+		}
+	}
+}
+
+func TestWithStats(t *testing.T) {
+	status := http.StatusOK
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		fmt.Fprint(w, `{"boot":"b","total":7,"errors":1,"lastError":"x","tailSeq":7}`)
+	}))
+	defer ts.Close()
+	old := time.Now().Add(-time.Minute).Unix()
+
+	got := withStats(context.Background(), ts.URL, NodeState{State: "running", created: old})
+	if got.Total != 7 || got.Errors != 1 || got.LastError != "x" || got.TailSeq != 7 || got.Boot != "b" || got.Warning != "" {
+		t.Fatalf("a 200: want its counters, got %+v", got)
+	}
+	status = http.StatusInternalServerError
+	got = withStats(context.Background(), ts.URL, NodeState{State: "running", created: old})
+	if got.Total != 0 || got.LastError != "" || got.Warning != "stats: 500 Internal Server Error" {
+		t.Fatalf("a 500: want no numbers and the reason as a warning, got %+v", got)
+	}
+	if got = withStats(context.Background(), ts.URL, NodeState{State: "running", created: time.Now().Unix()}); got.Warning != "" {
+		t.Fatalf("a container younger than statsGrace: want nothing said yet, got %+v", got)
+	}
+
+	ns := NodeState{Instances: []NodeState{{Instance: 1, Total: 2}, {Instance: 2, Warning: "stats: timeout"}}}
+	if ns.sumInstances(); ns.Total != 2 || ns.Warning != "#2: stats: timeout" {
+		t.Fatalf("instances: want their sum and the first warning with its instance, got %+v", ns)
 	}
 }
