@@ -4,7 +4,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -308,14 +307,12 @@ func withStats(ctx context.Context, r nodeRef, ns NodeState) NodeState {
 // A transform whose consumer runs but that no container reports (added or renamed
 // after deploy) is "missing" until one does.
 func applySteps(st *FlowState, specs []NodeSpec) {
-	done := map[string]bool{}
 	for _, s := range specs {
-		if s.TransformNode == "" || done[s.TransformNode] {
-			continue
+		if s.TransformNode == "" || s.Instance > 1 {
+			continue // a consumer's specs repeat per instance; its first does for all
 		}
-		done[s.TransformNode] = true
 		consumer := st.Nodes[s.Node]
-		t := NodeState{State: cmp.Or(consumer.State, "missing")}
+		t := NodeState{State: consumer.State}
 		var boots []string
 		for _, c := range consumer.containers() {
 			step, ok := c.steps[s.TransformNode]
@@ -330,7 +327,7 @@ func applySteps(st *FlowState, specs []NodeSpec) {
 			boots = append(boots, c.Boot)
 		}
 		t.Boot = strings.Join(boots, ",")
-		if len(boots) == 0 && t.State == "running" {
+		if len(boots) == 0 && (t.State == "running" || t.State == "") {
 			t.State = "missing"
 		}
 		st.Nodes[s.TransformNode] = t

@@ -101,16 +101,14 @@ func (t *tail) last() int64 {
 
 // nodeStats is what GET /stats answers; the control plane adds the container state.
 type nodeStats struct {
-	Boot      string               `json:"boot"`  // random per process: a restarted container starts its counters and tail over
-	Total     int64                `json:"total"` // records produced (producers) or fetched (consumers)
-	Errors    int64                `json:"errors"`
-	LastError string               `json:"lastError"`
+	Boot      string               `json:"boot"` // random per process: a restarted container starts its counters and tail over
+	stepStats                      // records produced (producers) or fetched (consumers), the failures, the last one
 	TailSeq   int64                `json:"tailSeq"`         // seq of the newest tail record; the drawer fetches when it moves
 	Steps     map[string]stepStats `json:"steps,omitempty"` // a consumer's transform, by its node id
 }
 
-// stepStats counts what a consumer's transform did: every record it got, the
-// ones it failed on, and the last failure.
+// stepStats is what a counters reports: every record counted, the ones that
+// failed, and the last failure. A consumer's transform has its own.
 type stepStats struct {
 	Total     int64  `json:"total"`
 	Errors    int64  `json:"errors"`
@@ -140,8 +138,7 @@ func (c *counters) step() stepStats {
 }
 
 func (c *counters) stats(boot string, tailSeq int64) nodeStats {
-	s := c.step()
-	return nodeStats{Boot: boot, Total: s.Total, Errors: s.Errors, LastError: s.LastError, TailSeq: tailSeq}
+	return nodeStats{Boot: boot, stepStats: c.step(), TailSeq: tailSeq}
 }
 
 // producer serves /send and runs the timer for one producer node.
@@ -273,13 +270,13 @@ func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
 	value := r.Value
 	if c.transform != nil {
 		c.steps.ok()
-		out, keep, err := runTransform(c.transform, value)
+		out, err := runTransform(c.transform, value)
 		if err != nil {
 			c.steps.fail(err)
 			c.counts.fail(fmt.Errorf("transform: %w", err))
 			log.Printf("transform: %v", err)
 		}
-		if !keep {
+		if out == nil {
 			return true // failed or dropped (nil): nothing to forward
 		}
 		value = out

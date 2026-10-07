@@ -32,29 +32,29 @@ func compileTransform(src string) (*vm.Program, error) {
 	return p, nil
 }
 
-// runTransform runs p over a record's value. keep is false when the program
-// returned nil: the record is dropped, which is not an error.
-func runTransform(p *vm.Program, value []byte) (out []byte, keep bool, err error) {
+// runTransform runs p over a record's value. A nil out with no error means the
+// program returned nil: the record is dropped, which is not an error.
+func runTransform(p *vm.Program, value []byte) (out []byte, err error) {
 	d := json.NewDecoder(bytes.NewReader(value))
 	d.UseNumber()
 	var msg any
 	if err := d.Decode(&msg); err != nil {
-		return nil, false, errInvalidJSON
+		return nil, errInvalidJSON
 	}
 	if _, err := d.Token(); err != io.EOF {
-		return nil, false, errInvalidJSON // trailing data after the value
+		return nil, errInvalidJSON // trailing data after the value
 	}
 	res, err := expr.Run(p, transformEnv{Msg: numbers(msg)})
 	if err != nil {
-		return nil, false, firstLine(err)
+		return nil, firstLine(err)
 	}
 	if res == nil {
-		return nil, false, nil
+		return nil, nil
 	}
 	if out, err = json.Marshal(res); err != nil {
-		return nil, false, fmt.Errorf("result: %w", err)
+		return nil, fmt.Errorf("result: %w", err)
 	}
-	return out, true, nil
+	return out, nil
 }
 
 // numbers turns every JSON number in v into an int when it is one (so an id above
