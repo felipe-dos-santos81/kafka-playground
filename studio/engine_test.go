@@ -76,4 +76,24 @@ func TestApplyKafka(t *testing.T) {
 	if len(bare.Nodes) != 1 || bare.Nodes["consumer-1"].Lag != nil {
 		t.Fatalf("no Kafka answers: want the snapshot unchanged, got %+v", bare.Nodes)
 	}
+
+	// A topic with a partition whose leader did not answer is left out, with no warning.
+	topics["topic-3"] = TopicData{Name: "flaky", Partitions: 2}
+	ends["flaky"] = map[int32]kadm.ListedOffset{0: {Partition: 0, Offset: 4}, 1: {Partition: 1, Offset: -1, Err: errors.New("leader not available")}}
+	st = FlowState{Status: "running", Nodes: map[string]NodeState{}}
+	applyKafka(&st, "f", specs, topics, nil, ends)
+	if n, ok := st.Nodes["topic-3"]; ok {
+		t.Fatalf("topic-3 has a failed partition: want it left out, got %+v", n)
+	}
+	if n := st.Nodes["topic-1"]; n.State != "ready" {
+		t.Fatalf("topic-1 is unaffected by topic-3's failure, got %+v", n)
+	}
+
+	// A non-nil but empty answer means the broker answered and knows no such topic
+	// (a failed call is dropped by Snapshot, so it never reaches here as empty).
+	empty := FlowState{Status: "running", Nodes: map[string]NodeState{}}
+	applyKafka(&empty, "f", specs, topics, nil, kadm.ListedOffsets{})
+	if n := empty.Nodes["topic-1"]; n.State != "missing" {
+		t.Fatalf("empty end offsets: want topic-1 missing, got %+v", n)
+	}
 }

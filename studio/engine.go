@@ -221,7 +221,11 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 		lags, _ = e.adm.Lag(kctx, groups...)
 	}
 	if len(names) > 0 {
-		ends, _ = e.adm.ListEndOffsets(kctx, names...)
+		// Only a complete answer counts: a partial map (a shard timed out) would
+		// read as missing topics and too few partitions.
+		if got, err := e.adm.ListEndOffsets(kctx, names...); err == nil {
+			ends = got
+		}
 	}
 	applyKafka(&st, id, specs, topics, lags, ends)
 	return st, nil
@@ -247,18 +251,25 @@ func nodeStatsOf(ctx context.Context, flow, node string) (nodeStats, error) {
 
 // applyKafka adds the broker's view to a running flow's snapshot: for each topic
 // node its partition count and end offset summed over partitions (with a warning
-// when the count is not the flow's), for each consumer node its group's lag on its
+// when the count is not the flow's; a topic with a failed partition is left out),
+// for each consumer node its group's lag on its
 // topic and the partitions whose group member is this node's client. Whatever the
 // broker did not answer is left out.
 func applyKafka(st *FlowState, flow string, specs []NodeSpec, topics map[string]TopicData, lags kadm.DescribedGroupLags, ends kadm.ListedOffsets) {
 	if ends != nil {
 		for node, t := range topics {
 			ns := NodeState{State: "missing"}
+			partial := false
 			for p, o := range ends[t.Name] {
-				if p >= 0 && o.Err == nil {
+				if p >= 0 && o.Err != nil {
+					partial = true
+				} else if p >= 0 {
 					ns.Partitions++
 					ns.EndOffset += o.Offset
 				}
+			}
+			if partial {
+				continue // a partition's leader did not answer: say nothing about this topic
 			}
 			if ns.Partitions > 0 {
 				ns.State = "ready"
