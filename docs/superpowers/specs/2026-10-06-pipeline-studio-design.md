@@ -157,7 +157,7 @@ studio/
   store.go       JSON files: list, read, write via temp file + os.Rename
   resolve.go     flow → topics and one NodeSpec per container; what this milestone cannot run yet
   kafka.go       idempotent topic creation
-  engine.go      Deploy/Stop/Reconcile; runs map; per-run poller; snapshots
+  engine.go      Deploy/Stop/Reconcile; runs map; Snapshot; per-stream rates
   docker.go      thin wrapper over moby client: self-inspect, create, start, list, stop, remove
   node.go        `studio node`: producer and consumer loops; /stats /tail /send
   flow_test.go   table test for Validate
@@ -266,7 +266,7 @@ Inside a node container:
   example flows ship in git. Writes go to a temp file then `os.Rename`.
 - **Runtime state:** derived, never stored. Which flows run comes from
   Docker labels (reconcile); counters live in the node containers; the
-  control plane keeps only the latest snapshot per run in memory.
+  control plane keeps no snapshot between ticks; each SSE stream holds only its previous one, for rates.
 - Rejected: SQLite (`modernc.org/sqlite` is pure Go and would work, but there
   is nothing to query), bbolt (a dependency for what `os.Rename` does),
   `mattn/go-sqlite3` (cgo, incompatible with the `scratch` image).
@@ -569,7 +569,7 @@ The user's split is kept with two moves: the timer source moves up to M3
 
 ### M3 — Live status and tail over SSE; timer source.
 
-- Per-run poller, `tick` snapshots, `EventSource` in the UI; node badges
+- Per-stream snapshot loop, `tick` snapshots, `EventSource` in the UI; node badges
   (state, msg/s, total, errors, lag); topic nodes show partitions and end
   offset; the tail drawer fetches on `tailSeq` change; timer producers with
   templates.
