@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/containerd/errdefs v1.0.0
+	github.com/expr-lang/expr v1.17.8
 	github.com/moby/moby/api v1.56.1
 	github.com/moby/moby/client v0.6.1
 	github.com/twmb/franz-go v1.22.1

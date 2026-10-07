@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -61,47 +60,19 @@ func TestResolveInstances(t *testing.T) {
 	}
 }
 
-func TestNotYetRunnable(t *testing.T) {
-	cases := []struct {
-		name   string
-		mutate func(f *Flow)
-		node   string // the node of the single expected problem; "" means runnable
-	}{
-		{"manual producer and log consumer", func(*Flow) {}, ""},
-		{"timer producer runs", func(f *Flow) {
-			f.Nodes[0].Data = json.RawMessage(`{"source":"timer","interval_ms":100,"value":"{}"}`)
-		}, ""},
-		{"http sink runs", func(f *Flow) {
-			f.Nodes[2].Data = json.RawMessage(`{"group":"g","sink":{"kind":"http","url":"http://x"}}`)
-		}, ""},
-		{"two instances run", func(f *Flow) {
-			f.Nodes[2].Data = json.RawMessage(`{"group":"g","instances":2,"sink":{"kind":"log"}}`)
-		}, ""},
-		{"forward to a topic runs", func(f *Flow) {
-			f.Nodes = append(f.Nodes, node("topic-2", "topic", `{"name":"archive","partitions":1,"replication_factor":1}`))
-			f.Edges = append(f.Edges, edge("consumer-1", "topic-2"))
-		}, ""},
-		{"transform", func(f *Flow) {
-			f.Nodes = append(f.Nodes,
-				node("transform-1", "transform", `{"expr":"msg"}`),
-				node("topic-2", "topic", `{"name":"archive","partitions":1,"replication_factor":1}`))
-			f.Edges = append(f.Edges, edge("consumer-1", "transform-1"), edge("transform-1", "topic-2"))
-		}, "transform-1"},
+func TestResolveTransform(t *testing.T) {
+	f := clone(good)
+	f.ID = "0a1b2c3d"
+	f.Nodes = append(f.Nodes,
+		node("transform-1", "transform", `{"expr":"{id: msg.id}"}`),
+		node("topic-2", "topic", `{"name":"archive","partitions":1,"replication_factor":1}`))
+	f.Edges = append(f.Edges, edge("consumer-1", "transform-1"), edge("transform-1", "topic-2"))
+	specs, topics := Resolve(f)
+	want := NodeSpec{Flow: "0a1b2c3d", Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "orders-workers", Forward: "archive", Transform: "{id: msg.id}", TransformNode: "transform-1"}
+	if len(specs) != 2 || !reflect.DeepEqual(specs[1], want) {
+		t.Fatalf("a transform runs in its consumer, which forwards to the transform's topic:\n got %+v\nwant %+v", specs, want)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			f := clone(good)
-			c.mutate(&f)
-			ps := notYetRunnable(f)
-			if c.node == "" {
-				if ps != nil {
-					t.Fatalf("want runnable, got %v", ps)
-				}
-				return
-			}
-			if len(ps) != 1 || ps[0].Node != c.node || !strings.Contains(ps[0].Message, " M") {
-				t.Fatalf("want one problem on %s naming its milestone, got %v", c.node, ps)
-			}
-		})
+	if len(topics) != 2 {
+		t.Fatalf("want both topics created, got %+v", topics)
 	}
 }

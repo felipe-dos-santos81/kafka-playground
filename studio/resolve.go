@@ -16,13 +16,15 @@ type NodeSpec struct {
 	Topic           string `json:"topic"` // produced to, or consumed from
 	Group           string `json:"group,omitempty"`
 	AutoOffsetReset string `json:"auto_offset_reset,omitempty"`
-	Key             string `json:"key,omitempty"`         // producer key template
-	Value           string `json:"value,omitempty"`       // producer value template
-	Source          string `json:"source,omitempty"`      // producer: "manual" or "timer"
-	IntervalMS      int    `json:"interval_ms,omitempty"` // producer: the timer's period
-	Forward         string `json:"forward,omitempty"`     // consumer: the topic it forwards every record to
-	SinkURL         string `json:"sink_url,omitempty"`    // consumer: the http sink's URL
-	Instance        int    `json:"instance,omitempty"`    // consumer: 1..n when it runs n > 1 instances, else 0
+	Key             string `json:"key,omitempty"`            // producer key template
+	Value           string `json:"value,omitempty"`          // producer value template
+	Source          string `json:"source,omitempty"`         // producer: "manual" or "timer"
+	IntervalMS      int    `json:"interval_ms,omitempty"`    // producer: the timer's period
+	Forward         string `json:"forward,omitempty"`        // consumer: the topic it forwards every record to
+	SinkURL         string `json:"sink_url,omitempty"`       // consumer: the http sink's URL
+	Instance        int    `json:"instance,omitempty"`       // consumer: 1..n when it runs n > 1 instances, else 0
+	Transform       string `json:"transform,omitempty"`      // consumer: the expr its records pass through before the forward
+	TransformNode   string `json:"transform_node,omitempty"` // consumer: that transform's node id, which its counts are reported under
 }
 
 // nodeRef names one node container: instance 0 is a node's only container, 1..n
@@ -68,12 +70,14 @@ func instancesOf(n Node) []int {
 }
 
 // Resolve assumes Validate(&f, Deploy) passed: every data field decodes and every
-// producer has one edge to a topic, and every consumer has one edge from a topic
-// and at most one out (to a topic or a transform).
+// producer has one edge to a topic, every consumer has one edge from a topic and
+// at most one out (to a topic or a transform), and every transform one edge in
+// from a consumer and one out to a topic. A consumer's transform runs in its own
+// containers, so a transform has no spec of its own.
 func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 	byID := map[string]Node{}
 	topicName := map[string]string{} // topic node id → topic name
-	forward := map[string]string{}   // consumer node id → the topic it forwards to
+	out := map[string]string{}       // consumer or transform node id → the node its edge goes to
 	var topics []TopicData
 	for _, n := range f.Nodes {
 		byID[n.ID] = n
@@ -85,8 +89,8 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 		}
 	}
 	for _, e := range f.Edges {
-		if byID[e.Source].Type == "consumer" && byID[e.Target].Type == "topic" {
-			forward[e.Source] = topicName[e.Target]
+		if t := byID[e.Source].Type; t == "consumer" || t == "transform" {
+			out[e.Source] = e.Target
 		}
 	}
 	var specs []NodeSpec
@@ -100,10 +104,18 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 		case src.Type == "topic" && dst.Type == "consumer":
 			var d ConsumerData
 			json.Unmarshal(dst.Data, &d)
-			spec := NodeSpec{Flow: f.ID, Node: dst.ID, Type: "consumer", Topic: topicName[src.ID], Group: d.Group, AutoOffsetReset: d.AutoOffsetReset, Forward: forward[dst.ID]}
+			spec := NodeSpec{Flow: f.ID, Node: dst.ID, Type: "consumer", Topic: topicName[src.ID], Group: d.Group, AutoOffsetReset: d.AutoOffsetReset}
 			if d.Sink.Kind == "http" {
 				spec.SinkURL = d.Sink.URL
 			}
+			next := out[dst.ID] // a topic, a transform, or "" when the consumer forwards nothing
+			if t := byID[next]; t.Type == "transform" {
+				var td TransformData
+				json.Unmarshal(t.Data, &td)
+				spec.Transform, spec.TransformNode = td.Expr, t.ID
+				next = out[t.ID]
+			}
+			spec.Forward = topicName[next]
 			for _, i := range instancesOf(dst) {
 				spec.Instance = i
 				specs = append(specs, spec)
@@ -111,16 +123,4 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 		}
 	}
 	return specs, topics
-}
-
-// notYetRunnable lists what a deployable flow uses that this milestone's runtime
-// cannot run yet. Each line goes when its milestone lands.
-func notYetRunnable(f Flow) []Problem {
-	var ps []Problem
-	for _, n := range f.Nodes {
-		if n.Type == "transform" {
-			ps = append(ps, Problem{Node: n.ID, Message: "transforms run from M5"})
-		}
-	}
-	return ps
 }

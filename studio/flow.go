@@ -263,6 +263,8 @@ func Validate(f *Flow, level Level) []Problem {
 			}
 			if strings.TrimSpace(d.Expr) == "" {
 				add(n.ID, "", "expr is required")
+			} else if _, err := compileTransform(d.Expr); err != nil {
+				add(n.ID, "", "expr: %v", err)
 			}
 			if inDegree[n.ID] != 1 || outDegree[n.ID] != 1 {
 				add(n.ID, "", "a transform needs one edge from a consumer and one edge to a topic")

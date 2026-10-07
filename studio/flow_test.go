@@ -101,6 +101,14 @@ func TestValidate(t *testing.T) {
 			f.Nodes = append(f.Nodes, node("transform-1", "transform", `{"expr":"msg"}`))
 			f.Edges = append(f.Edges, edge("consumer-1", "transform-1"))
 		}, "a transform needs"},
+		{"transform expr does not compile", Deploy, func(f *Flow) {
+			f.Nodes = append(f.Nodes, node("transform-1", "transform", `{"expr":"msg."}`), node("topic-2", "topic", topic("x")))
+			f.Edges = append(f.Edges, edge("consumer-1", "transform-1"), edge("transform-1", "topic-2"))
+		}, "expr: unexpected end of expression"},
+		{"transform expr does not compile saves", Save, func(f *Flow) {
+			f.Nodes = append(f.Nodes, node("transform-1", "transform", `{"expr":"msg."}`), node("topic-2", "topic", topic("x")))
+			f.Edges = append(f.Edges, edge("consumer-1", "transform-1"), edge("transform-1", "topic-2"))
+		}, ""},
 		{"transform empty expr", Deploy, func(f *Flow) {
 			f.Nodes = append(f.Nodes, node("transform-1", "transform", `{"expr":" "}`), node("topic-2", "topic", topic("x")))
 			f.Edges = append(f.Edges, edge("consumer-1", "transform-1"), edge("transform-1", "topic-2"))

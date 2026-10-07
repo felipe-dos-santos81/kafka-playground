@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/expr-lang/expr/vm"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -100,11 +101,20 @@ func (t *tail) last() int64 {
 
 // nodeStats is what GET /stats answers; the control plane adds the container state.
 type nodeStats struct {
-	Boot      string `json:"boot"`  // random per process: a restarted container starts its counters and tail over
-	Total     int64  `json:"total"` // records produced (producers) or fetched (consumers)
+	Boot      string               `json:"boot"`  // random per process: a restarted container starts its counters and tail over
+	Total     int64                `json:"total"` // records produced (producers) or fetched (consumers)
+	Errors    int64                `json:"errors"`
+	LastError string               `json:"lastError"`
+	TailSeq   int64                `json:"tailSeq"`         // seq of the newest tail record; the drawer fetches when it moves
+	Steps     map[string]stepStats `json:"steps,omitempty"` // a consumer's transform, by its node id
+}
+
+// stepStats counts what a consumer's transform did: every record it got, the
+// ones it failed on, and the last failure.
+type stepStats struct {
+	Total     int64  `json:"total"`
 	Errors    int64  `json:"errors"`
 	LastError string `json:"lastError"`
-	TailSeq   int64  `json:"tailSeq"` // seq of the newest tail record; the drawer fetches when it moves
 }
 
 // counters count records where they pass: produced by producers, fetched by consumers.
@@ -121,6 +131,12 @@ func (c *counters) fail(err error) {
 	c.mu.Lock()
 	c.lastError = err.Error()
 	c.mu.Unlock()
+}
+
+func (c *counters) step() stepStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return stepStats{Total: c.total.Load(), Errors: c.errors.Load(), LastError: c.lastError}
 }
 
 func (c *counters) stats(boot string, tailSeq int64) nodeStats {
@@ -225,16 +241,19 @@ func (p *producer) run(ctx context.Context, every time.Duration) {
 }
 
 // consumer takes each fetched record of one consumer node through the tail, the
-// http sink (when set) and the forward (when set). A failed sink or forward is
-// counted and logged, not retried: autocommit still moves past the record. The
-// sink and the forward run under context.WithoutCancel: a stop (SIGTERM) must not
-// fail them with "context canceled" before Close commits past this record.
+// http sink (when set), the transform (when set) and the forward (when set). A
+// failed sink, transform or forward is counted and logged, not retried:
+// autocommit still moves past the record. The sink and the forward run under
+// context.WithoutCancel: a stop (SIGTERM) must not fail them with "context
+// canceled" before Close commits past this record.
 type consumer struct {
-	spec    NodeSpec
-	tail    *tail
-	counts  *counters
-	post    func(ctx context.Context, url string, body []byte) error // the http sink
-	produce func(context.Context, *kgo.Record) error                 // the forward
+	spec      NodeSpec
+	tail      *tail
+	counts    *counters
+	transform *vm.Program                                              // nil without a transform
+	steps     *counters                                                // the transform's own counts
+	post      func(ctx context.Context, url string, body []byte) error // the http sink
+	produce   func(context.Context, *kgo.Record) error                 // the forward
 }
 
 // handle reports whether r may be committed: false only when the forward failed
@@ -252,9 +271,22 @@ func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
 			log.Printf("sink: %v", err)
 		}
 	}
+	value := r.Value
+	if c.transform != nil {
+		c.steps.ok()
+		out, keep, err := runTransform(c.transform, value)
+		if err != nil {
+			c.steps.fail(err)
+			log.Printf("transform: %v", err)
+		}
+		if !keep {
+			return true // failed or dropped (nil): nothing to forward
+		}
+		value = out
+	}
 	if c.spec.Forward != "" {
 		pctx, cancel := context.WithTimeout(work, 10*time.Second)
-		err := c.produce(pctx, &kgo.Record{Topic: c.spec.Forward, Key: r.Key, Value: r.Value})
+		err := c.produce(pctx, &kgo.Record{Topic: c.spec.Forward, Key: r.Key, Value: value})
 		cancel()
 		if err != nil {
 			c.counts.fail(fmt.Errorf("forward: %w", err))
@@ -339,6 +371,7 @@ func runNode() {
 	defer stop()
 
 	t, counts, boot := &tail{}, &counters{}, NewID()
+	var steps *counters         // a consumer's transform counts; nil without one
 	var consuming chan struct{} // closed when a consumer's poll loop has returned; nil for a producer
 	produce := func(ctx context.Context, rec *kgo.Record) error {
 		return cl.ProduceSync(ctx, rec).FirstErr()
@@ -349,7 +382,11 @@ func runNode() {
 		reply(w, http.StatusOK, t.since(since))
 	})
 	mux.HandleFunc("GET /stats", func(w http.ResponseWriter, r *http.Request) {
-		reply(w, http.StatusOK, counts.stats(boot, t.last()))
+		s := counts.stats(boot, t.last())
+		if steps != nil {
+			s.Steps = map[string]stepStats{spec.TransformNode: steps.step()}
+		}
+		reply(w, http.StatusOK, s)
 	})
 	if spec.Type == "producer" {
 		p := &producer{spec: spec, tail: t, counts: counts, produce: produce}
@@ -362,6 +399,14 @@ func runNode() {
 			fail(w, http.StatusConflict, "only producer nodes send")
 		})
 		c := &consumer{spec: spec, tail: t, counts: counts, post: postJSON, produce: produce}
+		if spec.Transform != "" {
+			p, err := compileTransform(spec.Transform)
+			if err != nil {
+				log.Fatal("transform: ", err) // Validate compiled the same source on deploy
+			}
+			steps = &counters{}
+			c.transform, c.steps = p, steps
+		}
 		consuming = make(chan struct{})
 		go func() {
 			c.consume(ctx, cl)
