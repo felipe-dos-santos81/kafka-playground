@@ -1,16 +1,18 @@
-# Local build output of producer/ (go build)
+# Go build output (go build in producer/ or studio/)
 /producer/producer
+/studio/studio
 
-# Agent scratch space
+# Studio UI: dependencies and build output (keep the placeholder go:embed needs)
+/studio/ui/node_modules/
+/studio/ui/dist/*
+!/studio/ui/dist/.gitkeep
+
+# Agent scratch space and worktrees
 /.superpowers/
+/.claude/worktrees/
 
 # OS / editor
 .DS_Store
 .idea/
 .vscode/
-
-# Studio build output and dependencies
-/studio/studio
-/studio/ui/node_modules/
-/studio/ui/dist/*
-!/studio/ui/dist/.gitkeep
+*.log

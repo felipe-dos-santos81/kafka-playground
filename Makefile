@@ -1,4 +1,4 @@
-# Makefile for Kafka Playground — KRaft broker, topic jobs, kcat consumers, producer page, Redpanda Console, Pipeline Studio
+# Kafka Playground: KRaft broker, topic jobs, kcat consumers, producer page, Redpanda Console, Pipeline Studio
 # Typical flow: up → produce → logs → scale → groups → down
 SERVICE = Kafka Playground
 
@@ -31,7 +31,7 @@ help: ## Print this help message
 
 # ── Stack ────────────────────────────────────────────────────────────────────
 
-up: ## [STEP 1] Start everything; returns when the broker and the producer, Console and Studio pages are healthy
+up: ## [STEP 1] Start everything and wait until it is healthy
 	$(COMPOSE) up -d --wait
 	@echo "Producer page: $(PRODUCER_URL)   Console: $(CONSOLE_URL)   Studio: $(STUDIO_URL)   Broker from the host: localhost:9092"
 
@@ -68,7 +68,7 @@ scale: ## [STEP 4] Set the number of orders-workers group members (usage: make s
 
 # ── Studio ───────────────────────────────────────────────────────────────────
 
-verify-studio: up ## End-to-end check of the studio API: health, create, reject a bad edge, round trip, delete
+verify-studio: up ## Check the studio API: health, create, reject a bad edge, read back, delete
 	@health=$$(curl -sS --fail-with-body $(STUDIO_URL)/api/health) || { echo "STUDIO FAILED: health: $$health"; exit 1; }; \
 	echo "studio health: $$health"; \
 	flow='{"name":"verify","nodes":[{"id":"producer-1","type":"producer","position":{"x":0,"y":0},"data":{"source":"manual","key":"","value":"{}"}},{"id":"topic-1","type":"topic","position":{"x":200,"y":0},"data":{"name":"verify","partitions":1,"replication_factor":1}}],"edges":[{"id":"e1","source":"producer-1","target":"topic-1"}]}'; \
@@ -87,7 +87,7 @@ verify-studio: up ## End-to-end check of the studio API: health, create, reject 
 
 # Waits until both groups have committed past the record (so it can no longer be
 # redelivered), then counts it in the logs: exactly once per group.
-verify: up verify-studio ## End-to-end check: studio API round trip, then one record seen once by the worker group and once by the audit group
+verify: up verify-studio ## End-to-end check: studio API, then one record seen exactly once per consumer group
 	@id="verify-$$(date +%s)"; \
 	sent=$$($(MAKE) --no-print-directory produce key="$$id" value="{\"id\":\"$$id\"}") || exit 1; \
 	partition=$$(echo "$$sent" | sed 's/.*"partition":\([0-9]*\).*/\1/'); \
