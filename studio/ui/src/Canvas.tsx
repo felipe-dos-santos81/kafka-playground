@@ -30,10 +30,10 @@ type Props = {
 export default function Canvas({ nodes, edges, onNodesChange, onEdgesChange, setNodes, setEdges, defaultViewport }: Props) {
   const { screenToFlowPosition, getNode } = useReactFlow()
 
-  // Only the pairs flow.go allows (none pairs a type with itself, so no self edges);
-  // the backend re-checks on save. addEdge drops duplicates itself.
+  // Only the pairs flow.go allows and no self edges; the backend re-checks on save.
+  // addEdge drops duplicates itself.
   const isValidConnection = useCallback(
-    (c: Edge | Connection) => canConnect(getNode(c.source)?.type, getNode(c.target)?.type),
+    (c: Edge | Connection) => c.source !== c.target && canConnect(getNode(c.source)?.type, getNode(c.target)?.type),
     [getNode],
   )
 

@@ -63,9 +63,8 @@ type FileNode = FlowFile['nodes'][number]
 export function fillDefaults(node: FileNode): FileNode {
   const data = { ...node.data }
   for (const [k, v] of Object.entries(defaultData(node.type))) {
-    const have = data[k]
     if (!(k in data)) data[k] = v
-    else if (isObject(v) && isObject(have)) data[k] = { ...have, ...Object.fromEntries(Object.entries(v).filter(([n]) => !(n in have))) }
+    else if (isObject(v) && isObject(data[k])) data[k] = { ...v, ...data[k] }
   }
   return { ...node, data }
 }
@@ -79,18 +78,14 @@ export function nextId(type: NodeType, nodes: { id: string }[]): string {
   }
 }
 
-export type Content = Pick<FlowFile, 'nodes' | 'edges'>
+// Canvas or file nodes and edges: whatever carries the fields a flow file stores.
+export type CanvasNode = { id: string; type?: NodeType; position: XYPosition; data: Record<string, unknown> }
+export type CanvasEdge = { id: string; source: string; target: string }
 
 // What a flow file stores of the canvas: React Flow's shape without runtime-only fields.
-export function content(
-  nodes: { id: string; type?: NodeType; position: XYPosition; data: Record<string, unknown> }[],
-  edges: { id: string; source: string; target: string }[],
-): Content {
+export function fileContent(nodes: CanvasNode[], edges: CanvasEdge[]): Pick<FlowFile, 'nodes' | 'edges'> {
   return {
     nodes: nodes.map(({ id, type, position, data }) => ({ id, type: type!, position, data })),
     edges: edges.map(({ id, source, target }) => ({ id, source, target })),
   }
 }
-
-// Compared to tell unsaved edits; the viewport is left out because panning is not an edit.
-export const snapshot = (name: string, c: Content) => JSON.stringify({ name, ...c })

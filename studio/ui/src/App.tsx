@@ -5,12 +5,20 @@ import FlowList from './FlowList'
 import Inspector from './Inspector'
 import Palette from './Palette'
 import { api, ApiError, type FlowSummary } from './flow/api'
-import { content, fillDefaults, snapshot } from './flow/schema'
+import { fileContent, fillDefaults, type CanvasEdge, type CanvasNode } from './flow/schema'
 import type { StudioNode } from './nodes/types'
 
 function describe(e: unknown): string {
   return e instanceof ApiError ? `${e.status}: ${e.message}` : String(e)
 }
+
+// Sorts object keys while stringifying, so a snapshot compares values, not key order.
+const sortKeys = (_: string, v: unknown) =>
+  v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1))) : v
+
+// Compared to tell unsaved edits; the viewport is left out because panning is not an edit.
+const snapshot = (name: string, nodes: CanvasNode[], edges: CanvasEdge[]) =>
+  JSON.stringify({ name, ...fileContent(nodes, edges) }, sortKeys)
 
 function Studio() {
   const [nodes, setNodes, onNodesChange] = useNodesState<StudioNode>([])
@@ -18,9 +26,9 @@ function Studio() {
   const { getViewport } = useReactFlow()
   const [flows, setFlows] = useState<FlowSummary[]>([])
   const [current, setCurrent] = useState<{ id: string; name: string; viewport?: Viewport } | null>(null)
-  const [saved, setSaved] = useState('') // snapshot of the flow as last loaded or saved
+  const [savedSnapshot, setSavedSnapshot] = useState('') // the flow as last loaded or saved
   const [error, setError] = useState('')
-  const dirty = current !== null && snapshot(current.name, content(nodes, edges)) !== saved
+  const dirty = current !== null && snapshot(current.name, nodes, edges) !== savedSnapshot
 
   const refresh = useCallback(() => api.list().then(setFlows).catch((e) => setError(describe(e))), [])
   useEffect(() => {
@@ -44,16 +52,16 @@ function Studio() {
       setNodes(f.nodes.map(fillDefaults) as unknown as StudioNode[])
       setEdges(f.edges)
       setCurrent({ id: f.id, name: f.name, viewport: f.viewport ?? undefined }) // Canvas mounts per flow and reads it as defaultViewport
-      setSaved(snapshot(f.name, content(f.nodes, f.edges)))
+      setSavedSnapshot(snapshot(f.name, f.nodes, f.edges))
       setError('')
     })
 
   const save = () =>
     withTopBarError(async () => {
       if (!current) return
-      const c = content(nodes, edges)
+      const c = fileContent(nodes, edges)
       await api.save({ id: current.id, name: current.name, ...c, viewport: getViewport() })
-      setSaved(snapshot(current.name, c)) // edits made while the request ran stay unsaved
+      setSavedSnapshot(snapshot(current.name, c.nodes, c.edges)) // edits made while the request ran stay unsaved
       setError('')
       refresh()
     })
@@ -70,7 +78,8 @@ function Studio() {
     if (!name) return
     await withTopBarError(async () => {
       const f = await api.create({ name, nodes: [], edges: [] })
-      await Promise.all([refresh(), load(f.id)])
+      await refresh()
+      await load(f.id)
     })
   }
 
