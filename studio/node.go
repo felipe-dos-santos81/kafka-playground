@@ -162,9 +162,11 @@ func (p *producer) next(key string, body []byte) (*kgo.Record, error) {
 		if key, err = render(p.spec.Key, d); err != nil {
 			return nil, fmt.Errorf("key template: %w", err)
 		}
+		if !json.Valid([]byte(v)) {
+			return nil, fmt.Errorf("value template rendered %.60q, which is not JSON", v)
+		}
 		body = []byte(v)
-	}
-	if !json.Valid(body) {
+	} else if !json.Valid(body) {
 		return nil, errInvalidJSON
 	}
 	rec := &kgo.Record{Topic: p.spec.Topic, Value: body}
@@ -174,12 +176,16 @@ func (p *producer) next(key string, body []byte) (*kgo.Record, error) {
 	return rec, nil
 }
 
-// produceOne produces rec and counts the outcome; the tail gets every record that made it.
+// produceOne produces rec and counts the outcome; the tail gets every record that
+// made it. A send cut short because ctx ended (Stop, or the caller went away) is
+// no error of the node's and is not counted.
 func (p *producer) produceOne(ctx context.Context, rec *kgo.Record) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := p.produce(ctx, rec); err != nil {
-		p.counts.fail(err)
+	if err := p.produce(pctx, rec); err != nil {
+		if ctx.Err() == nil {
+			p.counts.fail(err)
+		}
 		return err
 	}
 	p.counts.ok()
@@ -189,7 +195,8 @@ func (p *producer) produceOne(ctx context.Context, rec *kgo.Record) error {
 
 // send produces one record. A body is the value as is (curl, webhooks), keyed by
 // ?key=; an empty body renders the node's own templates (the UI's Send button).
-// It answers {partition, offset}.
+// It answers {partition, offset}: 400 for a body that is not JSON, 500 (and an
+// error counted) for templates that fail or render no JSON.
 func (p *producer) send(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
@@ -227,9 +234,10 @@ func (p *producer) run(ctx context.Context, every time.Duration) {
 		rec, err := p.next("", nil)
 		if err != nil {
 			p.counts.fail(err)
+			log.Printf("timer: %v", err)
 			continue
 		}
-		if err := p.produceOne(ctx, rec); err != nil {
+		if err := p.produceOne(ctx, rec); err != nil && ctx.Err() == nil {
 			log.Printf("produce: %v", err)
 		}
 	}

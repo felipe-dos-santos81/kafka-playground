@@ -83,6 +83,13 @@ func TestProducerSend(t *testing.T) {
 	if got := p.tail.since(0); len(got) != 3 {
 		t.Fatalf("want the 3 produced records in the tail, got %d", len(got))
 	}
+	// Templates that render no JSON are the node's error: 500, counted, nothing produced.
+	bad := &producer{spec: NodeSpec{Topic: "orders", Value: `{{.Seq}}x`}, tail: &tail{}, counts: &counters{}, produce: p.produce}
+	w := httptest.NewRecorder()
+	bad.send(w, httptest.NewRequest(http.MethodPost, "/send", nil))
+	if s := bad.counts.step(); w.Code != http.StatusInternalServerError || s.Errors != 1 || !strings.Contains(s.LastError, `rendered "1x"`) || len(sent) != 3 {
+		t.Fatalf("a template rendering 1x: want 500 and one error counted, got %d %s and %+v", w.Code, w.Body, s)
+	}
 	if s := p.counts.stats("b", p.tail.last()); s.Total != 3 || s.Errors != 1 || s.LastError != "broker down" || s.TailSeq != 3 || s.Boot != "b" {
 		t.Fatalf("want 3 produced, 1 error, tailSeq 3; got %+v", s)
 	}
@@ -94,9 +101,15 @@ func TestProducerTimer(t *testing.T) {
 		spec:   NodeSpec{Topic: "orders", Value: `{"n": {{.Seq}}}`},
 		tail:   &tail{},
 		counts: &counters{},
-		produce: func(_ context.Context, r *kgo.Record) error {
-			got <- r
-			return nil
+		// Like ProduceSync: a full channel (the test stopped reading) blocks until
+		// the context ends, and then fails with the context's error.
+		produce: func(ctx context.Context, r *kgo.Record) error {
+			select {
+			case got <- r:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -121,8 +134,20 @@ func TestProducerTimer(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the timer did not stop when its context ended")
 	}
-	if p.counts.total.Load() < 3 || p.tail.last() < 3 {
-		t.Fatalf("want at least 3 counted and tailed, got %d and %d", p.counts.total.Load(), p.tail.last())
+	if s := p.counts.step(); s.Total < 3 || p.tail.last() < 3 || s.Errors != 0 {
+		t.Fatalf("want at least 3 counted and tailed, and a send cut by the stop not counted as an error; got %+v, tail %d", s, p.tail.last())
+	}
+
+	// A value that renders no JSON is the timer's error, tick after tick; nothing is produced.
+	bad := &producer{spec: NodeSpec{Topic: "orders", Value: `{{.Seq}}x`}, tail: &tail{}, counts: &counters{}, produce: p.produce}
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	go bad.run(ctx, 5*time.Millisecond)
+	for deadline := time.Now().Add(2 * time.Second); bad.counts.errors.Load() < 2 && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if s := bad.counts.step(); s.Errors < 2 || !strings.Contains(s.LastError, "not JSON") || bad.tail.last() != 0 {
+		t.Fatalf("want the timer's errors counted and nothing produced, got %+v", s)
 	}
 }
 
