@@ -13,8 +13,10 @@ type NodeSpec struct {
 	Topic           string `json:"topic"` // produced to, or consumed from
 	Group           string `json:"group,omitempty"`
 	AutoOffsetReset string `json:"auto_offset_reset,omitempty"`
-	Key             string `json:"key,omitempty"`   // producer key template
-	Value           string `json:"value,omitempty"` // producer value template
+	Key             string `json:"key,omitempty"`         // producer key template
+	Value           string `json:"value,omitempty"`       // producer value template
+	Source          string `json:"source,omitempty"`      // producer: "manual" or "timer"
+	IntervalMS      int    `json:"interval_ms,omitempty"` // producer: the timer's period
 }
 
 // containerName is a node's container name and, on the compose network, its host name.
@@ -42,7 +44,7 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 		case src.Type == "producer" && dst.Type == "topic":
 			var d ProducerData
 			json.Unmarshal(src.Data, &d)
-			specs = append(specs, NodeSpec{Flow: f.ID, Node: src.ID, Type: "producer", Topic: topicName[dst.ID], Key: d.Key, Value: d.Value})
+			specs = append(specs, NodeSpec{Flow: f.ID, Node: src.ID, Type: "producer", Topic: topicName[dst.ID], Source: d.Source, IntervalMS: d.IntervalMS, Key: d.Key, Value: d.Value})
 		case src.Type == "topic" && dst.Type == "consumer":
 			var d ConsumerData
 			json.Unmarshal(dst.Data, &d)
@@ -60,12 +62,6 @@ func notYetRunnable(f Flow) []Problem {
 	for _, n := range f.Nodes {
 		types[n.ID] = n.Type
 		switch n.Type {
-		case "producer":
-			var d ProducerData
-			json.Unmarshal(n.Data, &d)
-			if d.Source == "timer" {
-				ps = append(ps, Problem{Node: n.ID, Message: "the timer source runs from M3; use manual for now"})
-			}
 		case "consumer":
 			var d ConsumerData
 			json.Unmarshal(n.Data, &d)

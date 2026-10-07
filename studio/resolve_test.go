@@ -12,7 +12,7 @@ func TestResolve(t *testing.T) {
 	f.ID = "0a1b2c3d"
 	specs, topics := Resolve(f)
 	want := []NodeSpec{
-		{Flow: "0a1b2c3d", Node: "producer-1", Type: "producer", Topic: "orders", Value: `{"id": {{.Seq}}}`},
+		{Flow: "0a1b2c3d", Node: "producer-1", Type: "producer", Topic: "orders", Source: "manual", Value: `{"id": {{.Seq}}}`},
 		{Flow: "0a1b2c3d", Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "orders-workers"},
 	}
 	if !reflect.DeepEqual(specs, want) {
@@ -33,9 +33,9 @@ func TestNotYetRunnable(t *testing.T) {
 		node   string // the node of the single expected problem; "" means runnable
 	}{
 		{"manual producer and log consumer", func(*Flow) {}, ""},
-		{"timer producer", func(f *Flow) {
+		{"timer producer runs", func(f *Flow) {
 			f.Nodes[0].Data = json.RawMessage(`{"source":"timer","interval_ms":100,"value":"{}"}`)
-		}, "producer-1"},
+		}, ""},
 		{"http sink", func(f *Flow) {
 			f.Nodes[2].Data = json.RawMessage(`{"group":"g","sink":{"kind":"http","url":"http://x"}}`)
 		}, "consumer-1"},

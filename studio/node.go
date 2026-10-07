@@ -1,7 +1,7 @@
 // `studio node`: one producer or consumer of a deployed flow, in its own
 // container. Its whole configuration is env STUDIO_NODE (a NodeSpec) plus
 // KAFKA_BROKERS. It serves the control plane on :9000 inside the compose
-// network: POST /send (producers) and GET /tail?since=N.
+// network: POST /send (producers), GET /tail?since=N and GET /stats.
 package main
 
 import (
@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math/rand/v2"
@@ -29,6 +30,8 @@ const (
 	tailSize     = 100     // records a node keeps for the tail
 	tailValueMax = 4 << 10 // bytes of a value the tail keeps
 )
+
+var errInvalidJSON = errors.New("value is not valid JSON")
 
 // tailEntry is one record as the tail drawer shows it.
 type tailEntry struct {
@@ -81,66 +84,152 @@ func (t *tail) since(n int64) []tailEntry {
 	return out
 }
 
-// producer serves /send for one producer node.
+// last is the seq of the newest record, 0 before the first.
+func (t *tail) last() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.seq
+}
+
+// nodeStats is what GET /stats answers; the control plane adds the container state.
+type nodeStats struct {
+	Boot      string `json:"boot"`  // random per process: a restarted container starts its counters and tail over
+	Total     int64  `json:"total"` // records produced (producers) or fetched (consumers)
+	Errors    int64  `json:"errors"`
+	LastError string `json:"lastError"`
+	TailSeq   int64  `json:"tailSeq"` // seq of the newest tail record; the drawer fetches when it moves
+}
+
+// counters count records where they pass: produced by producers, fetched by consumers.
+type counters struct {
+	total, errors atomic.Int64
+	mu            sync.Mutex
+	lastError     string
+}
+
+func (c *counters) ok() { c.total.Add(1) }
+
+func (c *counters) fail(err error) {
+	c.errors.Add(1)
+	c.mu.Lock()
+	c.lastError = err.Error()
+	c.mu.Unlock()
+}
+
+func (c *counters) stats(boot string, tailSeq int64) nodeStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return nodeStats{Boot: boot, Total: c.total.Load(), Errors: c.errors.Load(), LastError: c.lastError, TailSeq: tailSeq}
+}
+
+// producer serves /send and runs the timer for one producer node.
 type producer struct {
 	spec    NodeSpec
 	tail    *tail
-	seq     atomic.Int64 // .Seq of the last rendered send
+	counts  *counters
+	seq     atomic.Int64 // .Seq of the last rendered record
 	produce func(context.Context, *kgo.Record) error
 }
 
+// next builds the record to produce: body as the value with key as given, or,
+// with an empty body, the node's own key and value templates rendered with the
+// next .Seq.
+func (p *producer) next(key string, body []byte) (*kgo.Record, error) {
+	if len(bytes.TrimSpace(body)) == 0 {
+		d := templateData{Seq: int(p.seq.Add(1)), Now: time.Now().UTC().Format(time.RFC3339), Rand: rand.IntN(1000)}
+		v, err := render(p.spec.Value, d)
+		if err != nil {
+			return nil, fmt.Errorf("value template: %w", err)
+		}
+		if key, err = render(p.spec.Key, d); err != nil {
+			return nil, fmt.Errorf("key template: %w", err)
+		}
+		body = []byte(v)
+	}
+	if !json.Valid(body) {
+		return nil, errInvalidJSON
+	}
+	rec := &kgo.Record{Topic: p.spec.Topic, Value: body}
+	if key != "" {
+		rec.Key = []byte(key)
+	}
+	return rec, nil
+}
+
+// produceOne produces rec and counts the outcome; the tail gets every record that made it.
+func (p *producer) produceOne(ctx context.Context, rec *kgo.Record) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := p.produce(ctx, rec); err != nil {
+		p.counts.fail(err)
+		return err
+	}
+	p.counts.ok()
+	p.tail.push(rec)
+	return nil
+}
+
 // send produces one record. A body is the value as is (curl, webhooks), keyed by
-// ?key=; an empty body renders the node's own key and value templates with the
-// next .Seq (the UI's Send button). It answers {partition, offset}.
+// ?key=; an empty body renders the node's own templates (the UI's Send button).
+// It answers {partition, offset}.
 func (p *producer) send(w http.ResponseWriter, r *http.Request) {
-	value, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		fail(w, http.StatusBadRequest, "body: "+err.Error())
 		return
 	}
-	key := r.URL.Query().Get("key")
-	if len(bytes.TrimSpace(value)) == 0 {
-		d := templateData{Seq: int(p.seq.Add(1)), Now: time.Now().UTC().Format(time.RFC3339), Rand: rand.IntN(1000)}
-		v, err := render(p.spec.Value, d)
-		if err != nil {
-			fail(w, http.StatusInternalServerError, "value template: "+err.Error())
-			return
-		}
-		if key, err = render(p.spec.Key, d); err != nil {
-			fail(w, http.StatusInternalServerError, "key template: "+err.Error())
-			return
-		}
-		value = []byte(v)
-	}
-	if !json.Valid(value) {
-		fail(w, http.StatusBadRequest, "value is not valid JSON")
+	rec, err := p.next(r.URL.Query().Get("key"), body)
+	switch {
+	case errors.Is(err, errInvalidJSON):
+		fail(w, http.StatusBadRequest, err.Error())
+		return
+	case err != nil:
+		p.counts.fail(err)
+		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	rec := &kgo.Record{Topic: p.spec.Topic, Value: value}
-	if key != "" {
-		rec.Key = []byte(key)
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	if err := p.produce(ctx, rec); err != nil {
+	if err := p.produceOne(r.Context(), rec); err != nil {
 		fail(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	p.tail.push(rec)
 	reply(w, http.StatusOK, map[string]any{"partition": rec.Partition, "offset": rec.Offset})
 }
 
-// consume polls the group until ctx ends, feeding every record to the tail.
-func consume(ctx context.Context, cl *kgo.Client, t *tail) {
+// run is the timer source: a rendered record every period until ctx ends. A slow
+// broker makes the ticker drop ticks rather than queue them.
+func (p *producer) run(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		rec, err := p.next("", nil)
+		if err != nil {
+			p.counts.fail(err)
+			continue
+		}
+		if err := p.produceOne(ctx, rec); err != nil {
+			log.Printf("produce: %v", err)
+		}
+	}
+}
+
+// consume polls the group until ctx ends, counting and tailing every record.
+func consume(ctx context.Context, cl *kgo.Client, t *tail, c *counters) {
 	for {
 		fs := cl.PollFetches(ctx)
 		if ctx.Err() != nil || fs.IsClientClosed() {
 			return
 		}
 		fs.EachError(func(topic string, partition int32, err error) {
+			c.fail(err)
 			log.Printf("fetch %s[%d]: %v", topic, partition, err)
 		})
 		fs.EachRecord(func(r *kgo.Record) {
+			c.ok()
 			t.push(r)
 			log.Printf("%s[%d]@%d key=%s %s", r.Topic, r.Partition, r.Offset, r.Key, r.Value)
 		})
@@ -173,22 +262,28 @@ func runNode() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	t := &tail{}
+	t, counts, boot := &tail{}, &counters{}, NewID()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /tail", func(w http.ResponseWriter, r *http.Request) {
 		since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 		reply(w, http.StatusOK, t.since(since))
 	})
+	mux.HandleFunc("GET /stats", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, http.StatusOK, counts.stats(boot, t.last()))
+	})
 	if spec.Type == "producer" {
-		p := &producer{spec: spec, tail: t, produce: func(ctx context.Context, rec *kgo.Record) error {
+		p := &producer{spec: spec, tail: t, counts: counts, produce: func(ctx context.Context, rec *kgo.Record) error {
 			return cl.ProduceSync(ctx, rec).FirstErr()
 		}}
 		mux.HandleFunc("POST /send", p.send)
+		if spec.Source == "timer" {
+			go p.run(ctx, time.Duration(spec.IntervalMS)*time.Millisecond)
+		}
 	} else {
 		mux.HandleFunc("POST /send", func(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusConflict, "only producer nodes send")
 		})
-		go consume(ctx, cl, t)
+		go consume(ctx, cl, t, counts)
 	}
 	srv := &http.Server{Addr: nodeAddr, Handler: mux}
 	go func() {
@@ -196,7 +291,7 @@ func runNode() {
 			log.Fatal(err)
 		}
 	}()
-	log.Printf("node %s (%s) on topic %s", spec.Node, spec.Type, spec.Topic)
+	log.Printf("node %s (%s) on topic %s, boot %s", spec.Node, spec.Type, spec.Topic, boot)
 
 	<-ctx.Done()
 	shutdown, cancel := context.WithTimeout(context.Background(), 2*time.Second)

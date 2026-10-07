@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -36,8 +38,9 @@ func TestProducerSend(t *testing.T) {
 	var sent []*kgo.Record
 	brokerDown := false
 	p := &producer{
-		spec: NodeSpec{Topic: "orders", Key: "k{{.Seq}}", Value: `{"id": {{.Seq}}}`},
-		tail: &tail{},
+		spec:   NodeSpec{Topic: "orders", Key: "k{{.Seq}}", Value: `{"id": {{.Seq}}}`},
+		tail:   &tail{},
+		counts: &counters{},
 		produce: func(_ context.Context, r *kgo.Record) error {
 			if brokerDown {
 				return errors.New("broker down")
@@ -78,5 +81,46 @@ func TestProducerSend(t *testing.T) {
 	}
 	if got := p.tail.since(0); len(got) != 3 {
 		t.Fatalf("want the 3 produced records in the tail, got %d", len(got))
+	}
+	if s := p.counts.stats("b", p.tail.last()); s.Total != 3 || s.Errors != 1 || s.LastError != "broker down" || s.TailSeq != 3 || s.Boot != "b" {
+		t.Fatalf("want 3 produced, 1 error, tailSeq 3; got %+v", s)
+	}
+}
+
+func TestProducerTimer(t *testing.T) {
+	got := make(chan *kgo.Record, 16)
+	p := &producer{
+		spec:   NodeSpec{Topic: "orders", Value: `{"n": {{.Seq}}}`},
+		tail:   &tail{},
+		counts: &counters{},
+		produce: func(_ context.Context, r *kgo.Record) error {
+			got <- r
+			return nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		p.run(ctx, 5*time.Millisecond)
+		close(done)
+	}()
+	for i := 1; i <= 3; i++ {
+		select {
+		case r := <-got:
+			if want := fmt.Sprintf(`{"n": %d}`, i); string(r.Value) != want || r.Topic != "orders" {
+				t.Fatalf("record %d: got %s %s, want %s", i, r.Topic, r.Value, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("the timer produced only %d records", i-1)
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the timer did not stop when its context ended")
+	}
+	if p.counts.total.Load() < 3 || p.tail.last() < 3 {
+		t.Fatalf("want at least 3 counted and tailed, got %d and %d", p.counts.total.Load(), p.tail.last())
 	}
 }
