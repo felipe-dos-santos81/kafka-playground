@@ -1,7 +1,9 @@
 import { FlowSchema, type FlowFile } from './schema'
 
 export type FlowSummary = { id: string; name: string; status: string }
-type Problem = { node?: string; edge?: string; message: string }
+// GET /api/flows/{id}/state: each producer's and consumer's container state while deployed.
+export type FlowState = { status: 'running' | 'stopped'; nodes: Record<string, { state: string }> }
+type Problem ={ node?: string; edge?: string; message: string }
 
 // No constructor parameter properties: the Vite template enables erasableSyntaxOnly.
 export class ApiError extends Error {
@@ -36,4 +38,7 @@ export const api = {
   save: (flow: FlowFile) =>
     call<FlowFile>(`/api/flows/${flow.id}`, { method: 'PUT', body: JSON.stringify(flow) }),
   remove: (id: string) => call<void>(`/api/flows/${id}`, { method: 'DELETE' }),
+  deploy: (id: string) => call<{ status: string }>(`/api/flows/${id}/deploy`, { method: 'POST' }),
+  stop: (id: string) => call<{ status: string }>(`/api/flows/${id}/stop`, { method: 'POST' }),
+  state: (id: string) => call<FlowState>(`/api/flows/${id}/state`),
 }

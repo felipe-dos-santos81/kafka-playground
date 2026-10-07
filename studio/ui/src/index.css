@@ -30,3 +30,7 @@ html, body, #root { margin: 0; height: 100%; }
 .topic { border-color: #ef6c00; }
 .consumer { border-color: #1565c0; }
 .transform { border-color: #6a1b9a; }
+.topbar .status { color: #555; }
+.node-state { font-weight: 400; font-size: 11px; padding: 0 4px; border-radius: 3px; background: #eee; text-transform: none; }
+.node-state.running { background: #c8e6c9; }
+.node-state.exited, .node-state.dead, .node-state.missing { background: #ffcdd2; }
