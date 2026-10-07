@@ -303,16 +303,12 @@ sequenceDiagram
   participant D as Docker
   participant N as studio node
   participant K as kafka
-  loop poller, every 1 s per running flow
-    S->>D: ContainerList(label studio.flow=id)
-    S->>N: GET /stats
-    opt every 2nd tick
-      S->>K: adm.Lag(groups…), adm.ListEndOffsets(topics…)
-    end
-    S->>S: snapshot, rate = Δtotal/Δt
-  end
   B->>S: GET /api/flows/{id}/events (EventSource)
-  loop every 1 s
+  loop this stream, every 1 s, until the browser disconnects
+    S->>D: ContainerList(label studio.flow=id)
+    S->>N: GET /stats (each running node)
+    S->>K: adm.Lag(groups…), adm.ListEndOffsets(topics…)
+    S->>S: snapshot, rate = Δtotal/Δt against the previous tick
     S-->>B: event: tick · data: snapshot
   end
   opt tailSeq changed and drawer open
