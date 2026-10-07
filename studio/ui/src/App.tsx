@@ -29,7 +29,6 @@ function Studio() {
   const [savedSnapshot, setSavedSnapshot] = useState('') // the flow as last loaded or saved
   const [error, setError] = useState('')
   const [flowState, setFlowState] = useState<FlowState | null>(null)
-  const [tick, setTick] = useState(0) // counts ticks: the tail drawer retries a failed fetch on the next one
   const [paused, setPaused] = useState('') // why the live numbers stopped, until the next tick
   const [deployedSnapshot, setDeployedSnapshot] = useState('') // savedSnapshot at the last Deploy from this page
   const [pickedInstance, setPickedInstance] = useState(0) // the tail drawer's instance, for a consumer with instances
@@ -62,10 +61,6 @@ function Studio() {
     setFlowState(null)
     setPaused('')
     if (!flowId) return
-    const onTick = (s: FlowState) => {
-      setFlowState(s)
-      setTick((n) => n + 1)
-    }
     const onStatus = (s: LiveStatus) => {
       setPaused(s.kind === 'paused' ? s.why : '')
       if (s.kind !== 'gone') return
@@ -73,7 +68,7 @@ function Studio() {
       closeFlow()
       refresh()
     }
-    return watch(flowId, onTick, onStatus)
+    return watch(flowId, setFlowState, onStatus)
   }, [flowId, refresh, closeFlow])
   const running = flowState?.status === 'running'
 
@@ -233,7 +228,6 @@ function Studio() {
           onInstance={setPickedInstance}
           tailSeq={tailed?.tailSeq}
           boot={tailed?.boot}
-          tick={tick}
         />
       )}
     </div>

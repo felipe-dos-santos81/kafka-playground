@@ -162,8 +162,8 @@ func (p *producer) next(key string, body []byte) (*kgo.Record, error) {
 		if key, err = render(p.spec.Key, d); err != nil {
 			return nil, fmt.Errorf("key template: %w", err)
 		}
-		if !json.Valid([]byte(v)) {
-			return nil, fmt.Errorf("value template rendered %.60q, which is not JSON", v)
+		if err := jsonOut(v); err != nil {
+			return nil, fmt.Errorf("value template %w", err)
 		}
 		body = []byte(v)
 	} else if !json.Valid(body) {
@@ -400,13 +400,12 @@ func runNode() {
 		mux.HandleFunc("POST /send", func(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusConflict, "only producer nodes send")
 		})
-		c := &consumer{spec: spec, tail: t, counts: counts, post: postJSON, produce: produce}
 		if spec.Transform != "" {
 			if tr, err = newTransform(spec.Transform); err != nil {
 				log.Fatal("transform: ", err) // Validate compiled the same source on deploy
 			}
-			c.transform = tr
 		}
+		c := &consumer{spec: spec, tail: t, counts: counts, transform: tr, post: postJSON, produce: produce}
 		consuming = make(chan struct{})
 		go func() {
 			c.consume(ctx, cl)

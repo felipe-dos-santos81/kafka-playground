@@ -361,8 +361,17 @@ func checkTemplate(src string, mustBeJSON bool) error {
 	if err != nil {
 		return err
 	}
-	if mustBeJSON && !json.Valid([]byte(out)) {
-		return fmt.Errorf("renders to invalid JSON: %s", out)
+	if mustBeJSON {
+		return jsonOut(out)
 	}
 	return nil
+}
+
+// jsonOut is nil when out, a rendered value template, is JSON. Deploy checks a
+// template with Seq 1; a producer checks every record it renders.
+func jsonOut(out string) error {
+	if json.Valid([]byte(out)) {
+		return nil
+	}
+	return fmt.Errorf("renders to invalid JSON: %.60q", out)
 }

@@ -87,7 +87,7 @@ func TestProducerSend(t *testing.T) {
 	bad := &producer{spec: NodeSpec{Topic: "orders", Value: `{{.Seq}}x`}, tail: &tail{}, counts: &counters{}, produce: p.produce}
 	w := httptest.NewRecorder()
 	bad.send(w, httptest.NewRequest(http.MethodPost, "/send", nil))
-	if s := bad.counts.read(); w.Code != http.StatusInternalServerError || s.Errors != 1 || !strings.Contains(s.LastError, `rendered "1x"`) || len(sent) != 3 {
+	if s := bad.counts.read(); w.Code != http.StatusInternalServerError || s.Errors != 1 || !strings.Contains(s.LastError, `invalid JSON: "1x"`) || len(sent) != 3 {
 		t.Fatalf("a template rendering 1x: want 500 and one error counted, got %d %s and %+v", w.Code, w.Body, s)
 	}
 	if s := p.counts.stats("b", p.tail.last()); s.Total != 3 || s.Errors != 1 || s.LastError != "broker down" || s.TailSeq != 3 || s.Boot != "b" {
@@ -146,7 +146,7 @@ func TestProducerTimer(t *testing.T) {
 	for deadline := time.Now().Add(2 * time.Second); bad.counts.errors.Load() < 2 && time.Now().Before(deadline); {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if s := bad.counts.read(); s.Errors < 2 || !strings.Contains(s.LastError, "not JSON") || bad.tail.last() != 0 {
+	if s := bad.counts.read(); s.Errors < 2 || !strings.Contains(s.LastError, "invalid JSON") || bad.tail.last() != 0 {
 		t.Fatalf("want the timer's errors counted and nothing produced, got %+v", s)
 	}
 }

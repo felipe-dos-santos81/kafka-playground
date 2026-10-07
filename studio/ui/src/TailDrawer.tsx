@@ -10,21 +10,21 @@ type Props = {
   onInstance: (i: number) => void
   tailSeq?: number
   boot?: string
-  tick: number // counts the flow's ticks
 }
 
 // The selected node's last records. It fetches only when the node's tailSeq (from
 // the SSE tick) moves past what it has, one fetch at a time (when one ends, it
 // keeps fetching until it has caught up with the newest tailSeq; a failed one is
-// retried on the next tick), and starts over when boot changes: the container restarted and numbers
+// retried a second later), and starts over when boot changes: the container restarted and numbers
 // its records from 1 again. It follows the newest record only while scrolled to
 // the bottom. A producer's drawer also has Send, which renders the node's own key
 // and value templates. A consumer with instances tails one of them, picked in the
 // header.
-export default function TailDrawer({ flowId, node, instance, instances, onInstance, tailSeq = 0, boot = '', tick }: Props) {
+export default function TailDrawer({ flowId, node, instance, instances, onInstance, tailSeq = 0, boot = '' }: Props) {
   const [entries, setEntries] = useState<TailEntry[]>([])
   const [error, setError] = useState('')
   const [sent, setSent] = useState('')
+  const [retry, setRetry] = useState(0) // bumped a second after a failed fetch, to fetch again
   const since = useRef(0)
   const latest = useRef(tailSeq) // the newest tailSeq a tick brought, read by a fetch in flight
   const fetching = useRef(false)
@@ -48,7 +48,7 @@ export default function TailDrawer({ flowId, node, instance, instances, onInstan
 
   // One fetch loop at a time, until it has caught up with the newest tailSeq; it
   // stops early when the container restarts (the next tick starts it again from 0)
-  // or a fetch fails (the next tick retries).
+  // or a fetch fails (retried a second later).
   useEffect(() => {
     if (fetching.current || tailSeq <= since.current) return
     fetching.current = true
@@ -63,13 +63,15 @@ export default function TailDrawer({ flowId, node, instance, instances, onInstan
           setEntries((es) => [...es, ...got].slice(-100))
         }
       } catch (e) {
-        if (gen === generation.current) setError(describe(e))
+        if (gen !== generation.current) return
+        setError(describe(e))
+        setTimeout(() => setRetry((n) => n + 1), 1000)
       } finally {
         fetching.current = false
       }
     }
     catchUp()
-  }, [flowId, node.id, instance, tailSeq, tick])
+  }, [flowId, node.id, instance, tailSeq, retry])
 
   // Follow the newest record, unless scrolled up to read an older one.
   useEffect(() => {

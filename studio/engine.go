@@ -248,8 +248,9 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 	if err != nil || st.Status != "running" {
 		return st, err
 	}
-	// Every running container's /stats at once while the broker calls below run,
-	// all under one budget; each goroutine writes only its own container's state.
+	// Every running container's /stats and the broker's end offsets at once, while
+	// this goroutine asks for lag, all under one budget; each goroutine writes only
+	// its own container's state (or ends), read after wg.Wait.
 	bctx, cancel := context.WithTimeout(ctx, snapshotBudget)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -284,15 +285,17 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 	// these list every group or topic on the broker, hence the guards.
 	var lags kadm.DescribedGroupLags
 	var ends kadm.ListedOffsets
+	if len(names) > 0 {
+		wg.Go(func() {
+			// Only a complete answer counts: a partial map (a shard timed out) would
+			// read as missing topics and too few partitions.
+			if got, err := e.adm.ListEndOffsets(bctx, names...); err == nil {
+				ends = got
+			}
+		})
+	}
 	if len(groups) > 0 {
 		lags, _ = e.adm.Lag(bctx, groups...)
-	}
-	if len(names) > 0 {
-		// Only a complete answer counts: a partial map (a shard timed out) would
-		// read as missing topics and too few partitions.
-		if got, err := e.adm.ListEndOffsets(bctx, names...); err == nil {
-			ends = got
-		}
 	}
 	wg.Wait()
 	for node, ns := range nodes {
