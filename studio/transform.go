@@ -14,13 +14,16 @@ import (
 	"github.com/expr-lang/expr/vm"
 )
 
-// transformEnv declares msg as a map so that field access compiles; at run time
-// msg is whatever the value decodes to (an object, an array, a string, a number).
-var transformEnv = map[string]any{"msg": map[string]any{}}
+// transformEnv declares msg as any, so field access, indexing and arithmetic all
+// compile; at run time msg is whatever the value decodes to (an object, an
+// array, a string, a number).
+type transformEnv struct {
+	Msg any `expr:"msg"`
+}
 
 // compileTransform compiles src for runTransform.
 func compileTransform(src string) (*vm.Program, error) {
-	p, err := expr.Compile(src, expr.Env(transformEnv))
+	p, err := expr.Compile(src, expr.Env(transformEnv{}))
 	if err != nil {
 		return nil, firstLine(err)
 	}
@@ -34,7 +37,7 @@ func runTransform(p *vm.Program, value []byte) (out []byte, keep bool, err error
 	if err := json.Unmarshal(value, &msg); err != nil {
 		return nil, false, errInvalidJSON
 	}
-	res, err := expr.Run(p, map[string]any{"msg": msg})
+	res, err := expr.Run(p, transformEnv{Msg: msg})
 	if err != nil {
 		return nil, false, firstLine(err)
 	}

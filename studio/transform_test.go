@@ -28,6 +28,8 @@ func TestRunTransform(t *testing.T) {
 		{`msg.qty > 0 ? msg : nil`, `{"qty":0}`, "", ""},
 		{`msg.qty > 0 ? msg : nil`, `{"qty":5}`, `{"qty":5}`, ""},
 		{`msg`, `[1,2]`, `[1,2]`, ""},
+		{`msg * 2`, `3`, `6`, ""},
+		{`msg[0]`, `[7,8]`, `7`, ""},
 		{`msg`, `{`, "", "not valid JSON"},
 		{`msg.a / 0`, `{"a":1}`, "", "result:"},
 	} {
