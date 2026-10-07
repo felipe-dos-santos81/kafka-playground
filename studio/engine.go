@@ -338,7 +338,8 @@ func nodeStatsOf(ctx context.Context, flow, node string, instance int) (nodeStat
 // when the count is not the flow's; a topic with a failed partition is left out),
 // for each consumer node its group's lag on its
 // topic and the partitions whose group member is this node's client (or, for a
-// node with instances, each instance's client). Whatever the broker did not
+// node whose snapshot state lists instances, each instance's client: the
+// containers that run, not what the file now says). Whatever the broker did not
 // answer is left out.
 func applyKafka(st *FlowState, flow string, specs []NodeSpec, topics map[string]TopicData, lags kadm.DescribedGroupLags, ends kadm.ListedOffsets) {
 	if ends != nil {
@@ -365,31 +366,43 @@ func applyKafka(st *FlowState, flow string, specs []NodeSpec, topics map[string]
 			st.Nodes[node] = ns
 		}
 	}
+	done := map[string]bool{} // consumer nodes handled: several specs share one
 	for _, s := range specs {
 		gl, ok := lags[s.Group]
-		if s.Type != "consumer" || !ok || gl.Error() != nil {
+		if s.Type != "consumer" || done[s.Node] || !ok || gl.Error() != nil {
 			continue
 		}
+		done[s.Node] = true
 		ns := st.Nodes[s.Node]
+		// What runs, not the file, says whose clients to look for.
+		client := map[string]int{} // client id → instance
+		if len(ns.Instances) == 0 {
+			client[containerName(flow, s.Node, 0)] = 0
+		}
+		for _, in := range ns.Instances {
+			client[containerName(flow, s.Node, in.Instance)] = in.Instance
+		}
 		var lag int64
-		var held []int32
+		held := map[int][]int32{} // instance → partitions its client holds
 		for _, ml := range gl.Lag[s.Topic] {
 			if ml.Err == nil && ml.Lag > 0 {
 				lag += ml.Lag
 			}
-			if ml.Member != nil && ml.Member.ClientID == containerName(flow, s.Node, s.Instance) {
-				held = append(held, ml.Partition)
+			if ml.Member != nil {
+				if i, ok := client[ml.Member.ClientID]; ok {
+					held[i] = append(held[i], ml.Partition)
+				}
 			}
 		}
 		ns.Lag = &lag
-		if held != nil {
-			slices.Sort(held)
-			assigned := map[string][]int32{s.Topic: held}
-			if s.Instance == 0 {
+		for i, ps := range held {
+			slices.Sort(ps)
+			assigned := map[string][]int32{s.Topic: ps}
+			if len(ns.Instances) == 0 {
 				ns.Assigned = assigned
 			}
 			for k := range ns.Instances {
-				if ns.Instances[k].Instance == s.Instance {
+				if ns.Instances[k].Instance == i {
 					ns.Instances[k].Assigned = assigned
 				}
 			}

@@ -140,6 +140,41 @@ func TestApplyKafkaInstances(t *testing.T) {
 	}
 }
 
+// The containers that run decide who holds what, not the file edited since the deploy.
+func TestApplyKafkaFollowsWhatRuns(t *testing.T) {
+	lags := func(ids ...string) kadm.DescribedGroupLags {
+		m := map[int32]kadm.GroupMemberLag{}
+		for p, id := range ids {
+			m[int32(p)] = kadm.GroupMemberLag{Topic: "orders", Partition: int32(p), Member: &kadm.DescribedGroupMember{ClientID: id}}
+		}
+		return kadm.DescribedGroupLags{"g": {Group: "g", Lag: kadm.GroupLag{"orders": m}}}
+	}
+	spec := func(i int) NodeSpec {
+		return NodeSpec{Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "g", Instance: i}
+	}
+
+	// Deployed with one container, file edited to two instances since.
+	st := FlowState{Status: "running", Nodes: map[string]NodeState{"consumer-1": {State: "running"}}}
+	applyKafka(&st, "f", []NodeSpec{spec(1), spec(2)}, nil, lags(containerName("f", "consumer-1", 0)), nil)
+	if a := st.Nodes["consumer-1"].Assigned; !reflect.DeepEqual(a, map[string][]int32{"orders": {0}}) {
+		t.Fatalf("single container, file says 2: want [0] on the node, got %v", a)
+	}
+
+	// Deployed with three instances, file edited to one since.
+	st = FlowState{Status: "running", Nodes: map[string]NodeState{"consumer-1": {State: "running", Instances: []NodeState{
+		{Instance: 1, State: "running"}, {Instance: 2, State: "running"}, {Instance: 3, State: "running"}}}}}
+	applyKafka(&st, "f", []NodeSpec{spec(0)}, nil, lags(containerName("f", "consumer-1", 2), containerName("f", "consumer-1", 3), containerName("f", "consumer-1", 1)), nil)
+	c := st.Nodes["consumer-1"]
+	if c.Assigned != nil {
+		t.Fatalf("instances: want no node-level assignment, got %v", c.Assigned)
+	}
+	for i, want := range []int32{2, 0, 1} {
+		if a := c.Instances[i].Assigned; !reflect.DeepEqual(a, map[string][]int32{"orders": {want}}) {
+			t.Fatalf("instance %d: want [%d], got %v", i+1, want, a)
+		}
+	}
+}
+
 func TestApplyKafka(t *testing.T) {
 	st := FlowState{Status: "running", Nodes: map[string]NodeState{
 		"producer-1": {State: "running", Total: 9},
