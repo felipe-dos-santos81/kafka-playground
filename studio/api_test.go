@@ -179,3 +179,35 @@ func TestUnroutedAPIAnswersJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestCrossOriginWritesRefused(t *testing.T) {
+	ts := newTestServer(t)
+	for _, c := range []struct {
+		method, site string
+		want         int
+	}{
+		{"POST", "cross-site", 403},
+		{"POST", "same-site", 403},
+		{"POST", "same-origin", 201},
+		{"POST", "", 201}, // curl and node containers send no Sec-Fetch-Site
+		{"GET", "cross-site", 200},
+	} {
+		req, err := http.NewRequest(c.method, ts.URL+"/api/flows", strings.NewReader(`{"name":"x"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.site != "" {
+			req.Header.Set("Sec-Fetch-Site", c.site)
+		}
+		res, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var e struct{ Error string }
+		json.NewDecoder(res.Body).Decode(&e)
+		res.Body.Close()
+		if res.StatusCode != c.want || (c.want == 403 && e.Error == "") {
+			t.Errorf("%s with Sec-Fetch-Site %q: want %d, got %d %+v", c.method, c.site, c.want, res.StatusCode, e)
+		}
+	}
+}

@@ -25,7 +25,7 @@ type flowSummary struct {
 	Status string `json:"status"`
 }
 
-func newMux(s *server, ui fs.FS) *http.ServeMux {
+func newMux(s *server, ui fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/flows", s.listFlows)
@@ -51,7 +51,14 @@ func newMux(s *server, ui fs.FS) *http.ServeMux {
 	for _, path := range []string{"GET /{$}", "GET /index.html", "GET /assets/"} {
 		mux.Handle(path, files)
 	}
-	return mux
+	// A page on any other site could otherwise POST to 127.0.0.1:8082, and from
+	// M2 on the API starts containers through the Docker socket. Requests without
+	// browser headers (curl, node containers) pass.
+	csrf := http.NewCrossOriginProtection()
+	csrf.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fail(w, http.StatusForbidden, "cross-origin write refused")
+	}))
+	return csrf.Handler(mux)
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
