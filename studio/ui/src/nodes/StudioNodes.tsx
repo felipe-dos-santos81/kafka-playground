@@ -15,23 +15,33 @@ function runtimeLine(type: NodeType, rt: NodeRuntime): string {
   const parts = [`${rt.total ?? 0} msgs`, `${(rt.rate ?? 0).toFixed(1)}/s`]
   if (rt.errors) parts.push(`${rt.errors} errors`)
   if (rt.lag !== undefined) parts.push(`lag ${rt.lag}`)
-  const held = Object.values(rt.assigned ?? {}).flat()
-  if (held.length > 0) parts.push(`p${held.join(',')}`)
+  const held = (a?: Record<string, number[]>) => Object.values(a ?? {}).flat()
+  if (rt.instances) {
+    for (const i of rt.instances) {
+      if (held(i.assigned).length > 0) parts.push(`#${i.instance} p${held(i.assigned).join(',')}`)
+    }
+  } else if (held(rt.assigned).length > 0) {
+    parts.push(`p${held(rt.assigned).join(',')}`)
+  }
   return parts.join(' · ')
 }
 
-// The frame every node shares: type as title (plus its state while deployed), a
-// one-line summary, a line of live numbers while deployed (the last error as its
-// tooltip), and the input/output handles the allowed-edge table gives its type.
+// The frame every node shares: type as title (plus its state while deployed, or
+// how many of its instances run), a one-line summary, a line of live numbers while
+// deployed (the last error as its tooltip), and the input/output handles the
+// allowed-edge table gives its type.
 function Shell({ id, type, selected, children }: { id: string; type: NodeType; selected?: boolean; children: ReactNode }) {
   const rt = useContext(RuntimeContext)[id]
+  const up = rt?.instances?.filter((i) => i.state === 'running').length ?? 0
+  const badge = rt?.instances ? `${up}/${rt.instances.length} running` : rt?.state
+  const badgeClass = rt?.instances ? (up === rt.instances.length ? 'running' : 'exited') : rt?.state
   return (
     <div className={`node ${type}${selected ? ' selected' : ''}`} title={rt?.lastError || undefined}>
       <div className="node-title">
-        {type} {rt && <span className={`node-state ${rt.state}`}>{rt.state}</span>}
+        {type} {rt && <span className={`node-state ${badgeClass}`}>{badge}</span>}
       </div>
       <div className="node-summary">{children}</div>
-      {rt && (type === 'topic' || rt.state === 'running') && <div className="node-runtime">{runtimeLine(type, rt)}</div>}
+      {rt && (type === 'topic' || rt.state === 'running' || up > 0) && <div className="node-runtime">{runtimeLine(type, rt)}</div>}
       {hasInput(type) && <Handle type="target" position={Position.Left} />}
       {hasOutput(type) && <Handle type="source" position={Position.Right} />}
     </div>

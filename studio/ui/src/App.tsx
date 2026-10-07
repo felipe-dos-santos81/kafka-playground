@@ -30,11 +30,15 @@ function Studio() {
   const [error, setError] = useState('')
   const [flowState, setFlowState] = useState<FlowState | null>(null)
   const [deployedSnapshot, setDeployedSnapshot] = useState('') // savedSnapshot at the last Deploy from this page
+  const [pickedInstance, setPickedInstance] = useState(0) // the tail drawer's instance, for a consumer with instances
   const dirty = current !== null && snapshot(current.name, nodes, edges) !== savedSnapshot
 
   const refresh = useCallback(() => api.list().then(setFlows).catch((e) => setError(describe(e))), [])
+  // Re-read every 5 s, so flows deployed or stopped elsewhere (another tab, curl) show their state.
   useEffect(() => {
     refresh()
+    const t = setInterval(refresh, 5000)
+    return () => clearInterval(t)
   }, [refresh])
 
   // The open flow's live snapshot: one `tick` a second over SSE (spec 3.6).
@@ -135,6 +139,12 @@ function Studio() {
   const picked = nodes.filter((n) => n.selected)
   const node = picked.length === 1 ? picked[0] : null
 
+  // The tail follows one container: the node's only one, or the picked instance (else the first).
+  const rt = node ? flowState?.nodes[node.id] : undefined
+  const instances = rt?.instances?.map((i) => i.instance ?? 0) ?? []
+  const instance = instances.includes(pickedInstance) ? pickedInstance : (instances[0] ?? 0)
+  const tailed = rt?.instances?.find((i) => i.instance === instance) ?? rt
+
   return (
     <div className="studio">
       <header className="topbar">
@@ -187,10 +197,19 @@ function Studio() {
         )}
       </main>
       <aside className="inspector">
-        <Inspector node={node} onChange={updateData} />
+        <Inspector node={node} flowId={current?.id} onChange={updateData} />
       </aside>
       {current && running && node && (node.type === 'producer' || node.type === 'consumer') && (
-        <TailDrawer key={`${current.id}/${node.id}`} flowId={current.id} node={node} tailSeq={flowState?.nodes[node.id]?.tailSeq} boot={flowState?.nodes[node.id]?.boot} />
+        <TailDrawer
+          key={`${current.id}/${node.id}/${instance}`}
+          flowId={current.id}
+          node={node}
+          instance={instance}
+          instances={instances}
+          onInstance={setPickedInstance}
+          tailSeq={tailed?.tailSeq}
+          boot={tailed?.boot}
+        />
       )}
     </div>
   )

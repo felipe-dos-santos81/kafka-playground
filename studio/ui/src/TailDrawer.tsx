@@ -2,13 +2,22 @@ import { useEffect, useRef, useState } from 'react'
 import { api, describe, type TailEntry } from './flow/api'
 import type { StudioNode } from './nodes/types'
 
-type Props = { flowId: string; node: StudioNode; tailSeq?: number; boot?: string }
+type Props = {
+  flowId: string
+  node: StudioNode
+  instance: number // 0: the node's only container; else one of instances
+  instances: number[] // a consumer's instance numbers; empty when it runs one container
+  onInstance: (i: number) => void
+  tailSeq?: number
+  boot?: string
+}
 
 // The selected node's last records. It fetches only when the node's tailSeq (from
 // the SSE tick) moves past what it has, and starts over when boot changes: the
 // container restarted and numbers its records from 1 again. A producer's drawer
-// also has Send, which renders the node's own key and value templates.
-export default function TailDrawer({ flowId, node, tailSeq = 0, boot = '' }: Props) {
+// also has Send, which renders the node's own key and value templates. A consumer
+// with instances tails one of them, picked in the header.
+export default function TailDrawer({ flowId, node, instance, instances, onInstance, tailSeq = 0, boot = '' }: Props) {
   const [entries, setEntries] = useState<TailEntry[]>([])
   const [error, setError] = useState('')
   const [sent, setSent] = useState('')
@@ -27,7 +36,7 @@ export default function TailDrawer({ flowId, node, tailSeq = 0, boot = '' }: Pro
   useEffect(() => {
     if (tailSeq <= since.current) return
     let live = true
-    api.tail(flowId, node.id, since.current).then(
+    api.tail(flowId, node.id, since.current, instance).then(
       (got) => {
         if (!live) return
         setError('')
@@ -42,7 +51,7 @@ export default function TailDrawer({ flowId, node, tailSeq = 0, boot = '' }: Pro
     return () => {
       live = false
     }
-  }, [flowId, node.id, boot, tailSeq])
+  }, [flowId, node.id, instance, boot, tailSeq])
 
   // Keep the newest record in view.
   useEffect(() => {
@@ -59,6 +68,15 @@ export default function TailDrawer({ flowId, node, tailSeq = 0, boot = '' }: Pro
     <section className="drawer" ref={box}>
       <header>
         <strong>{node.id}</strong> tail
+        {instances.length > 0 && (
+          <select value={instance} onChange={(e) => onInstance(Number(e.target.value))}>
+            {instances.map((i) => (
+              <option key={i} value={i}>
+                instance {i}
+              </option>
+            ))}
+          </select>
+        )}
         {node.type === 'producer' && <button onClick={send}>Send</button>}
         {sent && <span className="hint">{sent}</span>}
         {error && <span className="error">{error}</span>}

@@ -2,8 +2,11 @@ import { FlowSchema, type FlowFile } from './schema'
 
 export type FlowSummary = { id: string; name: string; status: string }
 // One node of the live snapshot (Go: NodeState in engine.go). Absent fields are zero,
-// except lag, which is absent when the broker did not answer.
+// except lag, which is absent when the broker did not answer. A consumer with
+// instances lists one entry per container in instances; its total, rate and errors
+// are their sums.
 export type NodeRuntime = {
+  instance?: number
   state: string
   total?: number
   rate?: number
@@ -16,6 +19,7 @@ export type NodeRuntime = {
   partitions?: number
   endOffset?: number
   warning?: string
+  instances?: NodeRuntime[]
 }
 
 // The snapshot GET /api/flows/{id}/state answers and every SSE tick carries.
@@ -71,8 +75,9 @@ export const api = {
   // An empty body makes the producer render its own key and value templates.
   send: (id: string, node: string) =>
     call<{ partition: number; offset: number }>(`/api/flows/${id}/nodes/${node}/send`, { method: 'POST' }),
-  tail: (id: string, node: string, since: number) =>
-    call<TailEntry[]>(`/api/flows/${id}/nodes/${node}/tail?since=${since}`),
+  // instance picks one of a consumer's instances; 0 is the node's only container.
+  tail: (id: string, node: string, since: number, instance = 0) =>
+    call<TailEntry[]>(`/api/flows/${id}/nodes/${node}/tail?since=${since}${instance ? `&instance=${instance}` : ''}`),
 }
 
 export function describe(e: unknown): string {
