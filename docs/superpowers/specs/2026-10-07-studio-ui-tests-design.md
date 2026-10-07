@@ -129,7 +129,7 @@ is removed afterwards (§6).
     `docker kill -s STOP` the consumer's container: within 3 s its runtime line
     shows `stats:` while the producer's keeps its numbers. `docker kill -s
     CONT`: the warning goes.
-11. **Tail scroll.** A timer at 50 ms fills the drawer. Scrolled to the top, the
+11. **Tail scroll.** A timer at 100 ms fills the drawer. Scrolled to the top, the
     first visible record stays the same while new ones arrive; scrolled back to
     the bottom, the newest record comes into view.
 
@@ -188,3 +188,4 @@ is removed afterwards (§6).
   once after 3 s (a consumer may still be leaving).
 - `e2e/tsconfig.json` uses Node's types from `@types/node`, which `npm ci`
   already installs (vite brings it in); no new dependency.
+- The tail-scroll test's timer runs at 100 ms, not 50: the drawer keeps 100 records, and at 50 ms it passes that cap during the check, so its first record would change while scrolled up.
