@@ -201,7 +201,8 @@ services:
     environment: {<<: *orders-1-env, ROLE: dlq}
 
   # Prometheus: scrapes every topic owner, found by its labels through the
-  # Docker socket (no target list): http://localhost:9090
+  # Docker socket (no target list), and evaluates prometheus/rules.yml:
+  # http://localhost:9090 (alerts at /alerts)
   prometheus:
     image: prom/prometheus:v3.15.0
     group_add: ["0"]    # Docker Desktop shows the socket as root:root 0660 inside containers

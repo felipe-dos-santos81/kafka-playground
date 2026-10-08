@@ -1,0 +1,18 @@
+# Alerts on the topic owners' series (spec §4.2). The role is in the topic's
+# name (__retry, __dlq), so the rules select by topic. No Alertmanager: firing
+# alerts show at http://localhost:9090/alerts and on the Grafana dashboard.
+# verify-topics greps the alert names.
+groups:
+  - name: topic-owners
+    rules:
+      - alert: TopicConsumerLagHigh # a consumer of a main topic falls behind
+        expr: sum by (consumergroup, topic) (kafka_consumergroup_lag{topic!~".+__(retry|dlq)"}) > 100
+        for: 2m
+      - alert: TopicDLQGrowing # any newly parked record is news in a playground
+        expr: sum by (topic) (increase(kafka_topic_partition_current_offset{topic=~".+__dlq"}[10m])) > 0
+      - alert: TopicRetryWaiting # the worker is down, or a Studio retry loop stopped
+        expr: sum by (consumergroup, topic) (kafka_consumergroup_lag{topic=~".+__retry"}) > 0
+        for: 5m
+      - alert: TopicOwnerUnhealthy # a container is down, or its topic drifted beyond repair
+        expr: up{job="topic-owners"} == 0 or topic_owner_reconciled == 0
+        for: 1m
