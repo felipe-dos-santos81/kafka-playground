@@ -156,6 +156,12 @@ function Studio() {
   // React Flow tracks selection on the nodes; the inspector edits exactly one.
   const picked = nodes.filter((n) => n.selected)
   const node = picked.length === 1 ? picked[0] : null
+  const topics = node
+    ? edges.flatMap((e) => {
+        const t = e.source === node.id ? nodes.find((n) => n.id === e.target) : undefined
+        return t?.type === 'topic' ? [{ id: t.id, name: t.data.name || t.id }] : []
+      })
+    : []
 
   // The tail follows one container: the node's only one, or the picked instance (else the first).
   const rt = node ? flowState?.nodes[node.id] : undefined
@@ -216,7 +222,7 @@ function Studio() {
         )}
       </main>
       <aside className="inspector">
-        <Inspector node={node} flowId={current?.id} running={running} dirty={dirty} onChange={updateData} />
+        <Inspector node={node} flowId={current?.id} running={running} dirty={dirty} topics={topics} onChange={updateData} />
       </aside>
       {current && running && node && (node.type === 'producer' || node.type === 'consumer') && (
         <TailDrawer

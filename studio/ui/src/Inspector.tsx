@@ -1,5 +1,6 @@
 import { DEFAULT_INTERVAL_MS } from './flow/schema'
 import RewindGroup from './RewindGroup'
+import RouterRules from './RouterRules'
 import type { StudioNode } from './nodes/types'
 
 type Props = {
@@ -7,10 +8,11 @@ type Props = {
   flowId?: string // the open flow, for the producer's webhook line and a consumer's rewind
   running: boolean // the open flow runs: a consumer's group cannot be rewound
   dirty: boolean // unsaved edits: a rewind uses the saved group and topic
+  topics: { id: string; name: string }[] // the topics the node has edges to, for a router's rules
   onChange: (id: string, patch: Record<string, unknown>) => void
 }
 
-export default function Inspector({ node, flowId, running, dirty, onChange }: Props) {
+export default function Inspector({ node, flowId, running, dirty, topics, onChange }: Props) {
   if (!node) return <p className="hint">Select a node to edit it.</p>
   const set = (patch: Record<string, unknown>) => onChange(node.id, patch)
 
@@ -127,7 +129,7 @@ export default function Inspector({ node, flowId, running, dirty, onChange }: Pr
               <p className="hint">Each value is POSTed as JSON within 5 s; any answer but 2xx counts as an error.</p>
             </>
           )}
-          <p className="hint">Wire it to a topic to forward every record there with the same key, or through a Transform to reshape or drop records first.</p>
+          <p className="hint">Wire it to a topic to forward every record there with the same key, through a Transform to reshape or drop records first, or through a Router to pick each record's topic.</p>
           {flowId && (
             // Keyed: a result belongs to one node of one flow.
             <RewindGroup key={`${flowId}/${node.id}`} flowId={flowId} node={node.id} running={running} dirty={dirty} />
@@ -141,6 +143,7 @@ export default function Inspector({ node, flowId, running, dirty, onChange }: Pr
           <p className="hint">An expr-lang expression over msg, the record's value decoded from JSON, e.g. {'{id: msg.id, total: msg.qty * msg.price}'}. Its result is forwarded with the same key; nil drops the record. Deploy checks that it compiles.</p>
         </>
       )}
+      {node.type === 'router' && <RouterRules data={node.data} topics={topics} set={set} />}
     </div>
   )
 }

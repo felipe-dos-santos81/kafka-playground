@@ -1,15 +1,16 @@
 import type { XYPosition } from '@xyflow/react'
 import { z } from 'zod'
 
-export const NODE_TYPES = ['producer', 'topic', 'consumer', 'transform'] as const
+export const NODE_TYPES = ['producer', 'topic', 'consumer', 'transform', 'router'] as const
 export type NodeType = (typeof NODE_TYPES)[number]
 
 // Mirrors allowedEdges in ../../flow.go; the backend is the authority.
 const ALLOWED: Record<NodeType, readonly NodeType[]> = {
   producer: ['topic'],
   topic: ['consumer'],
-  consumer: ['topic', 'transform'],
-  transform: ['topic'],
+  consumer: ['topic', 'transform', 'router'],
+  transform: ['topic', 'router'],
+  router: ['topic'],
 }
 
 export function canConnect(source: string | undefined, target: string | undefined): boolean {
@@ -51,6 +52,8 @@ export function defaultData(type: NodeType): Record<string, unknown> {
       return { group: '', auto_offset_reset: 'earliest', sink: { kind: 'log' } }
     case 'transform':
       return { expr: 'msg' }
+    case 'router':
+      return { rules: [], default: '' }
   }
 }
 

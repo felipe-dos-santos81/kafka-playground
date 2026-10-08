@@ -1,8 +1,8 @@
 import { createContext, useContext, type ReactNode } from 'react'
-import { Handle, Position, type NodeProps } from '@xyflow/react'
+import { Handle, Position, useNodesData, type NodeProps } from '@xyflow/react'
 import { containersOf, type NodeRuntime } from '../flow/api'
 import { DEFAULT_INTERVAL_MS, hasInput, hasOutput, type NodeType } from '../flow/schema'
-import type { ConsumerNode, ProducerNode, TopicNode, TransformNode } from './types'
+import type { ConsumerNode, ProducerNode, RouterNode, TopicNode, TransformNode } from './types'
 
 // The live snapshot per node id while the flow runs; empty while it is stopped.
 export const RuntimeContext = createContext<Record<string, NodeRuntime>>({})
@@ -18,6 +18,7 @@ function runtimeLine(type: NodeType, rt: NodeRuntime): string {
   const answered = containersOf(rt).some((c) => c.boot)
   const parts = answered ? [`${rt.total ?? 0} msgs`, `${(rt.rate ?? 0).toFixed(1)}/s`] : []
   if (rt.errors) parts.push(`${rt.errors} errors`)
+  if (rt.unmatched) parts.push(`${rt.unmatched} unmatched`)
   if (rt.lag !== undefined) parts.push(`lag ${rt.lag}`)
   for (const c of containersOf(rt)) {
     const held = Object.values(c.assigned ?? {}).flat() // partitions this container's client holds
@@ -76,4 +77,13 @@ export const nodeTypes = {
       {data.expr || '(no expression)'}
     </Shell>
   ),
+  router: ({ id, data, selected }: NodeProps<RouterNode>) => {
+    const fallback = useNodesData<TopicNode>(data.default) // follows the default topic's renames
+    const n = data.rules.length
+    return (
+      <Shell id={id} type="router" selected={selected}>
+        {n} rule{n === 1 ? '' : 's'} · {data.default ? `default ${fallback?.data.name || data.default}` : 'no default'}
+      </Shell>
+    )
+  },
 }

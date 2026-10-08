@@ -30,6 +30,7 @@ html, body, #root { margin: 0; height: 100%; }
 .topic { border-color: #ef6c00; }
 .consumer { border-color: #1565c0; }
 .transform { border-color: #6a1b9a; }
+.router { border-color: #00838f; }
 .topbar .status { color: #555; }
 .node-state { font-weight: 400; font-size: 11px; padding: 0 4px; border-radius: 3px; background: #eee; text-transform: none; }
 .node-state.running { background: #c8e6c9; }
@@ -46,3 +47,5 @@ html, body, #root { margin: 0; height: 100%; }
 .topbar .paused { color: #8a6d00; }
 .canvas.paused .node-runtime { opacity: 0.4; }
 .inspector .buttons { display: flex; gap: 6px; }
+.inspector fieldset.rule { margin: 8px 0; padding: 4px 8px 8px; border: 1px solid #ddd; border-radius: 4px; }
+.inspector fieldset.rule .buttons { margin-top: 6px; }

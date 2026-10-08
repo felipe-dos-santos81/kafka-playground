@@ -2,7 +2,7 @@ import type { NodeType } from './flow/schema'
 
 export const DRAG_TYPE = 'application/x-studio-node'
 
-const ITEMS: NodeType[] = ['producer', 'topic', 'consumer', 'transform']
+const ITEMS: NodeType[] = ['producer', 'topic', 'consumer', 'transform', 'router']
 
 export default function Palette() {
   return (
@@ -21,7 +21,7 @@ export default function Palette() {
           {type}
         </div>
       ))}
-      <p className="hint">Drag onto the canvas, then wire Producer → Topic → Consumer, and on to a Topic, directly or through a Transform. Backspace deletes.</p>
+      <p className="hint">Drag onto the canvas, then wire Producer → Topic → Consumer, and on to a Topic, directly or through a Transform, a Router, or both. Backspace deletes.</p>
     </section>
   )
 }

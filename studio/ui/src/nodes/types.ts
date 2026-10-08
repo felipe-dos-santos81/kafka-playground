@@ -10,9 +10,12 @@ export type ConsumerData = {
   sink: { kind: 'log' | 'http'; url?: string }
 }
 export type TransformData = { expr: string }
+export type Rule = { when: string; to: string } // to: a topic node's id
+export type RouterData = { rules: Rule[]; default: string } // default: a topic node's id, '' for none
 
 export type ProducerNode = Node<ProducerData, 'producer'>
 export type TopicNode = Node<TopicData, 'topic'>
 export type ConsumerNode = Node<ConsumerData, 'consumer'>
 export type TransformNode = Node<TransformData, 'transform'>
-export type StudioNode = ProducerNode | TopicNode | ConsumerNode | TransformNode
+export type RouterNode = Node<RouterData, 'router'>
+export type StudioNode = ProducerNode | TopicNode | ConsumerNode | TransformNode | RouterNode
