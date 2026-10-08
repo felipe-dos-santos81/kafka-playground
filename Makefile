@@ -303,7 +303,6 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 			echo "$$dlq" | grep '"key":"d"' | grep -qF 'retry: bad header studio-backoff-ms \"soon\"' && break; \
 		[ "$$i" = 30 ] && { echo "TOPICS FAILED: want a back on owner-verify-1 with its studio-origin, b and d (bad header) on the DLQ: main $$main dlq $$dlq"; exit 1; }; sleep 1; \
 	done; \
-	echo "$$main$$dlq" | grep -q '"key":"c"' && { echo "TOPICS FAILED: c (studio-group set) left owner-verify-1__retry: $$main $$dlq"; exit 1; }; \
 	for i in $$(seq 30); do \
 		promis 'topic_owner_redeliveries_total{topic="owner-verify-1__retry"}' 1 && \
 			promis 'sum(topic_owner_dead_lettered_total{topic="owner-verify-1__retry"})' 2 && \
@@ -313,6 +312,8 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 			promis 'sum(kafka_consumergroup_lag{consumergroup="owner-verify-1__redelivery"})' 0 && break; \
 		[ "$$i" = 30 ] && { echo "TOPICS FAILED: want 1 redelivered, 2 dead-lettered, 1 skipped, 2 parked, an oldest time and no lag: $$(curl -sS $(PROMETHEUS_URL)/api/v1/query --data-urlencode 'query={__name__=~"topic_owner_(redeliveries|dead_lettered|skipped)_total|topic_owner_oldest_message_timestamp_seconds"}')"; exit 1; }; sleep 1; \
 	done; \
+	main=$$(kc -C -t owner-verify-1 -o beginning -e -J); dlq=$$(kc -C -t owner-verify-1__dlq -o beginning -e -J); \
+	echo "$$main$$dlq" | grep -q '"key":"c"' && { echo "TOPICS FAILED: c (studio-group set) left owner-verify-1__retry: $$main $$dlq"; exit 1; }; \
 	echo "topics worker: a redelivered, b and d dead-lettered, c left to its Studio loop, 2 parked"; \
 	echo "TOPICS OK"
 

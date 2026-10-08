@@ -82,7 +82,7 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	ctx, cancel := context.WithTimeout(context.Background(), scrapeDeadline)
 	defer cancel()
 	s, err := c.read(ctx)
-	if c.oldest != nil {
+	if c.oldest != nil && err == nil { // a failed read has no start offsets to check the cache against
 		times, oerr := c.oldest.get(ctx, topic, s.partitions)
 		for p, t := range times {
 			gauge(descOldest, float64(t.UnixMilli())/1000, topic, strconv.Itoa(int(p)))

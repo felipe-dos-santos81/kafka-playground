@@ -148,7 +148,7 @@ A consumer of `orders-1` that fails a record parks it in `orders-1__retry`, then
 
 | Header | Set by | Value | What the worker does with it |
 |---|---|---|---|
-| `studio-group` | Studio consumers only | the consumer's group | Skips the record: that Studio consumer's own retry loop handles it. Never set it from another client. |
+| `studio-group` | Studio consumers only | the consumer's group | Skips the record: that Studio consumer's own retry loop handles it. If that loop no longer runs (Retry turned off, the flow deleted), the record stays in `orders-1__retry`. Never set it from another client. |
 | `studio-attempt` | the publisher, on every failure | failed tries so far: `1`, `2`, … | Missing counts as 1. Not a positive integer: DLQ. At `MAX_ATTEMPTS` or above: DLQ. |
 | `studio-backoff-ms` | a publisher other than Studio, on every failure | `0`–`3600000`, counted from the record's time in `orders-1__retry` | Missing: `BACKOFF_MS`. Anything else: DLQ. |
 | `studio-error` | the publisher | the error's first line, at most 1 KiB | Replaces it only for a bad header: `retry: bad header studio-backoff-ms "soon"`. |
@@ -157,7 +157,7 @@ A consumer of `orders-1` that fails a record parks it in `orders-1__retry`, then
 
 A Studio consumer with Retry writes the first four (`studio-group`, `studio-attempt`, `studio-error`, `studio-origin`) to the same topics, so Console, the DLQ and a Studio tail read both alike. Studio never writes `studio-backoff-ms` or `studio-first-failure`: other publishers do.
 
-The retry container runs the redelivery worker, in group `orders-1__redelivery` (franz-go only: never point `kcat -G` at it). For each record without `studio-group`, in partition order:
+The retry container runs the redelivery worker, in group `orders-1__redelivery` (franz-go only: never point `kcat -G` at it, and never give a Studio consumer that group). For each record without `studio-group`, in partition order:
 
 - A record whose `studio-attempt` has reached `MAX_ATTEMPTS`, or whose header is bad, goes to `orders-1__dlq` at once, without waiting for its backoff.
 - Any other record waits until its time plus its backoff, then goes back to `orders-1`, with its key, value and headers. The retry topic's `LogAppendTime` makes that time the broker's clock.

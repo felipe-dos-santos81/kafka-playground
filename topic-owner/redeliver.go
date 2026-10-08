@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,7 +20,8 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-// The failure contract's headers (spec §3.4): Studio's four, plus two.
+// The failure contract's headers (spec §3.4): Studio's four (studio/retry.go,
+// a separate module: change both together), plus two.
 const (
 	headerGroup        = "studio-group"         // set only by a Studio consumer: its own loop retries the record
 	headerAttempt      = "studio-attempt"       // failed tries so far: 1, 2, …
@@ -80,15 +82,15 @@ func decide(r *kgo.Record, now time.Time, maxAttempts int, defaultBackoff time.D
 	}
 	d := decision{attempt: 1, backoff: defaultBackoff}
 	if s, ok := lastHeader(r, headerAttempt); ok {
-		n, err := strconv.Atoi(s)
-		if err != nil || n < 1 {
+		n, ok := decimal(s)
+		if !ok || n < 1 {
 			return badHeader(headerAttempt, s)
 		}
 		d.attempt = n
 	}
 	if s, ok := lastHeader(r, headerBackoff); ok {
-		n, err := strconv.Atoi(s)
-		if err != nil || n < 0 || n > maxBackoffMS {
+		n, ok := decimal(s)
+		if !ok || n > maxBackoffMS {
 			return badHeader(headerBackoff, s)
 		}
 		d.backoff = time.Duration(n) * time.Millisecond
@@ -103,6 +105,16 @@ func decide(r *kgo.Record, now time.Time, maxAttempts int, defaultBackoff time.D
 		d.verdict = verdictRedeliver
 	}
 	return d
+}
+
+// decimal is s as a non-negative decimal number: digits only, so "+3" and
+// "-0", which strconv.Atoi accepts, are not.
+func decimal(s string) (int, bool) {
+	if s == "" || strings.Trim(s, "0123456789") != "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	return n, err == nil
 }
 
 func badHeader(key, value string) decision {

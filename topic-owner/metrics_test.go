@@ -199,3 +199,32 @@ topic_owner_kafka_up{topic="orders-1__dlq"} 1
 		t.Fatal(err)
 	}
 }
+
+// A scrape whose read fails leaves the oldest-record cache alone: the next
+// good scrape serves the cached time without fetching again.
+func TestCollectorOldestKeepsCacheOnFailedRead(t *testing.T) {
+	t0 := time.Date(2026, 10, 8, 14, 0, 0, 0, time.UTC)
+	fetches := 0
+	readErr := error(nil)
+	c := &collector{
+		cfg:        Config{Base: "orders", Instance: 1, Role: RoleDLQ},
+		reconciled: func() bool { return true },
+		read: func(context.Context) (topicState, error) {
+			if readErr != nil {
+				return topicState{}, readErr
+			}
+			return topicState{partitions: []partitionState{{partition: 0, replicas: 1, isr: 1, start: 4, end: 6, size: 100}}}, nil
+		},
+		oldest: &oldestTimes{known: map[int32]oldestAt{}, fetch: func(context.Context) (kadm.ListedOffsets, error) {
+			fetches++
+			return kadm.ListedOffsets{"orders-1__dlq": {0: {Topic: "orders-1__dlq", Partition: 0, Offset: 4, Timestamp: t0.UnixMilli()}}}, nil
+		}},
+	}
+	testutil.CollectAndCount(c)
+	readErr = errors.New("unable to dial")
+	testutil.CollectAndCount(c)
+	readErr = nil
+	if n := testutil.CollectAndCount(c, "topic_owner_oldest_message_timestamp_seconds"); n != 1 || fetches != 1 {
+		t.Fatalf("%d oldest series, %d fetches; want 1 series from the cache, 1 fetch in all", n, fetches)
+	}
+}
