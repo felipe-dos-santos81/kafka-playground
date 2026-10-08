@@ -127,14 +127,14 @@ func TestOldestTimes(t *testing.T) {
 		0: {Topic: "orders-1__dlq", Partition: 0, Offset: 0, Timestamp: t0.UnixMilli()},
 		1: {Topic: "orders-1__dlq", Partition: 1, Offset: 0, Timestamp: -1}, // empty: the broker has no timestamp
 	}}
-	o := &oldestTimes{known: map[int32]oldestAt{}, fetch: func(context.Context) (kadm.ListedOffsets, error) {
+	o := &oldestTimes{fetch: func(context.Context) (kadm.ListedOffsets, error) {
 		fetches++
 		return listed, nil
 	}}
 	parts := []partitionState{{partition: 0, start: 0, end: 2}, {partition: 1, start: 0, end: 0}}
 	for range 2 {
 		times, err := o.get(context.Background(), "orders-1__dlq", parts)
-		if err != nil || len(times) != 1 || !times[0].Equal(t0) {
+		if err != nil || len(times) != 1 || !times[0].at.Equal(t0) {
 			t.Fatalf("times %v, err %v; want partition 0 at %v only", times, err, t0)
 		}
 	}
@@ -146,7 +146,7 @@ func TestOldestTimes(t *testing.T) {
 	listed["orders-1__dlq"][0] = kadm.ListedOffset{Topic: "orders-1__dlq", Partition: 0, Offset: 1, Timestamp: t0.Add(time.Minute).UnixMilli()}
 	parts[0].start = 1
 	times, err := o.get(context.Background(), "orders-1__dlq", parts)
-	if err != nil || fetches != 2 || !times[0].Equal(t0.Add(time.Minute)) {
+	if err != nil || fetches != 2 || !times[0].at.Equal(t0.Add(time.Minute)) {
 		t.Fatalf("times %v, err %v, %d fetches; want the record at offset 1, fetched once more", times, err, fetches)
 	}
 
@@ -162,7 +162,7 @@ func TestOldestTimes(t *testing.T) {
 	listed["orders-1__dlq"][0] = kadm.ListedOffset{Topic: "orders-1__dlq", Partition: 0, Offset: 1, Timestamp: t0.Add(2 * time.Minute).UnixMilli()}
 	parts[0].start, parts[0].end = 1, 2
 	times, err = o.get(context.Background(), "orders-1__dlq", parts)
-	if err != nil || fetches != 3 || !times[0].Equal(t0.Add(2*time.Minute)) {
+	if err != nil || fetches != 3 || !times[0].at.Equal(t0.Add(2*time.Minute)) {
 		t.Fatalf("times %v, err %v, %d fetches; want the new record, fetched once more", times, err, fetches)
 	}
 
@@ -175,18 +175,30 @@ func TestOldestTimes(t *testing.T) {
 }
 
 // The DLQ role's collector serves the oldest record's timestamp in seconds.
-func TestCollectorOldest(t *testing.T) {
-	t0 := time.Date(2026, 10, 8, 14, 0, 0, 500_000_000, time.UTC)
-	c := &collector{
+// dlqCollector is orders-1__dlq's collector: one partition holding offsets 4
+// and 5, read with readErr's error, whose oldest record is at t0; *fetches
+// counts the oldest-record fetches.
+func dlqCollector(t0 time.Time, readErr *error, fetches *int) *collector {
+	return &collector{
 		cfg:        Config{Base: "orders", Instance: 1, Role: RoleDLQ},
 		reconciled: func() bool { return true },
 		read: func(context.Context) (topicState, error) {
+			if *readErr != nil {
+				return topicState{}, *readErr
+			}
 			return topicState{partitions: []partitionState{{partition: 0, replicas: 1, isr: 1, start: 4, end: 6, size: 100}}}, nil
 		},
-		oldest: &oldestTimes{known: map[int32]oldestAt{}, fetch: func(context.Context) (kadm.ListedOffsets, error) {
+		oldest: &oldestTimes{fetch: func(context.Context) (kadm.ListedOffsets, error) {
+			*fetches++
 			return kadm.ListedOffsets{"orders-1__dlq": {0: {Topic: "orders-1__dlq", Partition: 0, Offset: 4, Timestamp: t0.UnixMilli()}}}, nil
 		}},
 	}
+}
+
+func TestCollectorOldest(t *testing.T) {
+	var readErr error
+	var fetches int
+	c := dlqCollector(time.Date(2026, 10, 8, 14, 0, 0, 500_000_000, time.UTC), &readErr, &fetches)
 	want := `
 # HELP topic_owner_oldest_message_timestamp_seconds Timestamp of the partition's oldest record (at its log start), for non-empty partitions. DLQ role only.
 # TYPE topic_owner_oldest_message_timestamp_seconds gauge
@@ -203,23 +215,9 @@ topic_owner_kafka_up{topic="orders-1__dlq"} 1
 // A scrape whose read fails leaves the oldest-record cache alone: the next
 // good scrape serves the cached time without fetching again.
 func TestCollectorOldestKeepsCacheOnFailedRead(t *testing.T) {
-	t0 := time.Date(2026, 10, 8, 14, 0, 0, 0, time.UTC)
-	fetches := 0
-	readErr := error(nil)
-	c := &collector{
-		cfg:        Config{Base: "orders", Instance: 1, Role: RoleDLQ},
-		reconciled: func() bool { return true },
-		read: func(context.Context) (topicState, error) {
-			if readErr != nil {
-				return topicState{}, readErr
-			}
-			return topicState{partitions: []partitionState{{partition: 0, replicas: 1, isr: 1, start: 4, end: 6, size: 100}}}, nil
-		},
-		oldest: &oldestTimes{known: map[int32]oldestAt{}, fetch: func(context.Context) (kadm.ListedOffsets, error) {
-			fetches++
-			return kadm.ListedOffsets{"orders-1__dlq": {0: {Topic: "orders-1__dlq", Partition: 0, Offset: 4, Timestamp: t0.UnixMilli()}}}, nil
-		}},
-	}
+	var readErr error
+	var fetches int
+	c := dlqCollector(time.Date(2026, 10, 8, 14, 0, 0, 0, time.UTC), &readErr, &fetches)
 	testutil.CollectAndCount(c)
 	readErr = errors.New("unable to dial")
 	testutil.CollectAndCount(c)

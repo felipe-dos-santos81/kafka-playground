@@ -113,7 +113,9 @@ type testWorker struct {
 	produceErr               error
 }
 
-func newTestWorker(now time.Time) *testWorker {
+func newTestWorker(t *testing.T, now time.Time) *testWorker {
+	log.SetOutput(io.Discard) // the worker logs every record it handles
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	tw := &testWorker{}
 	cfg := Config{Base: "orders", Instance: 1, Role: RoleRetry, MaxAttempts: 3, BackoffMS: 5000}
 	tw.worker = &worker{
@@ -142,11 +144,8 @@ func keyed(offset int64, key string, kv ...string) *kgo.Record {
 }
 
 func TestDrain(t *testing.T) {
-	log.SetOutput(io.Discard)
-	defer log.SetOutput(os.Stderr)
-
 	now := at.Add(2 * time.Second)
-	tw := newTestWorker(now)
+	tw := newTestWorker(t, now)
 	tw.queues[0] = []*kgo.Record{
 		keyed(0, "a", "studio-backoff-ms=1000"),     // due: back to orders-1
 		keyed(1, "b", "studio-group=orders-studio"), // Studio's: skipped
@@ -190,11 +189,8 @@ func TestDrain(t *testing.T) {
 // A failed produce marks nothing and holds the partition for produceRetry;
 // the record goes when the produce works again.
 func TestDrainProduceFails(t *testing.T) {
-	log.SetOutput(io.Discard)
-	defer log.SetOutput(os.Stderr)
-
 	now := at.Add(time.Minute)
-	tw := newTestWorker(now)
+	tw := newTestWorker(t, now)
 	tw.produceErr = errors.New("UNKNOWN_TOPIC_OR_PARTITION")
 	tw.queues[0] = []*kgo.Record{keyed(0, "a"), keyed(1, "b")}
 	if next := tw.drain(context.Background()); !next.Equal(now.Add(produceRetry)) {
@@ -213,10 +209,7 @@ func TestDrainProduceFails(t *testing.T) {
 // A revoked partition's held records are dropped unmarked, and the partition
 // is resumed so it fetches again if it comes back.
 func TestForget(t *testing.T) {
-	log.SetOutput(io.Discard)
-	defer log.SetOutput(os.Stderr)
-
-	tw := newTestWorker(at)
+	tw := newTestWorker(t, at)
 	tw.queues[0] = []*kgo.Record{keyed(0, "a", "studio-backoff-ms=60000")}
 	tw.drain(context.Background())
 	tw.forget([]int32{0, 1})

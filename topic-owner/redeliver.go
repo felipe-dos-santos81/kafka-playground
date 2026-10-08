@@ -12,11 +12,11 @@ import (
 	"fmt"
 	"log"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -110,11 +110,8 @@ func decide(r *kgo.Record, now time.Time, maxAttempts int, defaultBackoff time.D
 // decimal is s as a non-negative decimal number: digits only, so "+3" and
 // "-0", which strconv.Atoi accepts, are not.
 func decimal(s string) (int, bool) {
-	if s == "" || strings.Trim(s, "0123456789") != "" {
-		return 0, false
-	}
-	n, err := strconv.Atoi(s)
-	return n, err == nil
+	n, err := strconv.ParseUint(s, 10, 31)
+	return int(n), err == nil
 }
 
 func badHeader(key, value string) decision {
@@ -156,16 +153,15 @@ type workerMetrics struct {
 }
 
 func newWorkerMetrics(reg prometheus.Registerer, topic string) workerMetrics {
-	labels := prometheus.Labels{"topic": topic}
+	f := promauto.With(prometheus.WrapRegistererWith(prometheus.Labels{"topic": topic}, reg)) // every series gets topic
 	m := workerMetrics{
-		redeliveries: prometheus.NewCounter(prometheus.CounterOpts{Name: "topic_owner_redeliveries_total", Help: "Records republished to the main topic.", ConstLabels: labels}),
-		deadLettered: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "topic_owner_dead_lettered_total", Help: "Records the worker moved to the DLQ, by reason.", ConstLabels: labels}, []string{"reason"}),
-		skipped:      prometheus.NewCounter(prometheus.CounterOpts{Name: "topic_owner_skipped_total", Help: "Records left to a Studio retry loop (studio-group set).", ConstLabels: labels}),
-		backoff:      prometheus.NewHistogram(prometheus.HistogramOpts{Name: "topic_owner_backoff_seconds", Help: "The backoff each redelivered record asked for.", ConstLabels: labels, Buckets: prometheus.ExponentialBuckets(0.1, 2, 12)}),
+		redeliveries: f.NewCounter(prometheus.CounterOpts{Name: "topic_owner_redeliveries_total", Help: "Records republished to the main topic."}),
+		deadLettered: f.NewCounterVec(prometheus.CounterOpts{Name: "topic_owner_dead_lettered_total", Help: "Records the worker moved to the DLQ, by reason."}, []string{"reason"}),
+		skipped:      f.NewCounter(prometheus.CounterOpts{Name: "topic_owner_skipped_total", Help: "Records left to a Studio retry loop (studio-group set)."}),
+		backoff:      f.NewHistogram(prometheus.HistogramOpts{Name: "topic_owner_backoff_seconds", Help: "The backoff each redelivered record asked for.", Buckets: prometheus.ExponentialBuckets(0.1, 2, 12)}),
 	}
 	m.deadLettered.WithLabelValues("attempts") // both reasons start at 0, so increase() sees the first
 	m.deadLettered.WithLabelValues("bad_header")
-	reg.MustRegister(m.redeliveries, m.deadLettered, m.skipped, m.backoff)
 	return m
 }
 
@@ -199,11 +195,9 @@ func newWorker(cfg Config, reg prometheus.Registerer) (*worker, error) {
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()), // a new group takes every parked record
 		kgo.AutoCommitMarks(),
 		kgo.FetchMaxWait(time.Second), // a resumed partition's records arrive within a second, not after a 5 s long poll
-		kgo.OnPartitionsRevoked(func(ctx context.Context, cl *kgo.Client, revoked map[string][]int32) {
+		kgo.OnPartitionsRevoked(func(ctx context.Context, _ *kgo.Client, revoked map[string][]int32) {
 			w.forget(revoked[cfg.Topic()])
-			if err := cl.CommitMarkedOffsets(ctx); err != nil {
-				log.Printf("%s: commit: %v", cfg.Topic(), err)
-			}
+			w.commit(ctx)
 		}),
 		kgo.OnPartitionsLost(func(_ context.Context, _ *kgo.Client, lost map[string][]int32) {
 			w.forget(lost[cfg.Topic()])
@@ -226,9 +220,7 @@ func (w *worker) run(ctx context.Context) {
 	defer func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := w.cl.CommitMarkedOffsets(cctx); err != nil {
-			log.Printf("%s: commit: %v", w.cfg.Topic(), err)
-		}
+		w.commit(cctx)
 		w.cl.Close()
 	}()
 	for {
@@ -252,6 +244,14 @@ func (w *worker) run(ctx context.Context) {
 			w.queues[p.Partition] = append(w.queues[p.Partition], p.Records...)
 		})
 		w.mu.Unlock()
+	}
+}
+
+// commit commits what the worker marked, and logs a failure: the records
+// since the last commit are then read again (at-least-once).
+func (w *worker) commit(ctx context.Context) {
+	if err := w.cl.CommitMarkedOffsets(ctx); err != nil {
+		log.Printf("%s: commit: %v", w.cfg.Topic(), err)
 	}
 }
 
@@ -304,11 +304,9 @@ func (w *worker) take(ctx context.Context, r *kgo.Record) time.Time {
 	case verdictWait:
 		return d.due
 	case verdictDeadLetter:
-		if err := w.produce(ctx, &kgo.Record{Topic: w.dlq, Key: r.Key, Value: r.Value, Headers: onward(r, d.badErr)}); err != nil {
-			log.Printf("%s: dead-letter %s to %s: %v", topic, position(r), w.dlq, err)
+		if !w.send(ctx, r, w.dlq, d.badErr) {
 			return now.Add(produceRetry)
 		}
-		w.mark(r)
 		w.m.deadLettered.WithLabelValues(d.reason).Inc()
 		why := d.badErr
 		if why == "" {
@@ -316,16 +314,25 @@ func (w *worker) take(ctx context.Context, r *kgo.Record) time.Time {
 		}
 		log.Printf("%s: dead-lettered %s to %s: %s", topic, position(r), w.dlq, why)
 	case verdictRedeliver:
-		if err := w.produce(ctx, &kgo.Record{Topic: w.main, Key: r.Key, Value: r.Value, Headers: onward(r, "")}); err != nil {
-			log.Printf("%s: redeliver %s to %s: %v", topic, position(r), w.main, err)
+		if !w.send(ctx, r, w.main, "") {
 			return now.Add(produceRetry)
 		}
-		w.mark(r)
 		w.m.redeliveries.Inc()
 		w.m.backoff.Observe(d.backoff.Seconds())
 		log.Printf("%s: redelivered %s to %s after %.1fs (attempt %d of %d)", topic, position(r), w.main, now.Sub(r.Timestamp).Seconds(), d.attempt, w.cfg.MaxAttempts)
 	}
 	return time.Time{}
+}
+
+// send produces r, with its onward headers, to topic and marks r once the
+// broker has acknowledged it; it logs a failed produce and reports success.
+func (w *worker) send(ctx context.Context, r *kgo.Record, topic, badErr string) bool {
+	if err := w.produce(ctx, &kgo.Record{Topic: topic, Key: r.Key, Value: r.Value, Headers: onward(r, badErr)}); err != nil {
+		log.Printf("%s: send %s to %s: %v", w.cfg.Topic(), position(r), topic, err)
+		return false
+	}
+	w.mark(r)
+	return true
 }
 
 // forget drops the queues of partitions this member no longer owns and

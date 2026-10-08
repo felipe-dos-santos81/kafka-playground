@@ -40,6 +40,9 @@ type partitionState struct {
 	size          int64 // bytes, summed over replicas; -1 when unread
 }
 
+// nonEmpty is whether p holds a record: its start offset is below its end.
+func (p partitionState) nonEmpty() bool { return p.start >= 0 && p.end > p.start }
+
 // topicState is a topic as a scrape reads it: what was read before any error.
 type topicState struct {
 	partitions []partitionState           // in partition order
@@ -59,7 +62,7 @@ func newCollector(cfg Config, adm *kadm.Client, reconciled func() bool) *collect
 		return readTopic(ctx, adm, cfg.Topic())
 	}}
 	if cfg.Role == RoleDLQ {
-		c.oldest = &oldestTimes{known: map[int32]oldestAt{}, fetch: func(ctx context.Context) (kadm.ListedOffsets, error) {
+		c.oldest = &oldestTimes{fetch: func(ctx context.Context) (kadm.ListedOffsets, error) {
 			return adm.ListOffsetsAfterMilli(ctx, 0, cfg.Topic()) // the first record with a timestamp ≥ 0: the oldest
 		}}
 	}
@@ -83,11 +86,11 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	defer cancel()
 	s, err := c.read(ctx)
 	if c.oldest != nil && err == nil { // a failed read has no start offsets to check the cache against
-		times, oerr := c.oldest.get(ctx, topic, s.partitions)
-		for p, t := range times {
-			gauge(descOldest, float64(t.UnixMilli())/1000, topic, strconv.Itoa(int(p)))
+		var oldest map[int32]oldestAt
+		oldest, err = c.oldest.get(ctx, topic, s.partitions)
+		for p, o := range oldest {
+			gauge(descOldest, float64(o.at.UnixMilli())/1000, topic, strconv.Itoa(int(p)))
 		}
-		err = errors.Join(err, oerr)
 	}
 	gauge(descKafkaUp, boolValue(err == nil), topic)
 	if len(s.partitions) > 0 {
@@ -134,36 +137,33 @@ type oldestAt struct {
 	at    time.Time
 }
 
-// get is the oldest record's time of each non-empty partition in parts.
-func (o *oldestTimes) get(ctx context.Context, topic string, parts []partitionState) (map[int32]time.Time, error) {
+// get is the oldest record of each non-empty partition in parts. It keeps
+// only those: an emptied partition forgets its entry, so a recreated topic's
+// record at the same start offset is fetched again.
+func (o *oldestTimes) get(ctx context.Context, topic string, parts []partitionState) (map[int32]oldestAt, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	nonEmpty := func(p partitionState) bool { return p.start >= 0 && p.end > p.start }
-	var err error
-	stale := func(p partitionState) bool {
-		k, ok := o.known[p.partition]
-		return nonEmpty(p) && (!ok || k.start != p.start)
+	next, missing := map[int32]oldestAt{}, false
+	for _, p := range parts {
+		if k, ok := o.known[p.partition]; ok && p.nonEmpty() && k.start == p.start {
+			next[p.partition] = k
+		} else if p.nonEmpty() {
+			missing = true
+		}
 	}
-	if slices.ContainsFunc(parts, stale) {
+	var err error
+	if missing {
 		var listed kadm.ListedOffsets
 		if listed, err = o.fetch(ctx); err == nil {
 			for _, p := range parts {
-				if l, ok := listed.Lookup(topic, p.partition); ok && l.Err == nil && l.Timestamp >= 0 && nonEmpty(p) {
-					o.known[p.partition] = oldestAt{start: p.start, at: time.UnixMilli(l.Timestamp)}
+				if l, ok := listed.Lookup(topic, p.partition); ok && l.Err == nil && l.Timestamp >= 0 && p.nonEmpty() {
+					next[p.partition] = oldestAt{start: p.start, at: time.UnixMilli(l.Timestamp)}
 				}
 			}
 		}
 	}
-	times := map[int32]time.Time{}
-	next := map[int32]oldestAt{} // an emptied partition forgets its entry, so a recreated topic's record at the same start is fetched
-	for _, p := range parts {
-		if k, ok := o.known[p.partition]; ok && nonEmpty(p) && k.start == p.start {
-			times[p.partition] = k.at
-			next[p.partition] = k
-		}
-	}
 	o.known = next
-	return times, err
+	return next, err
 }
 
 func boolValue(b bool) float64 {
