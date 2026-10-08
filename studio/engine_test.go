@@ -498,3 +498,65 @@ func TestRewindTarget(t *testing.T) {
 		}
 	}
 }
+
+// A consumer with retry: waiting is its retry group's lag on its retry topic,
+// none until that group has committed, counted from the start for the rest.
+func TestApplyKafkaWaiting(t *testing.T) {
+	spec := NodeSpec{Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "g", Retry: &RetrySpec{Topic: "orders__retry", Group: "g__retry"}}
+	main := kadm.DescribedGroupLag{Group: "g", Lag: kadm.GroupLag{"orders": {0: {Topic: "orders", Partition: 0, Commit: kadm.Offset{At: 4}}}}}
+	three := int64(3)
+	for _, c := range []struct {
+		name  string
+		retry map[int32]kadm.GroupMemberLag
+		want  *int64
+	}{
+		{"no commit yet", map[int32]kadm.GroupMemberLag{0: {Topic: "orders__retry", Partition: 0, Lag: 2, Commit: kadm.Offset{At: -1}}}, nil},
+		{"committed", map[int32]kadm.GroupMemberLag{
+			0: {Topic: "orders__retry", Partition: 0, Lag: 2, Commit: kadm.Offset{At: 1}},
+			1: {Topic: "orders__retry", Partition: 1, Lag: 1, Commit: kadm.Offset{At: -1}},
+		}, &three},
+	} {
+		st := FlowState{Status: "running", Nodes: map[string]NodeState{"consumer-1": {State: "running"}}}
+		lags := kadm.DescribedGroupLags{"g": main, "g__retry": {Group: "g__retry", Lag: kadm.GroupLag{"orders__retry": c.retry}}}
+		applyKafka(&st, "f", []NodeSpec{spec}, nil, lags, nil)
+		got := st.Nodes["consumer-1"]
+		if (got.Waiting == nil) != (c.want == nil) || got.Waiting != nil && *got.Waiting != *c.want || got.Lag == nil || *got.Lag != 0 {
+			t.Fatalf("%s: want waiting %v and lag 0, got waiting %v, lag %v", c.name, c.want, got.Waiting, got.Lag)
+		}
+	}
+}
+
+// retried and dlq come from /stats and are summed over instances.
+func TestRetryCounts(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"boot":"b","total":7,"tailSeq":7,"retried":2,"dlq":1}`)
+	}))
+	defer ts.Close()
+	got := withStats(context.Background(), ts.URL, NodeState{State: "running"}, false)
+	if got.Retried != 2 || got.DLQ != 1 {
+		t.Fatalf("want retried 2 and dlq 1 from /stats, got %+v", got)
+	}
+	ns := NodeState{Instances: []NodeState{{Instance: 1, Retried: 2, DLQ: 1}, {Instance: 2, Retried: 1}}}
+	if ns.sumInstances(); ns.Retried != 3 || ns.DLQ != 1 {
+		t.Fatalf("want the instances' sums, got %+v", ns)
+	}
+}
+
+// verify-studio greps the snapshot's JSON and relies on its field order: lag
+// before assigned, the retry counts after them, instances last.
+func TestNodeStateFieldOrder(t *testing.T) {
+	zero := int64(0)
+	b, err := json.Marshal(NodeState{State: "running", Lag: &zero, Assigned: map[string][]int32{"orders": {0}}, Retried: 1, DLQ: 1, Waiting: &zero,
+		Instances: []NodeState{{Instance: 1, State: "running"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, last := string(b), -1
+	for _, key := range []string{`"lag"`, `"assigned"`, `"retried"`, `"dlq"`, `"waiting"`, `"instances"`} {
+		i := strings.Index(got, key)
+		if i <= last {
+			t.Fatalf("%s out of order in %s", key, got)
+		}
+		last = i
+	}
+}

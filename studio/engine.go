@@ -75,6 +75,9 @@ type NodeState struct {
 	Warning    string             `json:"warning,omitempty"`
 	Branches   []int64            `json:"branches,omitempty"`  // routers: records per rule, then the default's
 	Unmatched  int64              `json:"unmatched,omitempty"` // routers: records dropped, no rule matched and no default
+	Retried    int64              `json:"retried,omitempty"`   // consumers: records sent to the retry topic
+	DLQ        int64              `json:"dlq,omitempty"`       // consumers: records sent to the DLQ
+	Waiting    *int64             `json:"waiting,omitempty"`   // consumers: records waiting in the retry topic (its retry group's lag)
 	Instances  []NodeState        `json:"instances,omitempty"`
 
 	step     *stepTally // a consumer container's transform counts; applySteps puts them on the transform node
@@ -333,6 +336,9 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 		if s.Type == "consumer" {
 			groups = append(groups, s.Group)
 		}
+		if s.Retry != nil {
+			groups = append(groups, s.Retry.Group)
+		}
 	}
 	slices.Sort(groups)
 	groups = slices.Compact(groups)
@@ -375,6 +381,7 @@ func withStats(ctx context.Context, url string, ns NodeState, starting bool) Nod
 	}
 	ns.setCounts(s.tally)
 	ns.TailSeq, ns.Boot, ns.step, ns.route, ns.answered = s.TailSeq, s.Boot, s.Step, s.Route, true
+	ns.Retried, ns.DLQ = s.Retried, s.DLQ
 	return ns
 }
 
@@ -453,10 +460,8 @@ func nodeStatsOf(ctx context.Context, url string) (nodeStats, error) {
 // applyKafka adds the broker's view to a running flow's snapshot: for each topic
 // node its partition count and end offset summed over partitions (with a warning
 // when the count is not the flow's; a topic with a failed partition is left out),
-// for each consumer node its group's lag on its topic (none until the group has
-// committed; then committed partitions from their commit, the others from where
-// auto_offset_reset starts: the beginning for earliest, nothing for latest) and
-// the partitions whose
+// for each consumer node its group's lag on its topic (groupLag), its retry
+// group's on its retry topic as waiting, and the partitions whose
 // group member is this node's client (or, for a node whose snapshot state lists
 // instances, each instance's client: the containers that run, not what the file
 // now says). Whatever the broker did not answer is left out.
@@ -498,27 +503,19 @@ func applyKafka(st *FlowState, flow string, specs []NodeSpec, topics map[string]
 		for _, c := range ns.containers() {
 			client[nodeRef{flow, s.Node, c.Instance}.name()] = c
 		}
-		var lag, fromReset int64 // over committed partitions; over the others, by auto_offset_reset
-		committed := false
+		ns.Lag = groupLag(gl.Lag[s.Topic], s.AutoOffsetReset)
+		if s.Retry != nil {
+			if rl, ok := lags[s.Retry.Group]; ok && rl.Error() == nil {
+				ns.Waiting = groupLag(rl.Lag[s.Retry.Topic], "earliest") // the retry loop reads from the start
+			}
+		}
 		held := map[*NodeState][]int32{} // container → partitions its client holds
 		for _, ml := range gl.Lag[s.Topic] {
-			switch {
-			case ml.Err != nil:
-			case ml.Commit.At >= 0:
-				committed = true
-				lag += max(ml.Lag, 0)
-			case s.AutoOffsetReset != "latest": // no commit: kadm's lag runs from the partition's start
-				fromReset += max(ml.Lag, 0)
-			}
 			if ml.Member != nil {
 				if c, ok := client[ml.Member.ClientID]; ok {
 					held[c] = append(held[c], ml.Partition)
 				}
 			}
-		}
-		if committed { // a group with no commit yet shows no lag at all
-			lag += fromReset
-			ns.Lag = &lag
 		}
 		for c, ps := range held {
 			slices.Sort(ps)
@@ -526,6 +523,30 @@ func applyKafka(st *FlowState, flow string, specs []NodeSpec, topics map[string]
 		}
 		st.Nodes[s.Node] = ns
 	}
+}
+
+// groupLag is a group's lag over a topic's partitions, from kadm: none until the
+// group has committed; then committed partitions count from their commit, the
+// others from where reset starts (the beginning for earliest, nothing for
+// latest). Partitions with an error are left out.
+func groupLag(parts map[int32]kadm.GroupMemberLag, reset string) *int64 {
+	var lag, fromReset int64 // over committed partitions; over the others, by reset
+	committed := false
+	for _, ml := range parts {
+		switch {
+		case ml.Err != nil:
+		case ml.Commit.At >= 0:
+			committed = true
+			lag += max(ml.Lag, 0)
+		case reset != "latest": // no commit: kadm's lag runs from the partition's start
+			fromReset += max(ml.Lag, 0)
+		}
+	}
+	if !committed { // a group with no commit yet shows no lag at all
+		return nil
+	}
+	lag += fromReset
+	return &lag
 }
 
 // Running is the set of flows that have node containers, in any state.
@@ -645,15 +666,17 @@ func (ns *NodeState) sumInstances() {
 	}
 }
 
-// sumCounts gives ns the sums of cs's counters and rates, and the first of their
-// last errors, prefixed with its instance.
+// sumCounts gives ns the sums of cs's counters and rates (retried and DLQ
+// included), and the first of their last errors, prefixed with its instance.
 func (ns *NodeState) sumCounts(cs []NodeState) {
-	ns.Total, ns.Errors, ns.Rate, ns.LastError, ns.Branches, ns.Unmatched = 0, 0, 0, "", nil, 0
+	ns.Total, ns.Errors, ns.Rate, ns.LastError, ns.Branches, ns.Unmatched, ns.Retried, ns.DLQ = 0, 0, 0, "", nil, 0, 0, 0
 	for _, in := range cs {
 		ns.Total += in.Total
 		ns.Errors += in.Errors
 		ns.Rate += in.Rate
 		ns.Unmatched += in.Unmatched
+		ns.Retried += in.Retried
+		ns.DLQ += in.DLQ
 		for i, b := range in.Branches {
 			if i == len(ns.Branches) {
 				ns.Branches = append(ns.Branches, 0)
