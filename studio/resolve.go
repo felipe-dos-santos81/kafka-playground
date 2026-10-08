@@ -5,29 +5,42 @@ package main
 
 import (
 	"encoding/json"
+	"slices"
 	"strconv"
 )
 
 // NodeSpec is the whole configuration of one node container.
 type NodeSpec struct {
-	Flow            string  `json:"flow"`
-	Node            string  `json:"node"`
-	Type            string  `json:"type"`  // "producer" or "consumer"
-	Topic           string  `json:"topic"` // produced to, or consumed from
-	Group           string  `json:"group,omitempty"`
-	AutoOffsetReset string  `json:"auto_offset_reset,omitempty"`
-	Key             string  `json:"key,omitempty"`            // producer key template
-	Value           string  `json:"value,omitempty"`          // producer value template
-	Source          string  `json:"source,omitempty"`         // producer: "manual" or "timer"
-	IntervalMS      int     `json:"interval_ms,omitempty"`    // producer: the timer's period
-	Forward         string  `json:"forward,omitempty"`        // consumer: the topic it forwards every record to
-	SinkURL         string  `json:"sink_url,omitempty"`       // consumer: the http sink's URL
-	Instance        int     `json:"instance,omitempty"`       // consumer: 1..n when it runs n > 1 instances, else 0
-	Transform       string  `json:"transform,omitempty"`      // consumer: the expr its records pass through before the forward
-	TransformNode   string  `json:"transform_node,omitempty"` // consumer: that transform's node id, which its counts are reported under
-	Routes          []Route `json:"routes,omitempty"`         // consumer: its router's rules, in order; set, they choose the forward
-	RouteDefault    string  `json:"route_default,omitempty"`  // consumer: the router's default topic; "" drops what no rule matches
-	RouterNode      string  `json:"router_node,omitempty"`    // consumer: the router's node id, which its counts are reported under
+	Flow            string     `json:"flow"`
+	Node            string     `json:"node"`
+	Type            string     `json:"type"`  // "producer" or "consumer"
+	Topic           string     `json:"topic"` // produced to, or consumed from
+	Group           string     `json:"group,omitempty"`
+	AutoOffsetReset string     `json:"auto_offset_reset,omitempty"`
+	Key             string     `json:"key,omitempty"`            // producer key template
+	Value           string     `json:"value,omitempty"`          // producer value template
+	Source          string     `json:"source,omitempty"`         // producer: "manual" or "timer"
+	IntervalMS      int        `json:"interval_ms,omitempty"`    // producer: the timer's period
+	Forward         string     `json:"forward,omitempty"`        // consumer: the topic it forwards every record to
+	SinkURL         string     `json:"sink_url,omitempty"`       // consumer: the http sink's URL
+	Instance        int        `json:"instance,omitempty"`       // consumer: 1..n when it runs n > 1 instances, else 0
+	Transform       string     `json:"transform,omitempty"`      // consumer: the expr its records pass through before the forward
+	TransformNode   string     `json:"transform_node,omitempty"` // consumer: that transform's node id, which its counts are reported under
+	Routes          []Route    `json:"routes,omitempty"`         // consumer: its router's rules, in order; set, they choose the forward
+	RouteDefault    string     `json:"route_default,omitempty"`  // consumer: the router's default topic; "" drops what no rule matches
+	RouterNode      string     `json:"router_node,omitempty"`    // consumer: the router's node id, which its counts are reported under
+	Retry           *RetrySpec `json:"retry,omitempty"`          // consumer: how its retry loop retries failures; nil without retry
+	DLQ             string     `json:"dlq,omitempty"`            // consumer: the topic its failures end in; "" without a DLQ
+}
+
+// RetrySpec is a consumer's retry: the topic its failures wait in, the group its
+// retry loop reads it in, how many retries a record gets after its first try and
+// how long each waits.
+type RetrySpec struct {
+	Topic    string `json:"topic"`
+	Group    string `json:"group"`
+	Attempts int    `json:"attempts"`
+	DelayMS  int    `json:"delay_ms"`
 }
 
 // Route is one router rule as a consumer runs it: a condition and a topic name.
@@ -83,10 +96,12 @@ func instancesOf(n Node) []int {
 // at most one out (to a topic, a transform or a router), every transform one edge
 // in from a consumer and one out to a topic or a router, and every router's rules
 // name its wired topics. A consumer's transform and router run in its own
-// containers, so neither has a spec of its own.
+// containers, so neither has a spec of its own. A consumer's retry and DLQ topics
+// are created with its input topic's partitions, unless the flow draws them.
 func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 	byID := map[string]Node{}
 	topicName := map[string]string{} // topic node id → topic name
+	partitions := map[string]int{}   // topic node id → its partitions
 	out := map[string]string{}       // consumer or transform node id → the node its edge goes to
 	var topics []TopicData
 	for _, n := range f.Nodes {
@@ -95,6 +110,7 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 			var d TopicData
 			json.Unmarshal(n.Data, &d)
 			topicName[n.ID] = d.Name
+			partitions[n.ID] = d.Partitions
 			topics = append(topics, d)
 		}
 	}
@@ -104,6 +120,7 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 		}
 	}
 	var specs []NodeSpec
+	var derived []TopicData // the consumers' retry and DLQ topics
 	for _, e := range f.Edges {
 		src, dst := byID[e.Source], byID[e.Target]
 		switch {
@@ -135,10 +152,23 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 				next = "" // the router chooses the forward
 			}
 			spec.Forward = topicName[next]
+			if d.Retry != nil {
+				spec.Retry = &RetrySpec{Topic: retryTopic(spec.Topic), Group: retryGroup(d.Group), Attempts: d.Retry.Attempts, DelayMS: d.Retry.DelayMS}
+				derived = append(derived, TopicData{Name: spec.Retry.Topic, Partitions: partitions[src.ID], ReplicationFactor: 1})
+			}
+			if d.DLQ {
+				spec.DLQ = dlqTopic(spec.Topic)
+				derived = append(derived, TopicData{Name: spec.DLQ, Partitions: partitions[src.ID], ReplicationFactor: 1})
+			}
 			for _, i := range instancesOf(dst) {
 				spec.Instance = i
 				specs = append(specs, spec)
 			}
+		}
+	}
+	for _, t := range derived { // once each, and as drawn when the flow has it as a node
+		if !slices.ContainsFunc(topics, func(have TopicData) bool { return have.Name == t.Name }) {
+			topics = append(topics, t)
 		}
 	}
 	return specs, topics

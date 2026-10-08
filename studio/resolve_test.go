@@ -94,3 +94,24 @@ func TestResolveRouter(t *testing.T) {
 		t.Fatalf("want all three topics created, got %+v", topics)
 	}
 }
+
+func TestResolveRetryAndDLQ(t *testing.T) {
+	f := clone(good)
+	f.ID = "0a1b2c3d"
+	f.Nodes[2].Data = json.RawMessage(`{"group":"g","retry":{"attempts":3,"delay_ms":5000},"dlq":true}`)
+	f.Nodes = append(f.Nodes, node("topic-2", "topic", `{"name":"orders__dlq","partitions":1,"replication_factor":1}`))
+	specs, topics := Resolve(f)
+	want := NodeSpec{Flow: "0a1b2c3d", Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "g",
+		Retry: &RetrySpec{Topic: "orders__retry", Group: "g__retry", Attempts: 3, DelayMS: 5000}, DLQ: "orders__dlq"}
+	if len(specs) != 2 || !reflect.DeepEqual(specs[1], want) {
+		t.Fatalf("the consumer's spec names its retry topic and group and its DLQ:\n got %+v\nwant %+v", specs, want)
+	}
+	wantTopics := []TopicData{
+		{Name: "orders", Partitions: 3, ReplicationFactor: 1},
+		{Name: "orders__dlq", Partitions: 1, ReplicationFactor: 1}, // drawn as a node: created once, as drawn
+		{Name: "orders__retry", Partitions: 3, ReplicationFactor: 1},
+	}
+	if !reflect.DeepEqual(topics, wantTopics) {
+		t.Fatalf("topics:\n got %+v\nwant %+v", topics, wantTopics)
+	}
+}
