@@ -87,7 +87,7 @@ Consumers with the same `GROUP_ID` split the partitions. Without one, each conta
 - It serves `/metrics` for its topic on port 9000 inside the network. Prometheus (http://localhost:9090) finds the containers by their labels, with no target list.
 - `make owners` lists them. `make query q='kafka_topic_partitions'` asks Prometheus. `make kcat args='-C -t orders-1 -o beginning -e -J'` runs kcat on the compose network (default `-L`).
 
-The retry container owns its topic like the other two. The redelivery worker that will read it is a later milestone.
+The retry container also runs the redelivery worker (below).
 
 ### Configuration
 
@@ -98,7 +98,7 @@ The retry container owns its topic like the other two. The redelivery worker tha
 | `PARTITIONS` | `1` | Raised on an existing topic, never lowered. |
 | `REPLICATION_FACTOR` | `1` | Anything else is refused: there is one broker. |
 | `TOPIC_CONFIG_<NAME>` | role defaults | `TOPIC_CONFIG_RETENTION_MS: 3600000` sets `retention.ms`. An empty value removes a role default. |
-| `MAX_ATTEMPTS`, `BACKOFF_MS` | `3`, `5000` | Retry role only (1–10 and 100–60000). |
+| `MAX_ATTEMPTS`, `BACKOFF_MS` | `3`, `5000` | Retry role only, refused on the others: the tries before the DLQ (1–10), and the backoff in ms for a record without `studio-backoff-ms` (100–60000). |
 
 Role defaults: the retry topic gets `message.timestamp.type=LogAppendTime`, so the broker stamps each record. The DLQ gets `retention.ms=-1`, so parked records stay.
 
@@ -142,6 +142,61 @@ Copy the three `orders-1` services with new anchors and numbers. Paste them afte
 
 Instances share nothing: `orders-2` has its own topics and settings. Prometheus finds the new containers by their labels.
 
+### Retry and the DLQ
+
+A consumer of `orders-1` that fails a record parks it in `orders-1__retry`, then commits the original. It sends the record's own key and value, and the record's own headers with these set:
+
+| Header | Set by | Value | What the worker does with it |
+|---|---|---|---|
+| `studio-group` | Studio consumers only | the consumer's group | Skips the record: that Studio consumer's own retry loop handles it. Never set it from another client. |
+| `studio-attempt` | the publisher, on every failure | failed tries so far: `1`, `2`, … | Missing counts as 1. Not a positive integer: DLQ. At `MAX_ATTEMPTS` or above: DLQ. |
+| `studio-backoff-ms` | the publisher, on every failure | `0`–`3600000`, counted from the record's time in `orders-1__retry` | Missing: `BACKOFF_MS`. Anything else: DLQ. |
+| `studio-error` | the publisher | the error's first line, at most 1 KiB | Replaces it only for a bad header: `retry: bad header studio-backoff-ms "soon"`. |
+| `studio-origin` | the first publisher, once | `topic[partition]@offset` where the record was first read | Sets it to the record's place in `orders-1__retry` when missing. |
+| `studio-first-failure` | the first publisher, once | RFC 3339 UTC, `2026-10-08T14:00:00.000Z` | Sets it to the record's time in `orders-1__retry` when missing. |
+
+The `studio-` headers are Studio's: a Studio consumer with Retry writes them to the same topics, so Console, the DLQ and a Studio tail read both alike.
+
+The retry container runs the redelivery worker, in group `orders-1__redelivery` (franz-go only: never point `kcat -G` at it). For each record without `studio-group`, in partition order:
+
+- It waits until the record's time plus its backoff. The retry topic's `LogAppendTime` makes that the broker's clock. While a record waits, the records behind it on its partition wait too, so a long backoff holds up shorter ones; more partitions on `orders-1__retry` reduce that.
+- Then it sends the record back to `orders-1`, with its key, value and headers. Once `studio-attempt` reaches `MAX_ATTEMPTS`, or when a header is bad, it sends it to `orders-1__dlq` instead.
+- It commits a record only after the broker acknowledges the send. A crash in between sends it twice: delivery is at-least-once.
+
+What a consumer of `orders-1` sees:
+
+- Every group on `orders-1` gets the redelivered record, including groups that never failed it, such as an `orders-audit`-style fan-out group. A Studio consumer with Retry avoids that with its own loop.
+- A redelivered record has `studio-attempt` and `studio-origin`; an original has neither. To act on a record once, dedupe on `studio-origin` when present, else on the record's own `topic[partition]@offset`.
+- Key order is not kept: the record comes back after records sent while it waited.
+
+`MAX_ATTEMPTS` counts tries, the first included: with 3, a record is tried 3 times. Studio's `attempts` counts retries after the first try, so Studio's `attempts: 3` is `MAX_ATTEMPTS: 4`.
+
+Park a record by hand, as a failing consumer would:
+
+```sh
+echo '{"id":42}' | make kcat args='-P -t orders-1__retry -k order-42 -H studio-attempt=1 -H studio-backoff-ms=5000 -H "studio-error=sink: http 503"'
+make kcat args='-C -t orders-1 -o -1 -e -J'   # about 5 s later: order-42, with studio-origin and studio-first-failure added
+```
+
+Read headers with `-J`. kcat's `%h` joins them with commas and does not escape a comma inside `studio-error`.
+
+#### Inspect and replay the DLQ
+
+- Console (http://localhost:8080) → Topics → `orders-1__dlq` shows each record with its headers. `make kcat args='-C -t orders-1__dlq -o beginning -e -J'` prints them.
+- To replay, copy key and value back to `orders-1`. The headers stay behind, so each record starts over with fresh attempts:
+
+  ```sh
+  make kcat args='-C -t orders-1__dlq -o beginning -e -f "%k\t%s\n"' | make kcat args='-P -t orders-1 -K "\t"'
+  ```
+
+- Kafka cannot delete one record. After a full replay, move the DLQ's start past what you replayed, with one entry per partition (`-1` is the end):
+
+  ```sh
+  docker compose exec -T kafka /opt/kafka/bin/kafka-delete-records.sh --bootstrap-server localhost:19092 --offset-json-file /dev/stdin <<'EOF'
+  {"partitions":[{"topic":"orders-1__dlq","partition":0,"offset":-1},{"topic":"orders-1__dlq","partition":1,"offset":-1},{"topic":"orders-1__dlq","partition":2,"offset":-1}],"version":1}
+  EOF
+  ```
+
 ### Metrics
 
 Every series has a `topic` label. Where a series means what a [kafka-exporter](https://github.com/danielqsj/kafka_exporter) series means, it has the same name and labels, so kafka-exporter queries over these series work.
@@ -156,8 +211,20 @@ Every series has a `topic` label. Where a series means what a [kafka-exporter](h
 | `topic_owner_info` | `base`, `topic_instance` and `role` (Prometheus reserves `instance`, which is the container name) |
 | `topic_owner_reconciled` | 1 when the topic is in its desired state |
 | `topic_owner_kafka_up` | 1 when the last scrape's admin calls succeeded (a missing topic shows as `topic_owner_reconciled` 0, not here) |
+| `topic_owner_redeliveries_total` | retry role: records sent back to the main topic |
+| `topic_owner_dead_lettered_total` | retry role: records moved to the DLQ, by `reason` (`attempts`, `bad_header`) |
+| `topic_owner_skipped_total` | retry role: records left to a Studio retry loop |
+| `topic_owner_backoff_seconds` | retry role: the backoff each redelivered record asked for (a histogram) |
+| `topic_owner_oldest_message_timestamp_seconds` | DLQ role: the time of each non-empty partition's oldest record |
 
-Messages in per second: `sum by (topic) (rate(kafka_topic_partition_current_offset[1m]))`. Bytes in and out per topic are not exported. Only the broker's JMX has them, and the JMX agent would need a jar and a change to the `kafka` service.
+Some queries:
+
+- Messages in per second: `sum by (topic) (rate(kafka_topic_partition_current_offset[1m]))`.
+- Records waiting in a retry topic: `sum by (topic) (kafka_consumergroup_lag{consumergroup=~".+__redelivery"})`.
+- Records parked in a DLQ: `sum by (topic) (kafka_topic_partition_current_offset{topic=~".+__dlq"} - kafka_topic_partition_oldest_offset{topic=~".+__dlq"})`.
+- Age of the oldest parked record, in seconds: `time() - min by (topic) (topic_owner_oldest_message_timestamp_seconds)`.
+
+Bytes in and out per topic are not exported. Only the broker's JMX has them, and the JMX agent would need a jar and a change to the `kafka` service.
 
 Prometheus reads the Docker socket with `group_add: ["0"]`, because Docker Desktop shows the socket as `root:root 0660` inside containers. On native Linux, use the host's docker gid instead. The socket gives root on the host, which is one more reason everything stays on `127.0.0.1`.
 

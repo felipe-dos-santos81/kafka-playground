@@ -1,8 +1,8 @@
 # Topic containers — design
 
-Status: approved on 2026-10-08. M1 is built, from
-`docs/superpowers/plans/2026-10-08-topic-containers-m1.md`; M2 and M3 follow,
-one plan each.
+Status: approved on 2026-10-08. M1 and M2 are built, from
+`docs/superpowers/plans/2026-10-08-topic-containers-m1.md` and
+`docs/superpowers/plans/2026-10-08-topic-containers-m2.md`; M3 follows.
 
 A topic deployed as three long-running containers on the playground's broker:
 `orders-1`, `orders-1__retry` and `orders-1__dlq`. Each container owns one
@@ -444,7 +444,9 @@ unhandled record is not due yet, the worker:
 3. resumes the partition once its queue is empty.
 
 The other partitions keep flowing. The poll loop sleeps until the earliest due
-time among the queues, or until new records arrive. kgo keeps a paused
+time among the queues, or until new records arrive. The worker's fetches wait
+at most 1 s on the broker (`FetchMaxWait`), so a resumed partition's records
+arrive within a second instead of after kgo's default 5 s long poll. kgo keeps a paused
 partition assigned, and it holds back records already buffered for that
 partition without dropping them (source, kgo v1.22.1). On a rebalance, the
 queues of revoked partitions are dropped, because their records were never
@@ -1190,7 +1192,7 @@ three topics from the start, and M2 lands on topics that already exist.
   ```sh
   echo '{"id":1}' | make kcat args='-P -t orders-1__retry -k a -H studio-attempt=1 -H studio-backoff-ms=2000 -H "studio-error=sink: demo"'
   echo '{"id":2}' | make kcat args='-P -t orders-1__retry -k b -H studio-attempt=3 -H "studio-error=sink: demo"'
-  sleep 3
+  sleep 8
   make kcat args='-C -t orders-1 -o beginning -e -J'
   # key a, with studio-origin set
   make kcat args='-C -t orders-1__dlq -o beginning -e -J'
@@ -1229,9 +1231,15 @@ three topics from the start, and M2 lands on topics that already exist.
    their assignment and buffered records are held back, not dropped. M2's
    first task is a test against the broker: pause with a queue, resume, and
    see no record lost or duplicated.
+   **Answered on 2026-10-08, against `apache/kafka:4.3.1`:** 60 records read
+   through a pause of four polls arrived in order, with no duplicate and no
+   gap, and no record came back while paused.
 2. **`ListOffsetsAfterMilli(ctx, 0, topic)` returns the oldest record's
    timestamp.** This is not yet confirmed on a broker. Check it in M2's first
    task; the fallback is a one-record read from `AtStart()` (4.1).
+   **Answered on 2026-10-08:** it returns the oldest record's offset and
+   timestamp, and the new oldest after `kafka-delete-records.sh` moves the
+   start. An empty partition gives timestamp `-1`. No fallback is needed.
 3. **`UpdatePartitions` with an equal count.** The doc says "equal to or
    larger", but the broker may refuse equal. The reconcile diff never calls it
    when the counts are equal (3.3). M1's tests pin that.
@@ -1240,6 +1248,11 @@ three topics from the start, and M2 lands on topics that already exist.
    machine that is the same clock, so the delay is unchanged. M1's verify runs
    with `verify-studio` in the same `make verify`, but on different topics.
    Confirm once by hand on `orders-1__retry`.
+   **Answered on 2026-10-08:** a record produced with a timestamp an hour old
+   reads back with the broker's append time. A Studio consumer with Retry on
+   `orders-1` (attempts 1, a failing sink) showed `retried` 1 and `dlq` 1
+   through the owned `orders-1__retry`, and the worker logged that it skipped
+   the Studio record.
 5. **Studio changes, listed, not planned (Studio is out of scope):**
    - (a) Studio could write `studio-first-failure`. It cannot use
      `studio-backoff-ms`, because its loop has its own delay.
