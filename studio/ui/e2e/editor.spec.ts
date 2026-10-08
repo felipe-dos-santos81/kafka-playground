@@ -90,6 +90,16 @@ test('a router built in the editor: wiring adds rules, Deploy wants their condit
   await expect(nodeOf(page, 'router-1')).toContainText('2 rules · no default')
   await expect(edgeOf(page, 'router-1', 'topic-3')).toContainText('#2')
 
+  // An edge deleted and drawn again finds its rule kept, not a second one.
+  await edgeOf(page, 'router-1', 'topic-3').locator('.react-flow__edge-text').dispatchEvent('click') // a node covers it
+  await page.keyboard.press('Backspace')
+  await expect(edgeOf(page, 'router-1', 'topic-3')).toHaveCount(0)
+  await nodeOf(page, 'router-1').click()
+  await expect(ruleOf(page, 2)).toContainText('Not wired')
+  await connect(page, 'router-1', 'topic-3')
+  await expect(ruleOf(page, 2)).not.toContainText('Not wired')
+  await expect(page.locator('.inspector fieldset.rule')).toHaveCount(2)
+
   await page.getByRole('button', { name: 'Save' }).click()
   await page.getByRole('button', { name: 'Deploy' }).click()
   await expect(topBar(page)).toContainText('422: router-1: rule 1: when is required')

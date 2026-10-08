@@ -287,44 +287,7 @@ func Validate(f *Flow, level Level) []Problem {
 			if !decodeData(n, &d, add) {
 				continue
 			}
-			if inDegree[n.ID] != 1 {
-				add(n.ID, "", "a router needs exactly one edge from a consumer or a transform")
-			}
-			if len(d.Rules) == 0 {
-				add(n.ID, "", "a router needs at least one rule")
-			}
-			wired := map[string]bool{} // the topics the router has edges to
-			for _, to := range next[n.ID] {
-				wired[to] = true
-			}
-			used := map[string]bool{} // the topics a rule or the default names
-			for i, r := range d.Rules {
-				if strings.TrimSpace(r.When) == "" {
-					add(n.ID, "", "rule %d: when is required", i+1)
-				} else if _, err := compileRule(r.When); err != nil {
-					add(n.ID, "", "rule %d: when: %v", i+1, err)
-				}
-				switch {
-				case r.To == "":
-					add(n.ID, "", "rule %d: pick a topic", i+1)
-				case !wired[r.To]:
-					add(n.ID, "", "rule %d: topic %q is not wired to the router", i+1, r.To)
-				}
-				if r.To != "" {
-					used[r.To] = true
-				}
-			}
-			if d.Default != "" {
-				if !wired[d.Default] {
-					add(n.ID, "", "default: topic %q is not wired to the router", d.Default)
-				}
-				used[d.Default] = true
-			}
-			for _, to := range next[n.ID] {
-				if !used[to] {
-					add(n.ID, "", "its edge to %s has no rule: add one, or make it the default", to)
-				}
-			}
+			checkRouter(n.ID, d, inDegree[n.ID], next[n.ID], add)
 		}
 	}
 	// Every container a deploy starts needs a name of its own: a consumer
@@ -345,6 +308,53 @@ func Validate(f *Flow, level Level) []Problem {
 		}
 	}
 	return append(ps, forwardLoops(f.Nodes, types, next, topicOf)...)
+}
+
+// checkRouter checks a router for deploy: one edge in, at least one edge out and
+// one rule, conditions that compile as booleans, and rules and edges that agree:
+// every rule's topic and the default are wired (out), every wire is some rule's
+// topic or the default.
+func checkRouter(id string, d RouterData, in int, out []string, add func(node, edge, format string, args ...any)) {
+	if in != 1 {
+		add(id, "", "a router needs exactly one edge from a consumer or a transform")
+	}
+	if len(out) == 0 {
+		add(id, "", "a router needs at least one edge to a topic")
+	}
+	if len(d.Rules) == 0 {
+		add(id, "", "a router needs at least one rule")
+	}
+	wired := map[string]bool{} // the topics the router has edges to
+	for _, to := range out {
+		wired[to] = true
+	}
+	used := map[string]bool{} // the wired topics a rule or the default names
+	target := func(what, to string) {
+		switch {
+		case to == "":
+			add(id, "", "%s: pick a topic", what)
+		case !wired[to]:
+			add(id, "", "%s: topic %q is not wired to the router", what, to)
+		default:
+			used[to] = true
+		}
+	}
+	for i, r := range d.Rules {
+		if strings.TrimSpace(r.When) == "" {
+			add(id, "", "rule %d: when is required", i+1)
+		} else if _, err := compileRule(r.When); err != nil {
+			add(id, "", "rule %d: when: %v", i+1, err)
+		}
+		target(fmt.Sprintf("rule %d", i+1), r.To)
+	}
+	if d.Default != "" {
+		target("default", d.Default)
+	}
+	for _, to := range out {
+		if !used[to] {
+			add(id, "", "its edge to %s has no rule: add one, or make it the default", to)
+		}
+	}
 }
 
 // forwardLoops finds every forward loop (topic → consumer → … → the same topic),

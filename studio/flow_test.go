@@ -121,7 +121,7 @@ func TestValidate(t *testing.T) {
 			addRouter(f, `{"rules":[{"when":"msg.a","to":"topic-2"},{"when":"msg.b","to":"topic-2"}],"default":"topic-2"}`, "topic-2")
 		}, ""},
 		{"router rule with no topic picked", Deploy, func(f *Flow) {
-			addRouter(f, `{"rules":[{"when":"true","to":""}]}`)
+			addRouter(f, `{"rules":[{"when":"true","to":""}],"default":"topic-2"}`, "topic-2")
 		}, "rule 1: pick a topic"},
 		{"router after a transform", Deploy, func(f *Flow) {
 			f.Nodes = append(f.Nodes, node("transform-1", "transform", `{"expr":"msg"}`))
@@ -129,7 +129,7 @@ func TestValidate(t *testing.T) {
 			addRouterAfter(f, "transform-1", `{"rules":[{"when":"true","to":"topic-2"}]}`, "topic-2")
 		}, ""},
 		{"router half-built saves", Save, func(f *Flow) { addRouter(f, `{"rules":[{"when":"","to":"topic-9"}]}`) }, ""},
-		{"router without rules", Deploy, func(f *Flow) { addRouter(f, `{"rules":[]}`) }, "a router needs at least one rule"},
+		{"router without rules", Deploy, func(f *Flow) { addRouter(f, `{"rules":[],"default":"topic-2"}`, "topic-2") }, "a router needs at least one rule"},
 		{"router rule without a condition", Deploy, func(f *Flow) {
 			addRouter(f, `{"rules":[{"when":" ","to":"topic-2"}]}`, "topic-2")
 		}, "rule 1: when is required"},
@@ -140,7 +140,7 @@ func TestValidate(t *testing.T) {
 			addRouter(f, `{"rules":[{"when":"true","to":"topic-2"},{"when":"msg.","to":"topic-2"}]}`, "topic-2")
 		}, "rule 2: when: unexpected end of expression"},
 		{"router rule to an unwired topic", Deploy, func(f *Flow) {
-			addRouter(f, `{"rules":[{"when":"true","to":"topic-9"}]}`)
+			addRouter(f, `{"rules":[{"when":"true","to":"topic-9"}],"default":"topic-2"}`, "topic-2")
 		}, `rule 1: topic "topic-9" is not wired to the router`},
 		{"router default to an unwired topic", Deploy, func(f *Flow) {
 			addRouter(f, `{"rules":[{"when":"true","to":"topic-2"}],"default":"topic-9"}`, "topic-2")
@@ -236,5 +236,17 @@ func addRouterAfter(f *Flow, from, data string, targets ...string) {
 	for _, t := range targets {
 		f.Nodes = append(f.Nodes, node(t, "topic", `{"name":"`+t+`","partitions":1,"replication_factor":1}`))
 		f.Edges = append(f.Edges, edge("router-1", t))
+	}
+}
+
+func TestValidateRouterWithoutEdgesOut(t *testing.T) {
+	f := clone(good)
+	addRouter(&f, `{"rules":[{"when":"true","to":"topic-2"}]}`)
+	var msgs []string
+	for _, p := range Validate(&f, Deploy) {
+		msgs = append(msgs, p.Message)
+	}
+	if !slices.Contains(msgs, "a router needs at least one edge to a topic") {
+		t.Fatalf("a router wired to nothing says so, not only that its rules' topics are unwired; got %q", msgs)
 	}
 }

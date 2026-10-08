@@ -45,10 +45,10 @@ export default function RouterRules({ data, topics, set }: Props) {
           {!wired.has(r.to) && <p className="hint">Not wired: draw an edge from the router to its topic.</p>}
           <div className="buttons">
             <button disabled={i === 0} onClick={() => move(i, -1)}>
-              Up
+              Move up
             </button>
             <button disabled={i === data.rules.length - 1} onClick={() => move(i, 1)}>
-              Down
+              Move down
             </button>
             <button onClick={() => setRules(data.rules.filter((_, j) => j !== i))}>Remove</button>
           </div>

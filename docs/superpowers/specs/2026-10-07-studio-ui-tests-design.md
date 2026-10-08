@@ -158,7 +158,9 @@ is removed afterwards (§6).
 13. **Router in the editor** (`editor.spec.ts`). On an API-created flow shown
     unfitted (one column, room for the router), drop a Router from the palette
     and wire consumer → router → two topics: the Inspector shows two rules
-    with those topics, the node reads `2 rules · no default`. Save and Deploy:
+    with those topics, the node reads `2 rules · no default`. Deleting the edge to
+    the second topic marks rule 2 "Not wired"; drawing it again wires it back,
+    still two rules. Save and Deploy:
     the top bar shows `422: router-1: rule 1: when is required`. Fill rule 1,
     remove rule 2, make its topic the default: the edges read `#1` and
     `default`; Save and Deploy run the flow.

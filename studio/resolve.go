@@ -80,9 +80,10 @@ func instancesOf(n Node) []int {
 
 // Resolve assumes Validate(&f, Deploy) passed: every data field decodes and every
 // producer has one edge to a topic, every consumer has one edge from a topic and
-// at most one out (to a topic or a transform), and every transform one edge in
-// from a consumer and one out to a topic. A consumer's transform runs in its own
-// containers, so a transform has no spec of its own.
+// at most one out (to a topic, a transform or a router), every transform one edge
+// in from a consumer and one out to a topic or a router, and every router's rules
+// name its wired topics. A consumer's transform and router run in its own
+// containers, so neither has a spec of its own.
 func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 	byID := map[string]Node{}
 	topicName := map[string]string{} // topic node id → topic name

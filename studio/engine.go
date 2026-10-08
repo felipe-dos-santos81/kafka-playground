@@ -392,34 +392,42 @@ func applySteps(st *FlowState, specs []NodeSpec) {
 		}
 		consumer := st.Nodes[s.Node]
 		if s.TransformNode != "" {
-			st.Nodes[s.TransformNode] = stepState(consumer, func(c *NodeState) *routeTally {
-				if c.step == nil {
-					return nil
-				}
-				return &routeTally{tally: *c.step}
-			})
+			st.Nodes[s.TransformNode] = stepState(consumer, (*NodeState).transformCounts)
 		}
 		if s.RouterNode != "" {
-			st.Nodes[s.RouterNode] = stepState(consumer, func(c *NodeState) *routeTally { return c.route })
+			st.Nodes[s.RouterNode] = stepState(consumer, (*NodeState).routerCounts)
 		}
 	}
 }
 
+// transformCounts is what a consumer container reported for its transform, nil
+// when nothing: a tally, which has no branches or unmatched.
+func (ns *NodeState) transformCounts() *routeTally {
+	if ns.step == nil {
+		return nil
+	}
+	return &routeTally{tally: *ns.step}
+}
+
+// routerCounts is what a consumer container reported for its router, nil when nothing.
+func (ns *NodeState) routerCounts() *routeTally { return ns.route }
+
 // stepState is the state of a step (a transform or a router) that runs in
 // consumer: the consumer's state, and the counts its containers report for the
-// step (reported picks them), summed as sumCounts sums instances. Its boot joins
-// theirs, so a container that restarted gives the step no rate rather than a
-// wrong one. A step whose consumer's containers answer but none reports it
-// (added after deploy) is "missing" until one does; one whose consumer did not
-// answer keeps the consumer's state, with no numbers.
-func stepState(consumer NodeState, reported func(*NodeState) *routeTally) NodeState {
+// step (countsOf picks them out of one container), summed as sumCounts sums
+// instances, branches and unmatched included. Its boot joins theirs, so a
+// container that restarted gives the step no rate rather than a wrong one. A
+// step whose consumer's containers answer but none reports it (added after
+// deploy) is "missing" until one does; one whose consumer did not answer keeps
+// the consumer's state, with no numbers.
+func stepState(consumer NodeState, countsOf func(*NodeState) *routeTally) NodeState {
 	t := NodeState{State: consumer.State}
 	var steps []NodeState
 	var boots []string
 	answered := false
 	for _, c := range consumer.containers() {
 		answered = answered || c.answered
-		if r := reported(c); r != nil {
+		if r := countsOf(c); r != nil {
 			step := NodeState{Instance: c.Instance, Branches: r.Branches, Unmatched: r.Unmatched}
 			step.setCounts(r.tally)
 			steps = append(steps, step)

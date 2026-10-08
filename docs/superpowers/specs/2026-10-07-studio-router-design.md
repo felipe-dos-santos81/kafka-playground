@@ -57,7 +57,8 @@ Edge table additions: `consumer → router`, `transform → router`,
 - **Save:** like every node's, only the node and edge checks (ids, type,
   allowed pairs); a half-built router saves, and its data is checked on deploy.
 - **Deploy**, each a 422 naming the router (and the rule, as `rule <i>: …`):
-  - exactly one edge in, from a consumer or a transform; at least one edge out;
+  - exactly one edge in, from a consumer or a transform; at least one edge out
+    (`a router needs at least one edge to a topic`);
   - at least one rule;
   - every `when` is non-empty and compiles as a boolean (`expr.AsBool()`, in
     the same environment as a Transform: `msg` declared `any`); a compile error
@@ -100,7 +101,9 @@ router → forward.
 - A consumer with a router reports, in `/stats`,
   `route: {total, errors, lastError, branches, unmatched}`: `total` every record
   the router got, `branches` one count per rule plus one for the default (always
-  present, 0 without a default), `unmatched` the dropped ones.
+  present, 0 without a default) of the records each picked, whether or not the
+  forward then succeeded (a failed forward counts on the consumer), `unmatched`
+  the dropped ones.
 - The snapshot gives the Router node its consumer's state and these counts,
   summed over the consumer's instances (the last error prefixed `#<i>: ` from an
   instance, like every node), and a `boot` joining theirs, as for a Transform.
@@ -113,14 +116,17 @@ router → forward.
 - The palette offers Router. Its node summary: `3 rules · default other-orders`
   or `3 rules · no default` (topic names, not ids).
 - Each edge out of a router carries a label derived from the router's data,
-  never saved: `#1`, `#2`, `default`; while the flow runs, with the branch count:
-  `#1 · 80`, `default · 2`.
-- Drawing an edge from a router to a topic adds a rule `{when: "", to: <topic>}`;
-  Deploy refuses the empty condition until it is filled in. Deleting such an edge
-  keeps the rule; the Inspector marks it "not wired" (and Deploy refuses it).
+  never saved: `#1`, `#2`, `default` (joined, `#1, default`, when several send to
+  one topic); while the flow runs, with the branch count: `#1 · 80`, `default · 2`.
+- Drawing an edge from a router to a topic adds a rule `{when: "", to: <topic>}`,
+  unless a rule or the default already sends there; Deploy refuses the empty
+  condition until it is filled in. Deleting such an edge keeps the rule; the
+  Inspector marks it "not wired" (and Deploy refuses it), and drawing the edge
+  again wires it back rather than adding a second rule.
 - Inspector (router): per rule a "When" textarea and a "Topic" select of the
   topics the router is wired to (by name), with move up, move down and remove;
-  then "Add rule" and a "Default" select ("none" or a wired topic). Hint:
+  then "Add rule" and a "Default" select ("none: drop the record" or a wired
+  topic). Hint:
   "First match wins. Without a default, records no rule matches are dropped and
   counted." Every control has a label tied to it.
 - The Router node's runtime line: `120 msgs · 3.0/s · 2 errors · 5 unmatched`;

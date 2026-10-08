@@ -8,7 +8,7 @@ type Props = {
   flowId?: string // the open flow, for the producer's webhook line and a consumer's rewind
   running: boolean // the open flow runs: a consumer's group cannot be rewound
   dirty: boolean // unsaved edits: a rewind uses the saved group and topic
-  topics: { id: string; name: string }[] // the topics the node has edges to, for a router's rules
+  topics: { id: string; name: string }[] // a router's wired topics, for its rules (empty for other nodes)
   onChange: (id: string, patch: Record<string, unknown>) => void
 }
 
