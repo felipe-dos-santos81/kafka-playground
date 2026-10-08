@@ -150,23 +150,24 @@ A consumer of `orders-1` that fails a record parks it in `orders-1__retry`, then
 |---|---|---|---|
 | `studio-group` | Studio consumers only | the consumer's group | Skips the record: that Studio consumer's own retry loop handles it. Never set it from another client. |
 | `studio-attempt` | the publisher, on every failure | failed tries so far: `1`, `2`, … | Missing counts as 1. Not a positive integer: DLQ. At `MAX_ATTEMPTS` or above: DLQ. |
-| `studio-backoff-ms` | the publisher, on every failure | `0`–`3600000`, counted from the record's time in `orders-1__retry` | Missing: `BACKOFF_MS`. Anything else: DLQ. |
+| `studio-backoff-ms` | a publisher other than Studio, on every failure | `0`–`3600000`, counted from the record's time in `orders-1__retry` | Missing: `BACKOFF_MS`. Anything else: DLQ. |
 | `studio-error` | the publisher | the error's first line, at most 1 KiB | Replaces it only for a bad header: `retry: bad header studio-backoff-ms "soon"`. |
 | `studio-origin` | the first publisher, once | `topic[partition]@offset` where the record was first read | Sets it to the record's place in `orders-1__retry` when missing. |
-| `studio-first-failure` | the first publisher, once | RFC 3339 UTC, `2026-10-08T14:00:00.000Z` | Sets it to the record's time in `orders-1__retry` when missing. |
+| `studio-first-failure` | the first publisher, once; Studio does not write it | RFC 3339 UTC, `2026-10-08T14:00:00.000Z` | Sets it to the record's time in `orders-1__retry` when missing. |
 
-The `studio-` headers are Studio's: a Studio consumer with Retry writes them to the same topics, so Console, the DLQ and a Studio tail read both alike.
+A Studio consumer with Retry writes the first four (`studio-group`, `studio-attempt`, `studio-error`, `studio-origin`) to the same topics, so Console, the DLQ and a Studio tail read both alike. Studio never writes `studio-backoff-ms` or `studio-first-failure`: other publishers do.
 
 The retry container runs the redelivery worker, in group `orders-1__redelivery` (franz-go only: never point `kcat -G` at it). For each record without `studio-group`, in partition order:
 
-- It waits until the record's time plus its backoff. The retry topic's `LogAppendTime` makes that the broker's clock. While a record waits, the records behind it on its partition wait too, so a long backoff holds up shorter ones; more partitions on `orders-1__retry` reduce that.
-- Then it sends the record back to `orders-1`, with its key, value and headers. Once `studio-attempt` reaches `MAX_ATTEMPTS`, or when a header is bad, it sends it to `orders-1__dlq` instead.
+- A record whose `studio-attempt` has reached `MAX_ATTEMPTS`, or whose header is bad, goes to `orders-1__dlq` at once, without waiting for its backoff.
+- Any other record waits until its time plus its backoff, then goes back to `orders-1`, with its key, value and headers. The retry topic's `LogAppendTime` makes that time the broker's clock.
+- A partition is handled in order. While a record waits, the records behind it on its partition wait too, so a long backoff holds up shorter ones, and even a record bound for the DLQ; more partitions on `orders-1__retry` reduce that.
 - It commits a record only after the broker acknowledges the send. A crash in between sends it twice: delivery is at-least-once.
 
 What a consumer of `orders-1` sees:
 
 - Every group on `orders-1` gets the redelivered record, including groups that never failed it, such as an `orders-audit`-style fan-out group. A Studio consumer with Retry avoids that with its own loop.
-- A redelivered record has `studio-attempt` and `studio-origin`; an original has neither. To act on a record once, dedupe on `studio-origin` when present, else on the record's own `topic[partition]@offset`.
+- A redelivered record has `studio-origin`, and `studio-attempt` if its publisher set one; an original has neither. To act on a record once, dedupe on `studio-origin` when present, else on the record's own `topic[partition]@offset`.
 - Key order is not kept: the record comes back after records sent while it waited.
 
 `MAX_ATTEMPTS` counts tries, the first included: with 3, a record is tried 3 times. Studio's `attempts` counts retries after the first try, so Studio's `attempts: 3` is `MAX_ATTEMPTS: 4`.
