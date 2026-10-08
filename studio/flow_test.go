@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -113,6 +114,48 @@ func TestValidate(t *testing.T) {
 			f.Nodes = append(f.Nodes, node("transform-1", "transform", `{"expr":" "}`), node("topic-2", "topic", topic("x")))
 			f.Edges = append(f.Edges, edge("consumer-1", "transform-1"), edge("transform-1", "topic-2"))
 		}, "expr is required"},
+		{"router valid", Deploy, func(f *Flow) {
+			addRouter(f, `{"rules":[{"when":"msg.total > 100","to":"topic-2"}],"default":"topic-3"}`, "topic-2", "topic-3")
+		}, ""},
+		{"router: several rules and the default to one topic", Deploy, func(f *Flow) {
+			addRouter(f, `{"rules":[{"when":"msg.a","to":"topic-2"},{"when":"msg.b","to":"topic-2"}],"default":"topic-2"}`, "topic-2")
+		}, ""},
+		{"router rule with no topic picked", Deploy, func(f *Flow) {
+			addRouter(f, `{"rules":[{"when":"true","to":""}]}`)
+		}, "rule 1: pick a topic"},
+		{"router after a transform", Deploy, func(f *Flow) {
+			f.Nodes = append(f.Nodes, node("transform-1", "transform", `{"expr":"msg"}`))
+			f.Edges = append(f.Edges, edge("consumer-1", "transform-1"))
+			addRouterAfter(f, "transform-1", `{"rules":[{"when":"true","to":"topic-2"}]}`, "topic-2")
+		}, ""},
+		{"router half-built saves", Save, func(f *Flow) { addRouter(f, `{"rules":[{"when":"","to":"topic-9"}]}`) }, ""},
+		{"router without rules", Deploy, func(f *Flow) { addRouter(f, `{"rules":[]}`) }, "a router needs at least one rule"},
+		{"router rule without a condition", Deploy, func(f *Flow) {
+			addRouter(f, `{"rules":[{"when":" ","to":"topic-2"}]}`, "topic-2")
+		}, "rule 1: when is required"},
+		{"router rule that is not boolean", Deploy, func(f *Flow) {
+			addRouter(f, `{"rules":[{"when":"\"x\"","to":"topic-2"}]}`, "topic-2")
+		}, "rule 1: when: expected bool, but got string"},
+		{"router rule that does not compile", Deploy, func(f *Flow) {
+			addRouter(f, `{"rules":[{"when":"true","to":"topic-2"},{"when":"msg.","to":"topic-2"}]}`, "topic-2")
+		}, "rule 2: when: unexpected end of expression"},
+		{"router rule to an unwired topic", Deploy, func(f *Flow) {
+			addRouter(f, `{"rules":[{"when":"true","to":"topic-9"}]}`)
+		}, `rule 1: topic "topic-9" is not wired to the router`},
+		{"router default to an unwired topic", Deploy, func(f *Flow) {
+			addRouter(f, `{"rules":[{"when":"true","to":"topic-2"}],"default":"topic-9"}`, "topic-2")
+		}, `default: topic "topic-9" is not wired to the router`},
+		{"router edge without a rule", Deploy, func(f *Flow) {
+			addRouter(f, `{"rules":[{"when":"true","to":"topic-2"}]}`, "topic-2", "topic-3")
+		}, "its edge to topic-3 has no rule: add one, or make it the default"},
+		{"router fed by nothing", Deploy, func(f *Flow) {
+			addRouter(f, `{"rules":[{"when":"true","to":"topic-2"}]}`, "topic-2")
+			f.Edges = slices.DeleteFunc(f.Edges, func(e Edge) bool { return e.Target == "router-1" })
+		}, "a router needs exactly one edge from a consumer or a transform"},
+		{"router routes back to the topic it reads", Deploy, func(f *Flow) {
+			f.Nodes = append(f.Nodes, node("router-1", "router", `{"rules":[{"when":"true","to":"topic-1"}]}`))
+			f.Edges = append(f.Edges, edge("consumer-1", "router-1"), edge("router-1", "topic-1"))
+		}, `forwarding loops back to topic "orders"`},
 		{"forward to the topic it reads", Deploy, func(f *Flow) { f.Edges = append(f.Edges, edge("consumer-1", "topic-1")) }, `forwarding loops back to topic "orders"`},
 		{"forward to the topic it reads saves", Save, func(f *Flow) { f.Edges = append(f.Edges, edge("consumer-1", "topic-1")) }, ""},
 		{"two consumer cycle", Deploy, func(f *Flow) {
@@ -178,5 +221,20 @@ func TestValidateProblemNamesTheNode(t *testing.T) {
 	ps = Validate(&f, Save)
 	if len(ps) != 1 || ps[0].Edge != "topic-1-producer-1" || ps[0].Node != "" {
 		t.Fatalf("want problem on the edge, got %+v", ps)
+	}
+}
+
+// addRouter wires consumer-1 → router-1 with data, and router-1 to a new topic
+// for each id in targets (named after it).
+func addRouter(f *Flow, data string, targets ...string) {
+	addRouterAfter(f, "consumer-1", data, targets...)
+}
+
+func addRouterAfter(f *Flow, from, data string, targets ...string) {
+	f.Nodes = append(f.Nodes, node("router-1", "router", data))
+	f.Edges = append(f.Edges, edge(from, "router-1"))
+	for _, t := range targets {
+		f.Nodes = append(f.Nodes, node(t, "topic", `{"name":"`+t+`","partitions":1,"replication_factor":1}`))
+		f.Edges = append(f.Edges, edge("router-1", t))
 	}
 }

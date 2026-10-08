@@ -82,6 +82,18 @@ type TransformData struct {
 	Expr string `json:"expr"`
 }
 
+// RouterData is a router's ordered rules: a record goes to the topic of the first
+// rule whose condition holds, else to Default, else nowhere.
+type RouterData struct {
+	Rules   []Rule `json:"rules"`
+	Default string `json:"default"` // a topic node id; "" for none
+}
+
+type Rule struct {
+	When string `json:"when"` // an expr over msg that yields true or false
+	To   string `json:"to"`   // a topic node id
+}
+
 // templateData is what producer key/value templates are rendered with.
 type templateData struct {
 	Seq  int
@@ -109,8 +121,9 @@ const (
 var allowedEdges = map[string]map[string]bool{
 	"producer":  {"topic": true},
 	"topic":     {"consumer": true},
-	"consumer":  {"topic": true, "transform": true},
-	"transform": {"topic": true},
+	"consumer":  {"topic": true, "transform": true, "router": true},
+	"transform": {"topic": true, "router": true},
+	"router":    {"topic": true},
 }
 
 var (
@@ -254,7 +267,7 @@ func Validate(f *Flow, level Level) []Problem {
 				add(n.ID, "", "a consumer needs exactly one edge from a topic")
 			}
 			if outDegree[n.ID] > 1 {
-				add(n.ID, "", "a consumer may forward to at most one topic or transform")
+				add(n.ID, "", "a consumer may forward to at most one topic, transform or router")
 			}
 		case "transform":
 			var d TransformData
@@ -267,7 +280,48 @@ func Validate(f *Flow, level Level) []Problem {
 				add(n.ID, "", "expr: %v", err)
 			}
 			if inDegree[n.ID] != 1 || outDegree[n.ID] != 1 {
-				add(n.ID, "", "a transform needs one edge from a consumer and one edge to a topic")
+				add(n.ID, "", "a transform needs one edge from a consumer and one edge to a topic or a router")
+			}
+		case "router":
+			var d RouterData
+			if !decodeData(n, &d, add) {
+				continue
+			}
+			if inDegree[n.ID] != 1 {
+				add(n.ID, "", "a router needs exactly one edge from a consumer or a transform")
+			}
+			if len(d.Rules) == 0 {
+				add(n.ID, "", "a router needs at least one rule")
+			}
+			wired := map[string]bool{} // the topics the router has edges to
+			for _, to := range next[n.ID] {
+				wired[to] = true
+			}
+			used := map[string]bool{} // the topics a rule or the default names
+			for i, r := range d.Rules {
+				if strings.TrimSpace(r.When) == "" {
+					add(n.ID, "", "rule %d: when is required", i+1)
+				} else if _, err := compileRule(r.When); err != nil {
+					add(n.ID, "", "rule %d: when: %v", i+1, err)
+				}
+				switch {
+				case r.To == "":
+					add(n.ID, "", "rule %d: pick a topic", i+1)
+				case !wired[r.To]:
+					add(n.ID, "", "rule %d: topic %q is not wired to the router", i+1, r.To)
+				}
+				used[r.To] = true
+			}
+			if d.Default != "" {
+				if !wired[d.Default] {
+					add(n.ID, "", "default: topic %q is not wired to the router", d.Default)
+				}
+				used[d.Default] = true
+			}
+			for _, to := range next[n.ID] {
+				if !used[to] {
+					add(n.ID, "", "its edge to %s has no rule: add one, or make it the default", to)
+				}
 			}
 		}
 	}

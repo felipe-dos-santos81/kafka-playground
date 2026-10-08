@@ -10,21 +10,30 @@ import (
 
 // NodeSpec is the whole configuration of one node container.
 type NodeSpec struct {
-	Flow            string `json:"flow"`
-	Node            string `json:"node"`
-	Type            string `json:"type"`  // "producer" or "consumer"
-	Topic           string `json:"topic"` // produced to, or consumed from
-	Group           string `json:"group,omitempty"`
-	AutoOffsetReset string `json:"auto_offset_reset,omitempty"`
-	Key             string `json:"key,omitempty"`            // producer key template
-	Value           string `json:"value,omitempty"`          // producer value template
-	Source          string `json:"source,omitempty"`         // producer: "manual" or "timer"
-	IntervalMS      int    `json:"interval_ms,omitempty"`    // producer: the timer's period
-	Forward         string `json:"forward,omitempty"`        // consumer: the topic it forwards every record to
-	SinkURL         string `json:"sink_url,omitempty"`       // consumer: the http sink's URL
-	Instance        int    `json:"instance,omitempty"`       // consumer: 1..n when it runs n > 1 instances, else 0
-	Transform       string `json:"transform,omitempty"`      // consumer: the expr its records pass through before the forward
-	TransformNode   string `json:"transform_node,omitempty"` // consumer: that transform's node id, which its counts are reported under
+	Flow            string  `json:"flow"`
+	Node            string  `json:"node"`
+	Type            string  `json:"type"`  // "producer" or "consumer"
+	Topic           string  `json:"topic"` // produced to, or consumed from
+	Group           string  `json:"group,omitempty"`
+	AutoOffsetReset string  `json:"auto_offset_reset,omitempty"`
+	Key             string  `json:"key,omitempty"`            // producer key template
+	Value           string  `json:"value,omitempty"`          // producer value template
+	Source          string  `json:"source,omitempty"`         // producer: "manual" or "timer"
+	IntervalMS      int     `json:"interval_ms,omitempty"`    // producer: the timer's period
+	Forward         string  `json:"forward,omitempty"`        // consumer: the topic it forwards every record to
+	SinkURL         string  `json:"sink_url,omitempty"`       // consumer: the http sink's URL
+	Instance        int     `json:"instance,omitempty"`       // consumer: 1..n when it runs n > 1 instances, else 0
+	Transform       string  `json:"transform,omitempty"`      // consumer: the expr its records pass through before the forward
+	TransformNode   string  `json:"transform_node,omitempty"` // consumer: that transform's node id, which its counts are reported under
+	Routes          []Route `json:"routes,omitempty"`         // consumer: its router's rules, in order; set, they choose the forward
+	RouteDefault    string  `json:"route_default,omitempty"`  // consumer: the router's default topic; "" drops what no rule matches
+	RouterNode      string  `json:"router_node,omitempty"`    // consumer: the router's node id, which its counts are reported under
+}
+
+// Route is one router rule as a consumer runs it: a condition and a topic name.
+type Route struct {
+	When  string `json:"when"`
+	Topic string `json:"topic"`
 }
 
 // nodeRef names one node container: instance 0 is a node's only container, 1..n
@@ -108,12 +117,21 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 			if d.Sink.Kind == "http" {
 				spec.SinkURL = d.Sink.URL
 			}
-			next := out[dst.ID] // a topic, a transform, or "" when the consumer forwards nothing
+			next := out[dst.ID] // a topic, a transform, a router, or "" when the consumer forwards nothing
 			if t := byID[next]; t.Type == "transform" {
 				var td TransformData
 				json.Unmarshal(t.Data, &td)
 				spec.Transform, spec.TransformNode = td.Expr, t.ID
 				next = out[t.ID]
+			}
+			if r := byID[next]; r.Type == "router" {
+				var rd RouterData
+				json.Unmarshal(r.Data, &rd)
+				for _, rule := range rd.Rules {
+					spec.Routes = append(spec.Routes, Route{When: rule.When, Topic: topicName[rule.To]})
+				}
+				spec.RouteDefault, spec.RouterNode = topicName[rd.Default], r.ID
+				next = "" // the router chooses the forward
 			}
 			spec.Forward = topicName[next]
 			for _, i := range instancesOf(dst) {

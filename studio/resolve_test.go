@@ -76,3 +76,21 @@ func TestResolveTransform(t *testing.T) {
 		t.Fatalf("want both topics created, got %+v", topics)
 	}
 }
+
+func TestResolveRouter(t *testing.T) {
+	f := clone(good)
+	f.ID = "0a1b2c3d"
+	f.Nodes = append(f.Nodes, node("transform-1", "transform", `{"expr":"msg"}`))
+	f.Edges = append(f.Edges, edge("consumer-1", "transform-1"))
+	addRouterAfter(&f, "transform-1", `{"rules":[{"when":"msg.total > 100","to":"topic-2"},{"when":"true","to":"topic-3"}],"default":"topic-2"}`, "topic-2", "topic-3")
+	specs, topics := Resolve(f)
+	want := NodeSpec{Flow: "0a1b2c3d", Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "orders-workers",
+		Transform: "msg", TransformNode: "transform-1",
+		Routes: []Route{{When: "msg.total > 100", Topic: "topic-2"}, {When: "true", Topic: "topic-3"}}, RouteDefault: "topic-2", RouterNode: "router-1"}
+	if len(specs) != 2 || !reflect.DeepEqual(specs[1], want) {
+		t.Fatalf("a router runs in its consumer, after its transform, with its rules as topic names:\n got %+v\nwant %+v", specs, want)
+	}
+	if len(topics) != 3 {
+		t.Fatalf("want all three topics created, got %+v", topics)
+	}
+}
