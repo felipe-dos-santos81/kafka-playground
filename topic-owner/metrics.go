@@ -9,6 +9,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
 )
 
 // scrapeDeadline bounds one scrape's admin calls; it fits Prometheus's 4 s scrape_timeout.
@@ -160,14 +161,16 @@ func readTopic(ctx context.Context, adm *kadm.Client, topic string) (topicState,
 			}
 		})
 	}
-	groups, err := adm.ListGroups(ctx)
+	groups, err := adm.ListGroupsByType(ctx, []string{"classic", "consumer"})
 	if err != nil {
 		return s, err
 	}
 	s.committed = map[string]map[int32]int64{}
 	if names := groups.Groups(); len(names) > 0 {
 		for group, r := range adm.FetchManyOffsets(ctx, names...) {
-			if r.Err != nil {
+			if errors.Is(r.Err, kerr.GroupIDNotFound) { // deleted since the list
+				continue
+			} else if r.Err != nil {
 				err = errors.Join(err, r.Err)
 				continue
 			}

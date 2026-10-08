@@ -193,6 +193,29 @@ func TestOwnerPartialApply(t *testing.T) {
 	}
 }
 
+// An apply failure does not hide the plan's unfixable problems.
+func TestOwnerApplyErrKeepsProblems(t *testing.T) {
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr)
+
+	cfg := want(2, map[string]string{"retention.ms": "1"})
+	actual := have(3, 1, map[string]string{})
+	var describeErr, applyErr error
+	var landed int
+	var applied []Plan
+	o := fakeOwner(cfg, &actual, &describeErr, &applyErr, &landed, &applied)
+	applyErr = errors.New("alter configs: INVALID_CONFIG")
+	o.pass(context.Background())
+	for _, part := range []string{"owner-verify-1: alter configs: INVALID_CONFIG", "has 3 partitions, wants 2: partitions never decrease"} {
+		if !strings.Contains(o.health(), part) {
+			t.Fatalf("health %q lacks %q", o.health(), part)
+		}
+	}
+	if !strings.Contains(o.health(), "; ") {
+		t.Fatalf("health %q: want the parts joined with \"; \"", o.health())
+	}
+}
+
 // Losing the create race (a Studio deploy made the topic first) is reported as
 // such, not as a create, and is not a create failure.
 func TestCreateErr(t *testing.T) {

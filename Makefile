@@ -270,6 +270,7 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 		docker logs owner-verify-1 2>&1 | grep -q 'owner-verify-1: set retention.ms=3600000 (was 1000)' && break; \
 		[ "$$i" = 15 ] && { echo "TOPICS FAILED: retention.ms=1000 was not reverted: $$(desc owner-verify-1)"; exit 1; }; sleep 1; \
 	done; \
+	desc owner-verify-1 | grep -q 'retention.ms=3600000' || { echo "TOPICS FAILED: retention.ms=3600000 not restored: $$(desc owner-verify-1)"; exit 1; }; \
 	echo "topics reconcile: $$(desc owner-verify-1)"; \
 	own owner-verify-1 main 3 -e TOPIC_CONFIG_RETENTION_MS=3600000 && healthy owner-verify-1 || exit 1; \
 	docker logs owner-verify-1 2>&1 | grep -q 'owner-verify-1: partitions 2 -> 3' || { echo "TOPICS FAILED: partitions not raised: $$(docker logs owner-verify-1 2>&1)"; exit 1; }; \

@@ -133,7 +133,7 @@ func (o *owner) pass(ctx context.Context) {
 			log.Print(l)
 		}
 		if err != nil {
-			problem = fmt.Sprintf("%s: %v", topic, err)
+			problem = strings.Join(append([]string{fmt.Sprintf("%s: %v", topic, err)}, p.Problems...), "; ")
 		} else {
 			problem = strings.Join(p.Problems, "; ")
 		}
