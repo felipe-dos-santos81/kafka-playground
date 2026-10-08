@@ -721,7 +721,7 @@ Designed in `docs/superpowers/specs/2026-10-08-studio-retry-dlq-design.md`.
 - With a DLQ, a record's first failure ends its path: a sink or forward failure goes to the retry topic while tries remain, then to the DLQ; a transform or router failure straight to the DLQ; as read, with `studio-*` headers.
 - A second client in the consumer's container reads the retry topic, waits until each record is due, and runs it through the same path; another group's records are skipped.
 - **Demo:** a consumer with a failing http sink, `retry {attempts: 1, delay_ms: 1000}` and a DLQ: one record shows `1 retried`, then `1 dlq` and `0 waiting`; a log consumer on `<input>__dlq` shows its headers.
-- Built as decided in its plan: the retry counts join the consumer's runtime line; headers show in the tail; `handle` takes one record at a time, as the main and retry loops share the transform's and router's VMs; `verify-studio` reads one record through two consumers (a failing sink with retry, a failing transform) into one shared DLQ.
+- Built as decided in its plan: the retry counts join the consumer's runtime line; headers show in the tail; the main and retry loops call `handle` at once, and the transform and the router each lock their own VM; `verify-studio` reads one record through two consumers (a failing sink with retry, a failing transform) into one shared DLQ.
 
 ### Not planned
 

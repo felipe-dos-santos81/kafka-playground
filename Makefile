@@ -1,6 +1,6 @@
-# Makefile for Kafka Playground — local Kafka sandbox
-# KRaft broker, topic jobs, kcat consumers, producer page, Redpanda Console, Pipeline Studio.
-# Typical flow: up → produce → logs → scale → groups → down; verify checks it all end to end.
+# Kafka Playground: a local Kafka sandbox (KRaft broker, topic jobs, kcat consumers,
+# producer page, Redpanda Console, Pipeline Studio).
+# Typical use: up → produce → logs → scale → groups → down. verify checks it all end to end.
 SERVICE = Kafka Playground
 
 # Variables
@@ -36,7 +36,7 @@ up: ## [STEP 1] Start everything and wait until it is healthy
 	$(COMPOSE) up -d --wait
 	@echo "Producer page: $(PRODUCER_URL)   Console: $(CONSOLE_URL)   Studio: $(STUDIO_URL)   Broker from the host: localhost:9092"
 
-down: ## Remove every container, Studio node containers first (topics and messages are lost)
+down: ## Remove every container, Studio nodes first (deletes topics and messages)
 	@ids=$$(docker ps -aq -f label=studio.flow); [ -z "$$ids" ] || docker rm -f $$ids >/dev/null
 	$(COMPOSE) down --remove-orphans
 
@@ -54,7 +54,7 @@ topics: ## Describe every topic: partitions, leaders, replicas
 groups: ## [STEP 5] Describe every consumer group: members, partitions, lag
 	$(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --describe --all-groups
 
-nodes: ## List Studio node containers: one per deployed producer, consumer and consumer instance
+nodes: ## List Studio node containers (one per producer and consumer instance)
 	docker ps -a -f label=studio.flow
 
 # ── Produce ──────────────────────────────────────────────────────────────────
@@ -73,7 +73,7 @@ scale: ## [STEP 4] Set the number of orders-workers group members (usage: make s
 
 # ── Verify ───────────────────────────────────────────────────────────────────
 
-verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail, lag, rewind, live ticks, chained flows, instances, transforms, routers, retry and DLQ, stop, delete; removes its flows and topics
+verify-studio: up ## Check the studio API end to end: every node type, retry and DLQ; cleans up its flows and topics
 	@health=$$(curl -sS --fail-with-body $(STUDIO_URL)/api/health) || { echo "STUDIO FAILED: health: $$health"; exit 1; }; \
 	echo "studio health: $$health"; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows -H 'Sec-Fetch-Site: cross-site' --data '{"name":"x"}'); \
@@ -226,12 +226,12 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$qid || { echo "STUDIO FAILED: delete the retry flow"; exit 1; }; \
 	echo "STUDIO OK ($$id)"
 
-verify-ui: up studio/ui/.chromium ## Check the studio's UI in a browser (Playwright, Chromium): editor, node types, live view; installs Chromium once
+verify-ui: up studio/ui/.chromium ## Check the studio UI in Chromium (Playwright); installs Chromium once
 	@cd studio/ui && STUDIO_URL=$(STUDIO_URL) KAFKA_BOOTSTRAP=$(lastword $(BOOTSTRAP)) npx playwright test && echo "UI OK"
 
 # Waits until both groups have committed past the record (so it can no longer be
 # redelivered), then counts it in the logs: exactly once per group.
-verify: up verify-studio verify-ui ## End-to-end check: studio API, studio UI, then one record seen exactly once per consumer group
+verify: up verify-studio verify-ui ## Full check: studio API, studio UI, then one record seen once per consumer group
 	@id="verify-$$(date +%s)"; \
 	sent=$$($(MAKE) --no-print-directory produce key="$$id" value="{\"id\":\"$$id\"}") || exit 1; \
 	partition=$$(echo "$$sent" | sed 's/.*"partition":\([0-9]*\).*/\1/'); \
@@ -251,7 +251,7 @@ verify: up verify-studio verify-ui ## End-to-end check: studio API, studio UI, t
 # ── Development ──────────────────────────────────────────────────────────────
 
 # gofmt -l lists unformatted files; tee shows them, and a non-empty list fails the step.
-test: studio/ui/node_modules ## Static checks and unit tests, no running stack needed: go vet, gofmt, go test, UI build and UI tests type-check (tsc), compose config
+test: studio/ui/node_modules ## Static checks and unit tests, no Docker needed (go vet, gofmt, go test, UI build, tsc, compose config)
 	cd producer && go vet ./... && test -z "$$(gofmt -l . | tee /dev/stderr)"
 	cd studio && go vet ./... && test -z "$$(gofmt -l . | tee /dev/stderr)" && go test ./...
 	cd studio/ui && npm run build

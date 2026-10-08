@@ -21,8 +21,8 @@ export type NodeRuntime = {
   warning?: string
   branches?: number[] // routers: records per rule, then the default's
   unmatched?: number // routers: records dropped, no rule matched and no default
-  retried?: number // consumers: records sent to the retry topic
-  dlq?: number // consumers: records sent to the DLQ
+  retried?: number // consumers deployed with retry: records sent to the retry topic
+  dlq?: number // consumers deployed with a DLQ: records sent to it
   waiting?: number // consumers: records waiting in the retry topic, once its group has committed
   instances?: NodeRuntime[]
 }

@@ -104,7 +104,8 @@ drawn node's settings win. An existing topic is used as it is, as for any topic
 
 ### 4.2 Which failure goes where
 
-Per record in the consumer (`node.go`), the path stays tail → http sink →
+Per record in the consumer (`node.go`; the failure path and the retry loop are
+in `retry.go`), the path stays tail → http sink →
 transform → router → forward. With `DLQ` set, the first failure ends the
 record's path (a failed sink no longer goes on to the forward, so a retry never
 forwards twice) and sends it on:
@@ -127,13 +128,14 @@ on where it can, and it commits (at-most-once).
 
 The record as the consumer read it from its input topic: its original key and
 value (not the transformed value), so a retry runs the whole path again. Its
-headers are the original ones with these set (replacing any earlier value):
+headers are the original ones with these four set (replacing any earlier value
+of these four; other headers, `studio-` ones included, are kept):
 
 | Header | Value |
 |---|---|
 | `studio-group` | the consumer's group |
 | `studio-attempt` | tries that failed so far, counting this one (`1`, `2`, …) |
-| `studio-error` | the failure's first line, cut at 1 KiB (`sink: … answered 503 Service Unavailable`) |
+| `studio-error` | the failure's first line, cut at 1 KiB without splitting a character (`sink: … answered 503 Service Unavailable`; a forward's names its topic: `forward to orders-archive: …`) |
 | `studio-origin` | where the record was first read: `orders-1[2]@57` |
 
 `studio-origin` is set once, on the first failure, and kept on retries.
@@ -146,9 +148,9 @@ A write to the retry topic or the DLQ that fails counts as an error
 still commits, unless the write failed because Stop closed the client, which
 leaves it uncommitted to be redelivered.
 
-A consumer's main loop and its retry loop share one `handle`, which takes one
-record at a time: the transform's and the router's VMs are not safe for
-concurrent use.
+A consumer's main loop and its retry loop call `handle` at once. The transform
+and the router each lock their own VM, which is not safe for concurrent use, so
+a slow sink in one loop never holds up the other.
 
 ### 4.4 The retry loop
 
@@ -160,14 +162,19 @@ container name as client id. Per record:
 1. `studio-group` is not this consumer's group: mark it committed and skip it
    (another group's retry on a shared input topic, or a record someone else
    wrote). Not counted.
-2. Wait until the record's timestamp plus `delay_ms`. Stop ends the wait; the
-   record is left unmarked, so the next deploy retries it.
+2. Wait until the record's timestamp plus `delay_ms`, but never longer than
+   `delay_ms` (a record dated in the future, written by hand). Stop ends the
+   wait; the record is left unmarked, so the next deploy retries it.
 3. Run it through the same `handle` as the main loop, its prior failure count
    read from `studio-attempt`; a failure goes on per §4.2.
 
 Only the retry loop waits; the main loop never does. With `instances: N`, every
 instance runs a retry client in the shared retry group, so the retry topic's
 partitions spread over instances like the main topic's.
+
+Records in the retry topic are read only while retry is on and the group keeps
+its name. Turning retry off, or renaming the group, leaves them where they are
+(the README says so); nothing moves them to the DLQ.
 
 ### 4.5 Stop
 
@@ -178,14 +185,17 @@ The stop budgets in `node.go` stay inside `stopGraceSeconds`.
 ## 5. Counts and the snapshot
 
 - `/stats` gains `retried` (records written to the retry topic) and `dlq`
-  (records written to the DLQ), both left out at 0. `total` still counts only
+  (records written to the DLQ), each reported (from 0) only by a consumer that
+  runs with retry, or with a DLQ. `total` still counts only
   the main loop's records, so msg/s keeps its meaning; `errors` counts every
-  failure, retries' included; a retried record is pushed to the tail like any
-  other (its partition and offset are the retry topic's).
+  failure, retries' included, and the retry loop's fetch errors (`retry fetch: …`);
+  a retried record is pushed to the tail like any other (its partition and
+  offset are the retry topic's).
 - `NodeState` (`engine.go`) and `NodeRuntime` (`api.ts`) gain, together, as the
   last fields before `instances` (after `unmatched`), so `verify-studio`'s
   field-order greps keep working:
-  - `retried` and `dlq`, summed over instances;
+  - `retried` and `dlq` (`*int64`, left out when no container reports them),
+    summed over instances;
   - `waiting` (`*int64`): the lag of `<group>__retry` on `<input>__retry`, the
     records waiting for their retry. Its group is added to the snapshot's one
     `adm.Lag` call. The lag arithmetic in `applyKafka` becomes a function of
@@ -206,8 +216,9 @@ The stop budgets in `node.go` stay inside `stopGraceSeconds`.
   The two checkboxes are not coupled in the UI: deploy's refusal (§3) is shown
   in the top bar like any other. Every control has a label tied to it.
 - **Consumer node:** while running, its runtime line gains `4 retried`,
-  `2 waiting` and `1 dlq`; `retried` and `dlq` once nonzero, `waiting` once the
-  retry group has committed.
+  `2 waiting` and `1 dlq`: `retried` and `dlq` from 0 once its container answers,
+  when it was deployed with Retry or with a DLQ (what runs, not the edited
+  canvas); `waiting` once the retry group has committed.
 - **Tail drawer:** a record's headers, when it has any, as `name: value` items
   after its value.
 

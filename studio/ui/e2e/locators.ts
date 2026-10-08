@@ -8,6 +8,7 @@ export const flowItem = (page: Page, name: string) => flowRow(page, name).getByT
 export const nodeOf = (page: Page, id: string) => page.getByTestId(`node-${id}`)
 export const runtimeOf = (page: Page, id: string) => page.getByTestId(`runtime-${id}`)
 export const edgeOf = (page: Page, from: string, to: string) => page.getByLabel(`Edge from ${from} to ${to}`, { exact: true })
+export const onFailureOf = (page: Page) => page.locator('.inspector').getByRole('group', { name: 'On failure', exact: true })
 export const ruleOf = (page: Page, n: number) => page.locator('.inspector').getByRole('group', { name: `Rule ${n}`, exact: true })
 export const tail = (page: Page) => page.getByTestId('tail')
 export const paletteItem = (page: Page, type: string) => page.locator(`.palette-item.${type}`)

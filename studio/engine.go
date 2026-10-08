@@ -75,8 +75,8 @@ type NodeState struct {
 	Warning    string             `json:"warning,omitempty"`
 	Branches   []int64            `json:"branches,omitempty"`  // routers: records per rule, then the default's
 	Unmatched  int64              `json:"unmatched,omitempty"` // routers: records dropped, no rule matched and no default
-	Retried    int64              `json:"retried,omitempty"`   // consumers: records sent to the retry topic
-	DLQ        int64              `json:"dlq,omitempty"`       // consumers: records sent to the DLQ
+	Retried    *int64             `json:"retried,omitempty"`   // consumers with retry: records sent to the retry topic
+	DLQ        *int64             `json:"dlq,omitempty"`       // consumers with a DLQ: records sent to it
 	Waiting    *int64             `json:"waiting,omitempty"`   // consumers: records waiting in the retry topic (its retry group's lag)
 	Instances  []NodeState        `json:"instances,omitempty"`
 
@@ -669,14 +669,14 @@ func (ns *NodeState) sumInstances() {
 // sumCounts gives ns the sums of cs's counters and rates (retried and DLQ
 // included), and the first of their last errors, prefixed with its instance.
 func (ns *NodeState) sumCounts(cs []NodeState) {
-	ns.Total, ns.Errors, ns.Rate, ns.LastError, ns.Branches, ns.Unmatched, ns.Retried, ns.DLQ = 0, 0, 0, "", nil, 0, 0, 0
+	ns.Total, ns.Errors, ns.Rate, ns.LastError, ns.Branches, ns.Unmatched, ns.Retried, ns.DLQ = 0, 0, 0, "", nil, 0, nil, nil
 	for _, in := range cs {
 		ns.Total += in.Total
 		ns.Errors += in.Errors
 		ns.Rate += in.Rate
 		ns.Unmatched += in.Unmatched
-		ns.Retried += in.Retried
-		ns.DLQ += in.DLQ
+		ns.Retried = addCount(ns.Retried, in.Retried)
+		ns.DLQ = addCount(ns.DLQ, in.DLQ)
 		for i, b := range in.Branches {
 			if i == len(ns.Branches) {
 				ns.Branches = append(ns.Branches, 0)
@@ -688,6 +688,19 @@ func (ns *NodeState) sumCounts(cs []NodeState) {
 		}
 	}
 	ns.Rate = math.Round(ns.Rate*10) / 10
+}
+
+// addCount is sum plus n, for counts a container may leave out (nil): nil while
+// neither is set.
+func addCount(sum, n *int64) *int64 {
+	if n == nil {
+		return sum
+	}
+	total := *n
+	if sum != nil {
+		total += *sum
+	}
+	return &total
 }
 
 // instanceError prefixes a container's last error with its instance; a node's

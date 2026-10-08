@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/expr-lang/expr"
@@ -21,12 +22,14 @@ func compileRule(src string) (*vm.Program, error) {
 	return compileTransform(src, expr.AsBool())
 }
 
-// router is one consumer's compiled rules, the VM they run on (a consumer
-// handles one record at a time) and its own counts.
+// router is one consumer's compiled rules, the VM they run on and its own counts.
+// A consumer's main loop and retry loop route at once; mu keeps them off the VM
+// together.
 type router struct {
 	rules     []*vm.Program
 	topics    []string // rule i's topic
 	def       string   // the default topic; "" drops what no rule matches
+	mu        sync.Mutex
 	vm        vm.VM
 	counts    counters
 	branches  []atomic.Int64 // records per rule, then the default's
@@ -59,7 +62,9 @@ func newRouter(routes []Route, def string) (*router, error) {
 // record (no rule matched, no default), which is not an error.
 func (r *router) route(value []byte) (string, error) {
 	r.counts.ok()
+	r.mu.Lock()
 	topic, err := r.pick(value)
+	r.mu.Unlock()
 	switch {
 	case err != nil:
 		r.counts.fail(err)

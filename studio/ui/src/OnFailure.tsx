@@ -1,5 +1,5 @@
 import { useEdges, useNodes, type Edge } from '@xyflow/react'
-import type { ConsumerData, StudioNode } from './nodes/types'
+import type { ConsumerData, RetryData, StudioNode } from './nodes/types'
 
 type Props = {
   id: string // the consumer's node id
@@ -23,34 +23,33 @@ function inputTopic(id: string, nodes: StudioNode[], edges: Edge[]): string {
 export default function OnFailure({ id, data, set }: Props) {
   const input = inputTopic(id, useNodes<StudioNode>(), useEdges())
   const topic = (suffix: string) => <p className="hint">{input ? `${input}${suffix}` : 'wire a topic first'}</p>
-  const retry = data.retry ?? null
+  const retry = data.retry
+  // One labelled number input for a retry field, within the bounds Deploy checks.
+  const retryField = (r: RetryData, field: keyof RetryData, label: string, min: number, max: number) => (
+    <>
+      <label htmlFor={`inspector-${field}`}>{label}</label>
+      <input id={`inspector-${field}`}
+        type="number"
+        min={min}
+        max={max}
+        value={r[field]}
+        onChange={(e) => set({ retry: { ...r, [field]: Number(e.target.value) } })}
+      />
+    </>
+  )
   return (
     <fieldset className="on-failure">
       <legend>On failure</legend>
       <label htmlFor="inspector-retry">Retry</label>
       <input id="inspector-retry"
         type="checkbox"
-        checked={retry !== null}
+        checked={!!retry}
         onChange={(e) => set({ retry: e.target.checked ? DEFAULT_RETRY : undefined })}
       />
       {retry && (
         <>
-          <label htmlFor="inspector-attempts">Attempts</label>
-          <input id="inspector-attempts"
-            type="number"
-            min={1}
-            max={10}
-            value={retry.attempts}
-            onChange={(e) => set({ retry: { ...retry, attempts: Number(e.target.value) } })}
-          />
-          <label htmlFor="inspector-delay-ms">Delay (ms)</label>
-          <input id="inspector-delay-ms"
-            type="number"
-            min={100}
-            max={60000}
-            value={retry.delay_ms}
-            onChange={(e) => set({ retry: { ...retry, delay_ms: Number(e.target.value) } })}
-          />
+          {retryField(retry, 'attempts', 'Attempts', 1, 10)}
+          {retryField(retry, 'delay_ms', 'Delay (ms)', 100, 60000)}
         </>
       )}
       {topic('__retry')}

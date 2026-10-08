@@ -533,12 +533,17 @@ func TestRetryCounts(t *testing.T) {
 	}))
 	defer ts.Close()
 	got := withStats(context.Background(), ts.URL, NodeState{State: "running"}, false)
-	if got.Retried != 2 || got.DLQ != 1 {
+	if got.Retried == nil || *got.Retried != 2 || got.DLQ == nil || *got.DLQ != 1 {
 		t.Fatalf("want retried 2 and dlq 1 from /stats, got %+v", got)
 	}
-	ns := NodeState{Instances: []NodeState{{Instance: 1, Retried: 2, DLQ: 1}, {Instance: 2, Retried: 1}}}
-	if ns.sumInstances(); ns.Retried != 3 || ns.DLQ != 1 {
-		t.Fatalf("want the instances' sums, got %+v", ns)
+	count := func(n int64) *int64 { return &n }
+	ns := NodeState{Instances: []NodeState{{Instance: 1, Retried: count(2), DLQ: count(0)}, {Instance: 2, Retried: count(1), DLQ: count(0)}}}
+	if ns.sumInstances(); ns.Retried == nil || *ns.Retried != 3 || ns.DLQ == nil || *ns.DLQ != 0 {
+		t.Fatalf("want the instances' sums, a zero kept as 0; got %+v", ns)
+	}
+	plain := NodeState{Instances: []NodeState{{Instance: 1}, {Instance: 2}}}
+	if plain.sumInstances(); plain.Retried != nil || plain.DLQ != nil {
+		t.Fatalf("instances without retry or a DLQ report no counts; got %+v", plain)
 	}
 }
 
@@ -546,7 +551,7 @@ func TestRetryCounts(t *testing.T) {
 // before assigned, the retry counts after them, instances last.
 func TestNodeStateFieldOrder(t *testing.T) {
 	zero := int64(0)
-	b, err := json.Marshal(NodeState{State: "running", Lag: &zero, Assigned: map[string][]int32{"orders": {0}}, Retried: 1, DLQ: 1, Waiting: &zero,
+	b, err := json.Marshal(NodeState{State: "running", Lag: &zero, Assigned: map[string][]int32{"orders": {0}}, Retried: &zero, DLQ: &zero, Waiting: &zero,
 		Instances: []NodeState{{Instance: 1, State: "running"}}})
 	if err != nil {
 		t.Fatal(err)

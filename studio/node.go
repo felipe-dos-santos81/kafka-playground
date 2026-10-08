@@ -3,7 +3,7 @@
 // KAFKA_BROKERS. It serves the control plane on :9000 inside the compose
 // network: POST /send (producers), GET /tail?since=N and GET /stats. A consumer
 // also posts each record to its http sink and forwards it to its next topic, or
-// to the one its router picks.
+// to the one its router picks; retry.go has its retry loop and its failure path.
 package main
 
 import (
@@ -18,9 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -66,11 +64,10 @@ func (t *tail) push(r *kgo.Record) {
 	if len(v) > tailValueMax {
 		v = v[:tailValueMax]
 	}
-	var hs map[string]string
-	if len(r.Headers) > 0 {
-		hs = map[string]string{}
-		for _, h := range r.Headers {
-			hs[h.Key] = string(h.Value)
+	hs := headerMap(r.Headers)
+	for k, h := range hs {
+		if len(h) > tailValueMax {
+			hs[k] = h[:tailValueMax]
 		}
 	}
 	t.mu.Lock()
@@ -88,6 +85,18 @@ func (t *tail) push(r *kgo.Record) {
 	if len(t.entries) > tailSize {
 		t.entries = t.entries[len(t.entries)-tailSize:]
 	}
+}
+
+// headerMap is hs by key, a repeated key's last value winning; nil without headers.
+func headerMap(hs []kgo.RecordHeader) map[string]string {
+	if len(hs) == 0 {
+		return nil
+	}
+	m := map[string]string{}
+	for _, h := range hs {
+		m[h.Key] = string(h.Value)
+	}
+	return m
 }
 
 // since returns the kept records with Seq > n, oldest first; never nil, so it encodes as [].
@@ -117,8 +126,8 @@ type nodeStats struct {
 	TailSeq int64      `json:"tailSeq"`           // seq of the newest tail record; the drawer fetches when it moves
 	Step    *stepTally `json:"step,omitempty"`    // a consumer's transform, when it runs one
 	Route   *stepTally `json:"route,omitempty"`   // a consumer's router, when it runs one
-	Retried int64      `json:"retried,omitempty"` // a consumer's records sent to its retry topic
-	DLQ     int64      `json:"dlq,omitempty"`     // a consumer's records sent to its DLQ
+	Retried *int64     `json:"retried,omitempty"` // a consumer's records sent to its retry topic; only with retry on
+	DLQ     *int64     `json:"dlq,omitempty"`     // a consumer's records sent to its DLQ; only with a DLQ
 }
 
 // tally is what counters read: every record counted, the ones that failed, and
@@ -195,7 +204,7 @@ func (p *producer) next(key string, body []byte) (*kgo.Record, error) {
 // made it. A send cut short because ctx ended (Stop, or the caller went away) is
 // no error of the node's and is not counted.
 func (p *producer) produceOne(ctx context.Context, rec *kgo.Record) error {
-	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	pctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 	if err := p.produce(pctx, rec); err != nil {
 		if ctx.Err() == nil {
@@ -259,25 +268,24 @@ func (p *producer) run(ctx context.Context, every time.Duration) {
 }
 
 // consumer takes each fetched record of one consumer node through the tail, the
-// http sink (when set), the transform (when set) and the forward (when set).
-// Without a DLQ, a failed sink, transform, router or forward is counted and
-// logged, not retried: autocommit still moves past the record. With one, the
-// first failure ends the record's path and sendOn sends it to the retry topic or
-// the DLQ. The sink and the writes run under context.WithoutCancel: a stop
-// (SIGTERM) must not fail them with "context canceled" before Close commits past
-// this record. The main loop and the retry loop share one consumer; mu lets one
-// record through at a time, as the transform's and the router's VMs need.
+// http sink (when set), the transform (when set), the router (when set) and the
+// forward (when set). Without a DLQ, a failed step is counted and logged, not
+// retried: autocommit still moves past the record. With one, the first failure
+// ends the record's path and sendOn (retry.go) sends it to the retry topic or the
+// DLQ. The sink and the writes run under context.WithoutCancel: a stop (SIGTERM)
+// must not fail them with "context canceled" before Close commits past this
+// record. The main loop and the retry loop call handle at once; the transform and
+// the router each lock their own VM.
 type consumer struct {
-	spec      NodeSpec
-	tail      *tail
-	counts    *counters
-	transform *transform                                               // nil without one
-	router    *router                                                  // nil without one
-	post      func(ctx context.Context, url string, body []byte) error // the http sink
-	produce   func(context.Context, *kgo.Record) error                 // the forward, and the sends to the retry topic and the DLQ
-	retried   atomic.Int64                                             // records sent to the retry topic
-	dead      atomic.Int64                                             // records sent to the DLQ
-	mu        sync.Mutex
+	spec         NodeSpec
+	tail         *tail
+	counts       *counters
+	transform    *transform                                               // nil without one
+	router       *router                                                  // nil without one
+	post         func(ctx context.Context, url string, body []byte) error // the http sink
+	produce      func(context.Context, *kgo.Record) error                 // the forward, and the sends to the retry topic and the DLQ
+	retried      atomic.Int64                                             // records sent to the retry topic
+	deadLettered atomic.Int64                                             // records sent to the DLQ
 }
 
 // handle reports whether r may be committed: false only when a write failed
@@ -286,28 +294,32 @@ type consumer struct {
 // is still committed. A record from the retry topic is tailed but not counted in
 // total again.
 func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	work := context.WithoutCancel(ctx)
 	if !c.fromRetry(r) {
 		c.counts.ok()
 	}
 	c.tail.push(r)
 	log.Printf("%s[%d]@%d key=%s %s", r.Topic, r.Partition, r.Offset, r.Key, r.Value)
-	// failed counts and logs one step's failure. With a DLQ it sends r on and ends
-	// r's path (end); commit then says whether r may be committed.
-	failed := func(err error, transient bool) (end, commit bool) {
-		c.counts.fail(err)
-		log.Print(err)
-		if c.spec.DLQ == "" {
-			return false, true
-		}
-		return true, c.sendOn(work, r, err, transient)
+	f := c.path(work, r)
+	switch {
+	case f == nil:
+		return true
+	case errors.Is(f.err, kgo.ErrClientClosed):
+		return false
+	default:
+		return c.sendOn(work, r, *f)
 	}
+}
+
+// path takes r through the sink, the transform, the router and the forward;
+// stepFailed counts and logs each failed step. Without a DLQ, r goes on past a
+// failure where it can and path returns nil. With one, the first failure ends r's
+// path and path returns it; so does a forward cut by a closed client, DLQ or not.
+func (c *consumer) path(ctx context.Context, r *kgo.Record) *failure {
 	if c.spec.SinkURL != "" {
-		if err := c.post(work, c.spec.SinkURL, r.Value); err != nil {
-			if end, commit := failed(fmt.Errorf("sink: %w", err), true); end {
-				return commit
+		if err := c.post(ctx, c.spec.SinkURL, r.Value); err != nil {
+			if f := c.stepFailed(fmt.Errorf("sink: %w", err), true); f != nil {
+				return f
 			}
 		}
 	}
@@ -315,12 +327,12 @@ func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
 	if c.transform != nil {
 		out, err := c.transform.run(value)
 		if err != nil {
-			if end, commit := failed(fmt.Errorf("transform: %w", err), false); end {
-				return commit
+			if f := c.stepFailed(fmt.Errorf("transform: %w", err), false); f != nil {
+				return f
 			}
 		}
 		if out == nil {
-			return true // failed or dropped (nil): nothing to forward
+			return nil // failed or dropped (nil): nothing to forward
 		}
 		value = out
 	}
@@ -328,176 +340,65 @@ func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
 	if c.router != nil {
 		topic, err := c.router.route(value)
 		if err != nil {
-			if end, commit := failed(fmt.Errorf("router: %w", err), false); end {
-				return commit
+			if f := c.stepFailed(fmt.Errorf("router: %w", err), false); f != nil {
+				return f
 			}
 		}
 		forward = topic // "": failed or unmatched, nothing to forward
 	}
 	if forward != "" {
-		pctx, cancel := context.WithTimeout(work, 10*time.Second)
-		err := c.produce(pctx, &kgo.Record{Topic: forward, Key: r.Key, Value: value})
-		cancel()
-		if err != nil {
-			err = fmt.Errorf("forward: %w", err)
-			if errors.Is(err, kgo.ErrClientClosed) {
-				c.counts.fail(err)
-				log.Print(err)
-				return false
-			}
-			if end, commit := failed(err, true); end {
-				return commit
-			}
+		if err := c.write(ctx, &kgo.Record{Topic: forward, Key: r.Key, Value: value}); err != nil {
+			return c.stepFailed(fmt.Errorf("forward to %s: %w", forward, err), true)
 		}
 	}
-	return true
+	return nil
 }
 
-// fromRetry says whether r was read from c's retry topic, not from its input topic.
-func (c *consumer) fromRetry(r *kgo.Record) bool {
-	return c.spec.Retry != nil && r.Topic == c.spec.Retry.Topic
+// stepFailed counts and logs a failed step of a record's path. It returns the
+// failure when it ends the path (a DLQ is set, or a closed client cut a write),
+// nil when the record goes on.
+func (c *consumer) stepFailed(err error, retryable bool) *failure {
+	c.counts.fail(err)
+	log.Print(err)
+	if c.spec.DLQ == "" && !errors.Is(err, kgo.ErrClientClosed) {
+		return nil
+	}
+	return &failure{err: err, retryable: retryable}
 }
 
-// sendOn sends r, which just failed with err, to the retry topic when the failure
-// may pass later (transient), retry is on and tries remain, else to the DLQ. What
-// it sends is r as read (key and value, not the transformed value), so a retry
-// runs r's whole path again, with failureHeaders. It reports whether r may be
-// committed: a failed send is counted and logged and r still commits, unless the
-// client was closed (Stop), which leaves r to be redelivered.
-func (c *consumer) sendOn(ctx context.Context, r *kgo.Record, err error, transient bool) bool {
-	failed := 1 // tries of r that failed, this one included
-	if c.fromRetry(r) {
-		n, _ := strconv.Atoi(header(r, headerAttempt))
-		failed += n
-	}
-	to, what, sent := c.spec.DLQ, "dlq", &c.dead
-	if retry := c.spec.Retry; transient && retry != nil && failed <= retry.Attempts {
-		to, what, sent = retry.Topic, "retry", &c.retried
-	}
-	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	serr := c.produce(pctx, &kgo.Record{Topic: to, Key: r.Key, Value: r.Value, Headers: failureHeaders(r, c.spec.Group, failed, err)})
-	cancel()
-	if serr != nil {
-		c.counts.fail(fmt.Errorf("%s: %w", what, serr))
-		log.Printf("%s to %s: %v", what, to, serr)
-		return !errors.Is(serr, kgo.ErrClientClosed)
-	}
-	sent.Add(1)
-	return true
+// sendTimeout bounds one produce: a producer's record, a forward, a send to the
+// retry topic or the DLQ.
+const sendTimeout = 10 * time.Second
+
+// write produces rec within sendTimeout.
+func (c *consumer) write(ctx context.Context, rec *kgo.Record) error {
+	wctx, cancel := context.WithTimeout(ctx, sendTimeout)
+	defer cancel()
+	return c.produce(wctx, rec)
 }
 
-// The headers a consumer sets on a record it sends to its retry topic or its DLQ.
-const (
-	headerGroup   = "studio-group"   // the consumer's group: a retry loop skips other groups' records
-	headerAttempt = "studio-attempt" // tries of the record that failed so far
-	headerError   = "studio-error"   // the last failure: its first line, at most errorHeaderMax bytes
-	headerOrigin  = "studio-origin"  // where the record was first read: topic[partition]@offset
-)
-
-const errorHeaderMax = 1 << 10
-
-// header is r's last value for key, "" without one.
-func header(r *kgo.Record, key string) string {
-	v := ""
-	for _, h := range r.Headers {
-		if h.Key == key {
-			v = string(h.Value)
-		}
-	}
-	return v
-}
-
-// failureHeaders are r's own headers plus the studio-* ones for its failed'th
-// failed try, err. studio-origin keeps where r was first read.
-func failureHeaders(r *kgo.Record, group string, failed int, err error) []kgo.RecordHeader {
-	origin := header(r, headerOrigin)
-	if origin == "" {
-		origin = fmt.Sprintf("%s[%d]@%d", r.Topic, r.Partition, r.Offset)
-	}
-	msg, _, _ := strings.Cut(err.Error(), "\n")
-	if len(msg) > errorHeaderMax {
-		msg = msg[:errorHeaderMax]
-	}
-	hs := slices.DeleteFunc(slices.Clone(r.Headers), func(h kgo.RecordHeader) bool { return strings.HasPrefix(h.Key, "studio-") })
-	return append(hs,
-		kgo.RecordHeader{Key: headerGroup, Value: []byte(group)},
-		kgo.RecordHeader{Key: headerAttempt, Value: []byte(strconv.Itoa(failed))},
-		kgo.RecordHeader{Key: headerError, Value: []byte(msg)},
-		kgo.RecordHeader{Key: headerOrigin, Value: []byte(origin)},
-	)
-}
-
-// consume polls the group until ctx ends, handing every record to c.
-func (c *consumer) consume(ctx context.Context, cl *kgo.Client) {
+// poll reads cl's group until ctx ends, handing each record to take and marking it
+// for commit when take says it may be. The first record it may not ends the loop:
+// Stop closed the client, or cut a retry's wait. The main loop takes records with
+// handle, the retry loop with retryRecord; fetch errors count as the consumer's,
+// prefixed with what ("fetch", "retry fetch").
+func (c *consumer) poll(ctx context.Context, cl *kgo.Client, what string, take func(context.Context, *kgo.Record) bool) {
 	for {
 		fs := cl.PollFetches(ctx)
 		if ctx.Err() != nil || fs.IsClientClosed() {
 			return
 		}
 		fs.EachError(func(topic string, partition int32, err error) {
-			c.counts.fail(err)
-			log.Printf("fetch %s[%d]: %v", topic, partition, err)
-		})
-		fs.EachRecord(func(r *kgo.Record) {
-			if c.handle(ctx, r) {
-				cl.MarkCommitRecords(r) // only a handled record may be committed
-			}
-		})
-	}
-}
-
-// retry is the retry loop: it polls c's retry topic in its retry group (cl) until
-// ctx ends, takes each record through retryRecord and marks the ones it may
-// commit. The first it may not ends the loop: Stop came.
-func (c *consumer) retry(ctx context.Context, cl *kgo.Client) {
-	for {
-		fs := cl.PollFetches(ctx)
-		if ctx.Err() != nil || fs.IsClientClosed() {
-			return
-		}
-		fs.EachError(func(topic string, partition int32, err error) {
-			c.counts.fail(fmt.Errorf("retry fetch: %w", err))
-			log.Printf("retry fetch %s[%d]: %v", topic, partition, err)
+			c.counts.fail(fmt.Errorf("%s: %w", what, err))
+			log.Printf("%s %s[%d]: %v", what, topic, partition, err)
 		})
 		for it := fs.RecordIter(); !it.Done(); {
 			r := it.Next()
-			if !c.retryRecord(ctx, r) {
+			if !take(ctx, r) {
 				return
 			}
-			cl.MarkCommitRecords(r)
+			cl.MarkCommitRecords(r) // only a handled record may be committed
 		}
-	}
-}
-
-// retryRecord takes one record of the retry topic. Another group's (a shared input
-// topic) or one no consumer sent is only marked. Ours waits until it is due, the
-// retry delay after it was written (at most the delay, for one dated in the
-// future), then goes through handle. It reports whether r may be marked: false when Stop cut the wait (or closed the client), which
-// leaves r for the next deploy to retry.
-func (c *consumer) retryRecord(ctx context.Context, r *kgo.Record) bool {
-	if header(r, headerGroup) != c.spec.Group {
-		return true
-	}
-	delay := time.Duration(c.spec.Retry.DelayMS) * time.Millisecond
-	if !wait(ctx, min(time.Until(r.Timestamp.Add(delay)), delay)) { // a record dated in the future waits no longer than the delay
-		return false
-	}
-	return c.handle(ctx, r)
-}
-
-// wait waits d (nothing when d ≤ 0) and reports whether it did: false when ctx
-// ended first.
-func wait(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return true
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
 	}
 }
 
@@ -602,8 +503,13 @@ func runNode() {
 			route := rt.read()
 			s.Route = &route
 		}
-		if c != nil {
-			s.Retried, s.DLQ = c.retried.Load(), c.dead.Load()
+		if c != nil && c.spec.Retry != nil {
+			n := c.retried.Load()
+			s.Retried = &n
+		}
+		if c != nil && c.spec.DLQ != "" {
+			n := c.deadLettered.Load()
+			s.DLQ = &n
 		}
 		reply(w, http.StatusOK, s)
 	})
@@ -630,9 +536,9 @@ func runNode() {
 		c = &consumer{spec: spec, tail: t, counts: counts, transform: tr, router: rt, post: postJSON, produce: produce}
 		consuming = make(chan struct{})
 		var loops sync.WaitGroup
-		loops.Go(func() { c.consume(ctx, cl) })
+		loops.Go(func() { c.poll(ctx, cl, "fetch", c.handle) })
 		if retryCl != nil {
-			loops.Go(func() { c.retry(ctx, retryCl) })
+			loops.Go(func() { c.poll(ctx, retryCl, "retry fetch", c.retryRecord) })
 		}
 		go func() {
 			loops.Wait()
@@ -669,7 +575,9 @@ func runNode() {
 	shutdown, cancel := context.WithTimeout(context.Background(), shutdownBudget)
 	defer cancel()
 	srv.Shutdown(shutdown)
+	var closes sync.WaitGroup // each client leaves its group at once
 	for _, k := range clients {
-		k.Close()
+		closes.Go(k.Close)
 	}
+	closes.Wait()
 }

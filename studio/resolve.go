@@ -152,13 +152,16 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 				next = "" // the router chooses the forward
 			}
 			spec.Forward = topicName[next]
+			derive := func(name string) { // a retry or DLQ topic, with the input topic's partitions
+				derived = append(derived, TopicData{Name: name, Partitions: partitions[src.ID], ReplicationFactor: 1})
+			}
 			if d.Retry != nil {
 				spec.Retry = &RetrySpec{Topic: retryTopic(spec.Topic), Group: retryGroup(d.Group), Attempts: d.Retry.Attempts, DelayMS: d.Retry.DelayMS}
-				derived = append(derived, TopicData{Name: spec.Retry.Topic, Partitions: partitions[src.ID], ReplicationFactor: 1})
+				derive(spec.Retry.Topic)
 			}
 			if d.DLQ {
 				spec.DLQ = dlqTopic(spec.Topic)
-				derived = append(derived, TopicData{Name: spec.DLQ, Partitions: partitions[src.ID], ReplicationFactor: 1})
+				derive(spec.DLQ)
 			}
 			for _, i := range instancesOf(dst) {
 				spec.Instance = i

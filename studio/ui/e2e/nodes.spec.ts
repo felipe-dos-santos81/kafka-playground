@@ -1,5 +1,5 @@
 // Node types and the tail drawer, on flows created through the API.
-import { chain, consumer, deployFlow, edge, edgeOf, expect, field, manual, node, nodeOf, runtimeOf, simple, tail, test, timer, topBar, topic } from './studio'
+import { chain, consumer, deployFlow, edge, edgeOf, expect, field, manual, node, nodeOf, onFailureOf, runtimeOf, simple, tail, test, timer, topBar, topic } from './studio'
 
 // The producer's records: the first has qty and price, the second neither, so
 // the transform cannot multiply them.
@@ -117,7 +117,7 @@ test("a consumer's On failure group names its topics, and a retry needs the DLQ"
   await studio.create(simple(name))
   await studio.open(page, name)
   await nodeOf(page, 'consumer-1').click()
-  const onFailure = page.locator('.inspector').getByRole('group', { name: 'On failure' })
+  const onFailure = onFailureOf(page)
   await expect(onFailure).toContainText(`${name}__retry`)
   await expect(onFailure).toContainText(`${name}__dlq`)
 
@@ -134,11 +134,13 @@ test('a consumer retries a failing sink, then sends the record to its DLQ', asyn
   const retrying = consumer(name, { sink: failingSink, retry: { attempts: 1, delay_ms: 1000 }, dlq: true })
   await deployFlow(await studio.create(chain(name, manual, topic(name), retrying)))
   await studio.open(page, name)
+  const line = runtimeOf(page, 'consumer-1')
+  await expect(line).toContainText(/(?<!\d)0 retried/, { timeout: 15_000 }) // shown from 0 once its container answers
+  await expect(line).toContainText(/(?<!\d)0 dlq/)
 
   await nodeOf(page, 'producer-1').click()
   await tail(page).getByRole('button', { name: 'Send' }).click()
   await expect(tail(page)).toContainText('at offset 0')
-  const line = runtimeOf(page, 'consumer-1')
   await expect(line).toContainText(/(?<!\d)1 retried/, { timeout: 30_000 })
   await expect(line).toContainText(/(?<!\d)1 dlq/, { timeout: 15_000 })
   await expect(line).toContainText(/(?<!\d)0 waiting/, { timeout: 15_000 }) // the retry group committed past it

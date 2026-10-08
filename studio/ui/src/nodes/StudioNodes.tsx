@@ -11,7 +11,8 @@ export const RuntimeContext = createContext<Record<string, NodeRuntime>>({})
 // One line of live numbers under a deployed node's summary, or '' when there is
 // nothing to say. A node's own counts show once one of its containers answered
 // /stats (it has a boot): a container just started shows nothing yet, and one
-// that does not answer shows its warning. Lag and partitions come from the broker.
+// that does not answer shows its warning. Lag and partitions come from the broker;
+// a consumer deployed with Retry or DLQ reports those counts, from 0.
 function runtimeLine(type: NodeType, rt: NodeRuntime): string {
   if (type === 'topic') {
     return [`${rt.partitions ?? 0} partitions`, `end ${rt.endOffset ?? 0}`, rt.warning].filter(Boolean).join(' · ')
@@ -20,9 +21,9 @@ function runtimeLine(type: NodeType, rt: NodeRuntime): string {
   const parts = answered ? [`${rt.total ?? 0} msgs`, `${(rt.rate ?? 0).toFixed(1)}/s`] : []
   if (rt.errors) parts.push(`${rt.errors} errors`)
   if (rt.unmatched) parts.push(`${rt.unmatched} unmatched`)
-  if (rt.retried) parts.push(`${rt.retried} retried`)
+  if (rt.retried !== undefined) parts.push(`${rt.retried} retried`)
   if (rt.waiting !== undefined) parts.push(`${rt.waiting} waiting`)
-  if (rt.dlq) parts.push(`${rt.dlq} dlq`)
+  if (rt.dlq !== undefined) parts.push(`${rt.dlq} dlq`)
   if (rt.lag !== undefined) parts.push(`lag ${rt.lag}`)
   for (const c of containersOf(rt)) {
     const held = Object.values(c.assigned ?? {}).flat() // partitions this container's client holds
