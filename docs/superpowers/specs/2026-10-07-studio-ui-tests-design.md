@@ -118,7 +118,7 @@ is removed afterwards (§6).
    asks to discard: dismissed, the edited flow stays open; accepted, the other
    opens.
 5. **Flow list refresh.** A flow deployed through the API (another tab) shows
-   `running` in the list within 6 s, without a reload.
+   `running` in the list within 11 s (two of its 5 s re-reads), without a reload.
 
 ### `e2e/nodes.spec.ts` — node types and the drawer, flows created through the API
 

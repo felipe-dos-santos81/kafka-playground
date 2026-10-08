@@ -180,10 +180,10 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	for v in "{\"id\":\"t1-$$rec\",\"qty\":2,\"price\":3}" "{\"id\":\"t2-$$rec\"}"; do \
 		curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$xid/nodes/producer-1/send --data "$$v" >/dev/null || { echo "STUDIO FAILED: send to the transform flow"; exit 1; }; \
 	done; \
-	for i in $$(seq 30); do \
+	for i in $$(seq 45); do \
 		curl -sS $(STUDIO_URL)/api/flows/$$xid/state | grep -q '"transform-1":{"state":"running","total":2,"errors":1,' && \
 			curl -sS "$(STUDIO_URL)/api/flows/$$xid/nodes/consumer-2/tail?since=0" | grep -q "t1-$$rec" && break; \
-		[ "$$i" = 30 ] && { echo "STUDIO FAILED: want 2 records and 1 error on the transform and t1-$$rec downstream: $$(curl -sS $(STUDIO_URL)/api/flows/$$xid/state)"; exit 1; }; sleep 1; \
+		[ "$$i" = 45 ] && { echo "STUDIO FAILED: want 2 records and 1 error on the transform and t1-$$rec downstream: $$(curl -sS $(STUDIO_URL)/api/flows/$$xid/state)"; exit 1; }; sleep 1; \
 	done; \
 	out=$$(curl -sS "$(STUDIO_URL)/api/flows/$$xid/nodes/consumer-2/tail?since=0"); \
 	echo "$$out" | grep -qF 'total\":6' && ! echo "$$out" | grep -q "t2-$$rec" || { echo "STUDIO FAILED: want t1-$$rec transformed (total 6) and t2-$$rec not forwarded: $$out"; exit 1; }; \
@@ -200,11 +200,11 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	for v in "{\"id\":\"r1-$$rec\",\"total\":150}" "{\"id\":\"r2-$$rec\",\"total\":5}"; do \
 		curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$rid/nodes/producer-1/send --data "$$v" >/dev/null || { echo "STUDIO FAILED: send to the router flow"; exit 1; }; \
 	done; \
-	for i in $$(seq 30); do \
+	for i in $$(seq 45); do \
 		curl -sS $(STUDIO_URL)/api/flows/$$rid/state | grep -q '"router-1":{"state":"running","total":2,[^}]*"branches":\[1,1\]' && \
 			curl -sS "$(STUDIO_URL)/api/flows/$$rid/nodes/consumer-2/tail?since=0" | grep -q "r1-$$rec" && \
 			curl -sS "$(STUDIO_URL)/api/flows/$$rid/nodes/consumer-3/tail?since=0" | grep -q "r2-$$rec" && break; \
-		[ "$$i" = 30 ] && { echo "STUDIO FAILED: want 2 records on the router, branches [1,1], r1-$$rec on the big topic and r2-$$rec on the other: $$(curl -sS $(STUDIO_URL)/api/flows/$$rid/state)"; exit 1; }; sleep 1; \
+		[ "$$i" = 45 ] && { echo "STUDIO FAILED: want 2 records on the router, branches [1,1], r1-$$rec on the big topic and r2-$$rec on the other: $$(curl -sS $(STUDIO_URL)/api/flows/$$rid/state)"; exit 1; }; sleep 1; \
 	done; \
 	curl -sS "$(STUDIO_URL)/api/flows/$$rid/nodes/consumer-2/tail?since=0" | grep -q "r2-$$rec" && { echo "STUDIO FAILED: r2-$$rec (total 5) reached the big topic"; exit 1; }; \
 	echo "studio router: $$(curl -sS $(STUDIO_URL)/api/flows/$$rid/state | grep -o '"router-1":{[^}]*}')"; \

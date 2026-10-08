@@ -359,6 +359,12 @@ func postJSON(ctx context.Context, url string, body []byte) error {
 // up to 3 s for the batch in hand to finish its sink and forward, commits the
 // records it handled (it marks each one; unhandled ones are redelivered) and
 // closes its client, which leaves the group.
+// groupSessionTimeout is how long the broker keeps a consumer that stopped
+// heartbeating (killed, or its container gone) in its group; until then a new
+// member's join waits. franz-go's default, 45 s, would stall a redeploy after a
+// crash that long. Heartbeats stay every 3 s.
+const groupSessionTimeout = 10 * time.Second
+
 func runNode() {
 	var spec NodeSpec
 	if err := json.Unmarshal([]byte(os.Getenv("STUDIO_NODE")), &spec); err != nil {
@@ -374,7 +380,8 @@ func runNode() {
 		if spec.AutoOffsetReset == "latest" {
 			reset = kgo.NewOffset().AtEnd()
 		}
-		opts = append(opts, kgo.ConsumerGroup(spec.Group), kgo.ConsumeTopics(spec.Topic), kgo.ConsumeResetOffset(reset), kgo.AutoCommitMarks())
+		opts = append(opts, kgo.ConsumerGroup(spec.Group), kgo.ConsumeTopics(spec.Topic), kgo.ConsumeResetOffset(reset), kgo.AutoCommitMarks(),
+			kgo.SessionTimeout(groupSessionTimeout))
 	}
 	cl, err := kgo.NewClient(opts...)
 	if err != nil {

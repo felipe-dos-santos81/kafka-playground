@@ -156,5 +156,7 @@ test('a flow deployed elsewhere shows as running in the list', async ({ page, st
   const item = flowRow(page, name)
   await expect(item).toContainText('(stopped)')
   await deployFlow(id) // another tab, or curl
-  await expect(item).toContainText('(running)', { timeout: 6_000 }) // the list re-reads every 5 s
+  // The list re-reads every 5 s; a read that started before the deploy finished
+  // shows it stopped, so allow two reads and some slack.
+  await expect(item).toContainText('(running)', { timeout: 11_000 })
 })

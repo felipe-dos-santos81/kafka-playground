@@ -251,7 +251,9 @@ Inside a node container:
   with `.Seq`, `.Now`, `.Rand`) and calls `Produce` with a callback that
   updates counters and the tail. `/send` is accepted in both modes.
 - **Consumer:** one `kgo.Client` with `ConsumerGroup`, `ConsumeTopics`,
-  `ConsumeResetOffset` and `AutoCommitMarks`; a `PollFetches` loop; per record:
+  `ConsumeResetOffset`, `AutoCommitMarks` and a 10 s `SessionTimeout` (franz-go's
+  45 s default would keep a killed consumer in its group, stalling the next
+  member's join, that long); a `PollFetches` loop; per record:
   append to the tail, then the sink — `log` (each record also goes to the
   container's stdout, so `docker logs` shows it), `http` (POST the value with
   `Content-Type: application/json`, 5 s timeout, redirects not followed, any
