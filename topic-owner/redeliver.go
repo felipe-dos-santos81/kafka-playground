@@ -189,7 +189,9 @@ func newWorker(cfg Config, reg prometheus.Registerer) (*worker, error) {
 		kgo.FetchMaxWait(time.Second), // a resumed partition's records arrive within a second, not after a 5 s long poll
 		kgo.OnPartitionsRevoked(func(ctx context.Context, cl *kgo.Client, revoked map[string][]int32) {
 			w.forget(revoked[cfg.Topic()])
-			cl.CommitMarkedOffsets(ctx)
+			if err := cl.CommitMarkedOffsets(ctx); err != nil {
+				log.Printf("%s: commit: %v", cfg.Topic(), err)
+			}
 		}),
 		kgo.OnPartitionsLost(func(_ context.Context, _ *kgo.Client, lost map[string][]int32) {
 			w.forget(lost[cfg.Topic()])
@@ -212,7 +214,9 @@ func (w *worker) run(ctx context.Context) {
 	defer func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		w.cl.CommitMarkedOffsets(cctx)
+		if err := w.cl.CommitMarkedOffsets(cctx); err != nil {
+			log.Printf("%s: commit: %v", w.cfg.Topic(), err)
+		}
 		w.cl.Close()
 	}()
 	for {
