@@ -119,6 +119,9 @@ func readTopic(ctx context.Context, adm *kadm.Client, topic string) (topicState,
 	if err == nil {
 		err = tds[topic].Err
 	}
+	if errors.Is(err, kerr.UnknownTopicOrPartition) {
+		return s, nil // Kafka answered: the topic is missing (topic_owner_reconciled says so)
+	}
 	if err != nil {
 		return s, err
 	}

@@ -281,9 +281,9 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 	done; \
 	echo "topics partitions: raised 2 -> 3, a decrease refused"; \
 	own owner-verify-1 main 3 -e TOPIC_CONFIG_RETENTION_MS=3600000 && healthy owner-verify-1 || exit 1; \
-	q() { curl -sS $(PROMETHEUS_URL)/api/v1/query --data-urlencode "query=$$1" | grep -q "\"value\":\[[0-9.]*,\"$$2\"\]"; }; \
+	promis() { curl -sS $(PROMETHEUS_URL)/api/v1/query --data-urlencode "query=$$1" | grep -q "\"value\":\[[0-9.]*,\"$$2\"\]"; }; \
 	for i in $$(seq 30); do \
-		q 'up{job="topic-owners",instance="owner-verify-1"}' 1 && q 'kafka_topic_partitions{topic="owner-verify-1"}' 3 && q 'topic_owner_info{topic="owner-verify-1",role="main"}' 1 && break; \
+		promis 'up{job="topic-owners",instance="owner-verify-1"}' 1 && promis 'kafka_topic_partitions{topic="owner-verify-1"}' 3 && promis 'topic_owner_info{topic="owner-verify-1",role="main"}' 1 && break; \
 		[ "$$i" = 30 ] && { echo "TOPICS FAILED: Prometheus never scraped owner-verify-1 with 3 partitions: $$(curl -sS $(PROMETHEUS_URL)/api/v1/query --data-urlencode 'query={topic="owner-verify-1"}')"; exit 1; }; sleep 1; \
 	done; \
 	echo "topics prometheus: owner-verify-1 up, 3 partitions"; \

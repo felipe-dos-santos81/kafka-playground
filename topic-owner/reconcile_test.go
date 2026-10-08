@@ -219,13 +219,17 @@ func TestOwnerApplyErrKeepsProblems(t *testing.T) {
 // Losing the create race (a Studio deploy made the topic first) is reported as
 // such, not as a create, and is not a create failure.
 func TestCreateErr(t *testing.T) {
-	if err := createErr(nil); err != nil {
+	if err := createErr(nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := createErr(kerr.TopicAlreadyExists); err != errRaced {
+	if err := createErr(kerr.TopicAlreadyExists, "Topic 'orders-1' already exists."); err != errRaced {
 		t.Fatalf("got %v, want errRaced", err)
 	}
-	if err := createErr(kerr.InvalidReplicationFactor); err == nil || !strings.HasPrefix(err.Error(), "create: ") {
+	if err := createErr(kerr.InvalidReplicationFactor, ""); err == nil || !strings.HasPrefix(err.Error(), "create: ") {
+		t.Fatalf("got %v", err)
+	}
+	// The broker's message says which value it refused (spec §3.3, §6).
+	if err := createErr(kerr.InvalidConfig, "Invalid value abc for configuration retention.ms"); err == nil || !strings.HasSuffix(err.Error(), ": Invalid value abc for configuration retention.ms") {
 		t.Fatalf("got %v", err)
 	}
 }

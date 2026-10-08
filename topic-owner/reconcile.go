@@ -65,11 +65,11 @@ func diff(topic string, want Config, have Actual) Plan {
 	for _, k := range slices.Sorted(maps.Keys(names)) {
 		v, wanted := want.Configs[k]
 		was, set := have.Configs[k]
+		if !set {
+			was = "unset"
+		}
 		switch {
-		case wanted && !set:
-			p.Alter = append(p.Alter, kadm.AlterConfig{Op: kadm.SetConfig, Name: k, Value: kadm.StringPtr(v)})
-			p.Logs = append(p.Logs, fmt.Sprintf("%s: set %s=%s (was unset)", topic, k, v))
-		case wanted && was != v:
+		case wanted && (!set || was != v):
 			p.Alter = append(p.Alter, kadm.AlterConfig{Op: kadm.SetConfig, Name: k, Value: kadm.StringPtr(v)})
 			p.Logs = append(p.Logs, fmt.Sprintf("%s: set %s=%s (was %s)", topic, k, v, was))
 		case !wanted:
@@ -190,11 +190,14 @@ func topicLevel(configs []kadm.Config) map[string]string {
 // pass reconciles the topic it finds.
 var errRaced = errors.New("created by someone else first; reconciling it on the next pass")
 
-// createErr is CreateTopic's error as apply reports it.
-func createErr(err error) error {
+// createErr is CreateTopic's error as apply reports it, with the broker's
+// message (msg) when it gives one.
+func createErr(err error, msg string) error {
 	switch {
 	case errors.Is(err, kerr.TopicAlreadyExists):
 		return errRaced
+	case err != nil && msg != "":
+		return fmt.Errorf("create: %w: %s", err, msg)
 	case err != nil:
 		return fmt.Errorf("create: %w", err)
 	}
@@ -210,8 +213,8 @@ func apply(ctx context.Context, adm *kadm.Client, cfg Config, p Plan) (int, erro
 		for k, v := range cfg.Configs {
 			configs[k] = kadm.StringPtr(v)
 		}
-		_, err := adm.CreateTopic(ctx, int32(cfg.Partitions), int16(cfg.ReplicationFactor), configs, topic)
-		if err := createErr(err); err != nil {
+		r, err := adm.CreateTopic(ctx, int32(cfg.Partitions), int16(cfg.ReplicationFactor), configs, topic)
+		if err := createErr(err, r.ErrMessage); err != nil {
 			return 0, err
 		}
 		return len(p.Logs), nil

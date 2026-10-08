@@ -96,9 +96,22 @@ topic_owner_reconciled{topic="orders-1__retry"} 0
 }
 
 // Before the first pass, or with the topic deleted, a scrape serves only
-// identity and health: no partition series, nothing to panic on.
+// identity and health: no partition series, nothing to panic on. Kafka
+// answered, so kafka_up stays 1; reconciled is 0.
 func TestCollectorNoTopic(t *testing.T) {
-	if n := testutil.CollectAndCount(testCollector(topicState{}, errors.New("UNKNOWN_TOPIC_OR_PARTITION"), false)); n != 3 {
+	c := testCollector(topicState{}, nil, false)
+	if n := testutil.CollectAndCount(c); n != 3 {
 		t.Fatalf("%d series, want 3 (info, reconciled, kafka_up)", n)
+	}
+	want := `
+# HELP topic_owner_kafka_up 1 when this scrape's admin calls to Kafka succeeded.
+# TYPE topic_owner_kafka_up gauge
+topic_owner_kafka_up{topic="orders-1__retry"} 1
+# HELP topic_owner_reconciled 1 when the last reconcile left the topic in its desired state.
+# TYPE topic_owner_reconciled gauge
+topic_owner_reconciled{topic="orders-1__retry"} 0
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want), "topic_owner_kafka_up", "topic_owner_reconciled"); err != nil {
+		t.Fatal(err)
 	}
 }

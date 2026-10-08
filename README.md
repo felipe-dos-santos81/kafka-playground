@@ -155,7 +155,7 @@ Every series has a `topic` label. Where a series means what a [kafka-exporter](h
 | `topic_owner_partition_log_size_bytes` | log size |
 | `topic_owner_info` | `base`, `topic_instance` and `role` (Prometheus reserves `instance`, which is the container name) |
 | `topic_owner_reconciled` | 1 when the topic is in its desired state |
-| `topic_owner_kafka_up` | 1 when the last scrape's admin calls succeeded (0 also while the topic is missing) |
+| `topic_owner_kafka_up` | 1 when the last scrape's admin calls succeeded (a missing topic shows as `topic_owner_reconciled` 0, not here) |
 
 Messages in per second: `sum by (topic) (rate(kafka_topic_partition_current_offset[1m]))`. Bytes in and out per topic are not exported. Only the broker's JMX has them, and the JMX agent would need a jar and a change to the `kafka` service.
 

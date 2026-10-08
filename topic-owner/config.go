@@ -106,12 +106,10 @@ func loadConfig(env []string) (Config, error) {
 	if c.Partitions, err = intVar(vars, "PARTITIONS", 1, 1, 1<<20); err != nil {
 		return c, err
 	}
-	if c.ReplicationFactor, err = intVar(vars, "REPLICATION_FACTOR", 1, 1, 1<<15); err != nil {
-		return c, err
-	}
-	if c.ReplicationFactor != 1 {
+	if rf, set := vars["REPLICATION_FACTOR"]; set && rf != "1" { // one broker: 1 is the only value
 		return c, fmt.Errorf("%s: single-broker playground: replication_factor must be 1", c.Topic())
 	}
+	c.ReplicationFactor = 1
 	for _, k := range []string{"MAX_ATTEMPTS", "BACKOFF_MS"} {
 		if _, set := vars[k]; set && c.Role != RoleRetry {
 			return c, fmt.Errorf("%s is only for ROLE=retry", k)

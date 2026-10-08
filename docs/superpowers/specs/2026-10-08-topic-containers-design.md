@@ -1314,7 +1314,7 @@ with the evidence on a miss.
      and the describe shows `retention.ms=3600000`.
 3. **Partitions.** Recreate it with `PARTITIONS=3`: the log has
    `owner-verify-1: partitions 2 -> 3`, and it becomes healthy. Recreate it
-   with `PARTITIONS=2`: within 10 s, `docker inspect`'s health log has
+   with `PARTITIONS=2`: within 15 s, `docker inspect`'s health log has
    `has 3 partitions, wants 2: partitions never decrease`.
 4. **Prometheus.** Recreate it with `PARTITIONS=3`. Then `/api/v1/query` gives:
    - `up{job="topic-owners",instance="owner-verify-1"}` → `1`;

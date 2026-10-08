@@ -44,6 +44,8 @@ func TestLoadConfigRefuses(t *testing.T) {
 		{"no brokers", env("-KAFKA_BROKERS"), "KAFKA_BROKERS is required"},
 		{"bad partitions", env("PARTITIONS=0"), "PARTITIONS must be between 1 and 1048576"},
 		{"replication factor", env("BASE_NAME=owner-verify", "REPLICATION_FACTOR=3"), "owner-verify-1: single-broker playground: replication_factor must be 1"},
+		{"replication factor 0", env("REPLICATION_FACTOR=0"), "orders-1: single-broker playground: replication_factor must be 1"},
+		{"replication factor not a number", env("ROLE=dlq", "REPLICATION_FACTOR=x"), "orders-1__dlq: single-broker playground: replication_factor must be 1"},
 		{"retry setting on main", env("MAX_ATTEMPTS=3"), "MAX_ATTEMPTS is only for ROLE=retry"},
 		{"backoff on dlq", env("ROLE=dlq", "BACKOFF_MS=100"), "BACKOFF_MS is only for ROLE=retry"},
 		{"attempts range", env("ROLE=retry", "MAX_ATTEMPTS=11"), "MAX_ATTEMPTS must be between 1 and 10"},
