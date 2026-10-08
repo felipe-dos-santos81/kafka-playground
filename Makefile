@@ -254,6 +254,7 @@ verify: up verify-studio verify-ui ## Full check: studio API, studio UI, then on
 test: studio/ui/node_modules ## Static checks and unit tests, no Docker needed (go vet, gofmt, go test, UI build, tsc, compose config)
 	cd producer && go vet ./... && test -z "$$(gofmt -l . | tee /dev/stderr)"
 	cd studio && go vet ./... && test -z "$$(gofmt -l . | tee /dev/stderr)" && go test ./...
+	cd topic-owner && go vet ./... && test -z "$$(gofmt -l . | tee /dev/stderr)" && go test ./...
 	cd studio/ui && npm run build
 	$(COMPOSE) config --quiet
 
