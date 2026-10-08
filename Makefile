@@ -68,7 +68,7 @@ owners: ## List topic-owner containers (main, retry and dlq per topic) and their
 
 query: ## Ask Prometheus an instant PromQL query (usage: make query q='kafka_topic_partitions{topic="orders-1"}')
 	@$(if $(value q),true,{ echo "q is required, e.g. make query q='kafka_topic_partitions'"; exit 1; })
-	@curl -sS --fail-with-body $(PROMETHEUS_URL)/api/v1/query --data-urlencode $(call shq,query=$(value q)); echo
+	@curl -sS --fail-with-body $(PROMETHEUS_URL)/api/v1/query --data-urlencode $(call shq,query=$(value q)) && echo
 
 # ── Produce ──────────────────────────────────────────────────────────────────
 
@@ -253,7 +253,10 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 	healthlog() { docker inspect -f '{{range .State.Health.Log}}{{.Output}}{{end}}' "$$1" 2>/dev/null; }; \
 	healthy() { for i in $$(seq 30); do [ "$$(docker inspect -f '{{.State.Health.Status}}' "$$1" 2>/dev/null)" = healthy ] && return 0; sleep 1; done; echo "TOPICS FAILED: $$1 never became healthy: $$(healthlog $$1)"; return 1; }; \
 	desc() { $(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --describe --topic "$$1" 2>/dev/null | head -1; }; \
-	refused() { out=$$($(COMPOSE) run --rm --no-deps --name owner-verify-refused "$$@" orders-1 2>&1) && { echo "TOPICS FAILED: $$* was accepted"; return 1; }; echo "$$out"; }; \
+	refused() { docker rm -f owner-verify-refused >/dev/null 2>&1; o=$$($(COMPOSE) run -d --no-deps --name owner-verify-refused "$$@" orders-1 2>&1) || { echo "TOPICS FAILED: start owner-verify-refused: $$o" >&2; return 1; }; \
+		for i in $$(seq 15); do [ "$$(docker inspect -f '{{.State.Running}}' owner-verify-refused)" = false ] && break; sleep 1; done; \
+		st=$$(docker inspect -f '{{.State.Running}}/{{.State.ExitCode}}' owner-verify-refused); l=$$(docker logs owner-verify-refused 2>&1); docker rm -f owner-verify-refused >/dev/null 2>&1; \
+		case "$$st" in false/0|true/*) echo "TOPICS FAILED: $$* was accepted: $$l" >&2; return 1;; esac; echo "$$l"; }; \
 	out=$$(refused -e BASE_NAME=owner.verify) || exit 1; \
 	echo "$$out" | grep -q 'BASE_NAME "owner.verify" is not a base name' || { echo "TOPICS FAILED: BASE_NAME owner.verify: $$out"; exit 1; }; \
 	out=$$(refused -e BASE_NAME=owner-verify -e REPLICATION_FACTOR=3) || exit 1; \
