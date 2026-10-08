@@ -73,10 +73,13 @@ type NodeState struct {
 	Partitions int32              `json:"partitions,omitempty"` // topics
 	EndOffset  int64              `json:"endOffset,omitempty"`  // topics: summed over partitions
 	Warning    string             `json:"warning,omitempty"`
+	Branches   []int64            `json:"branches,omitempty"`  // routers: records per rule, then the default's
+	Unmatched  int64              `json:"unmatched,omitempty"` // routers: records dropped, no rule matched and no default
 	Instances  []NodeState        `json:"instances,omitempty"`
 
-	step     *tally // a consumer container's transform counts; applySteps puts them on the transform node
-	answered bool   // its container's /stats answered in this snapshot
+	step     *tally      // a consumer container's transform counts; applySteps puts them on the transform node
+	route    *routeTally // and its router's, put on the router node
+	answered bool        // its container's /stats answered in this snapshot
 }
 
 // A snapshot asks every running container for /stats in parallel and the broker
@@ -371,7 +374,7 @@ func withStats(ctx context.Context, url string, ns NodeState, starting bool) Nod
 		return ns
 	}
 	ns.setCounts(s.tally)
-	ns.TailSeq, ns.Boot, ns.step, ns.answered = s.TailSeq, s.Boot, s.Step, true
+	ns.TailSeq, ns.Boot, ns.step, ns.route, ns.answered = s.TailSeq, s.Boot, s.Step, s.Route, true
 	return ns
 }
 
@@ -380,38 +383,55 @@ func (ns *NodeState) setCounts(t tally) {
 	ns.Total, ns.Errors, ns.LastError = t.Total, t.Errors, t.LastError
 }
 
-// applySteps gives each transform node its consumer node's state and the counts
-// the consumer's containers report for it, summed as sumCounts sums instances. Its
-// boot joins theirs, so a container that restarted gives the transform no rate
-// rather than a wrong one. A transform whose consumer's containers answer but
-// none reports it (added after deploy) is "missing" until one does; one whose
-// consumer did not answer keeps the consumer's state, with no numbers.
+// applySteps gives each transform and router node its consumer node's state and
+// the counts the consumer's containers report for it.
 func applySteps(st *FlowState, specs []NodeSpec) {
 	for _, s := range specs {
-		if s.TransformNode == "" || s.Instance > 1 {
+		if s.Instance > 1 {
 			continue // a consumer's specs repeat per instance; its first does for all
 		}
 		consumer := st.Nodes[s.Node]
-		t := NodeState{State: consumer.State}
-		var steps []NodeState
-		var boots []string
-		answered := false
-		for _, c := range consumer.containers() {
-			answered = answered || c.answered
-			if c.step != nil {
-				step := NodeState{Instance: c.Instance}
-				step.setCounts(*c.step)
-				steps = append(steps, step)
-				boots = append(boots, c.Boot)
-			}
+		if s.TransformNode != "" {
+			st.Nodes[s.TransformNode] = stepState(consumer, func(c *NodeState) *routeTally {
+				if c.step == nil {
+					return nil
+				}
+				return &routeTally{tally: *c.step}
+			})
 		}
-		t.sumCounts(steps)
-		t.Boot = strings.Join(boots, ",")
-		if len(boots) == 0 && (t.State == "" || t.State == "running" && answered) {
-			t.State = "missing"
+		if s.RouterNode != "" {
+			st.Nodes[s.RouterNode] = stepState(consumer, func(c *NodeState) *routeTally { return c.route })
 		}
-		st.Nodes[s.TransformNode] = t
 	}
+}
+
+// stepState is the state of a step (a transform or a router) that runs in
+// consumer: the consumer's state, and the counts its containers report for the
+// step (reported picks them), summed as sumCounts sums instances. Its boot joins
+// theirs, so a container that restarted gives the step no rate rather than a
+// wrong one. A step whose consumer's containers answer but none reports it
+// (added after deploy) is "missing" until one does; one whose consumer did not
+// answer keeps the consumer's state, with no numbers.
+func stepState(consumer NodeState, reported func(*NodeState) *routeTally) NodeState {
+	t := NodeState{State: consumer.State}
+	var steps []NodeState
+	var boots []string
+	answered := false
+	for _, c := range consumer.containers() {
+		answered = answered || c.answered
+		if r := reported(c); r != nil {
+			step := NodeState{Instance: c.Instance, Branches: r.Branches, Unmatched: r.Unmatched}
+			step.setCounts(r.tally)
+			steps = append(steps, step)
+			boots = append(boots, c.Boot)
+		}
+	}
+	t.sumCounts(steps)
+	t.Boot = strings.Join(boots, ",")
+	if len(boots) == 0 && (t.State == "" || t.State == "running" && answered) {
+		t.State = "missing"
+	}
+	return t
 }
 
 // nodeStatsOf asks a node container's /stats at url for its counters, within ctx;
@@ -632,11 +652,18 @@ func (ns *NodeState) sumInstances() {
 // sumCounts gives ns the sums of cs's counters and rates, and the first of their
 // last errors, prefixed with its instance.
 func (ns *NodeState) sumCounts(cs []NodeState) {
-	ns.Total, ns.Errors, ns.Rate, ns.LastError = 0, 0, 0, ""
+	ns.Total, ns.Errors, ns.Rate, ns.LastError, ns.Branches, ns.Unmatched = 0, 0, 0, "", nil, 0
 	for _, in := range cs {
 		ns.Total += in.Total
 		ns.Errors += in.Errors
 		ns.Rate += in.Rate
+		ns.Unmatched += in.Unmatched
+		for i, b := range in.Branches {
+			if i == len(ns.Branches) {
+				ns.Branches = append(ns.Branches, 0)
+			}
+			ns.Branches[i] += b
+		}
 		if ns.LastError == "" && in.LastError != "" {
 			ns.LastError = instanceError(in.Instance, in.LastError)
 		}

@@ -19,6 +19,8 @@ export type NodeRuntime = {
   partitions?: number
   endOffset?: number
   warning?: string
+  branches?: number[] // routers: records per rule, then the default's
+  unmatched?: number // routers: records dropped, no rule matched and no default
   instances?: NodeRuntime[]
 }
 

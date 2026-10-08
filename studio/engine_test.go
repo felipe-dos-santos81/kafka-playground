@@ -387,6 +387,32 @@ func TestApplySteps(t *testing.T) {
 	}
 }
 
+func TestApplyStepsRouter(t *testing.T) {
+	specs := []NodeSpec{
+		{Node: "consumer-1", Type: "consumer", Instance: 1, TransformNode: "transform-1", RouterNode: "router-1"},
+		{Node: "consumer-1", Type: "consumer", Instance: 2, TransformNode: "transform-1", RouterNode: "router-1"},
+		{Node: "consumer-2", Type: "consumer", RouterNode: "router-2"},
+	}
+	st := FlowState{Status: "running", Nodes: map[string]NodeState{
+		"consumer-1": {State: "running", Instances: []NodeState{
+			{Instance: 1, State: "running", Boot: "a", step: &tally{Total: 4}, route: &routeTally{tally: tally{Total: 4}, Branches: []int64{2, 1, 0}, Unmatched: 1}},
+			{Instance: 2, State: "running", Boot: "b", step: &tally{Total: 2}, route: &routeTally{tally: tally{Total: 2, Errors: 1, LastError: "rule 1: invalid operation"}, Branches: []int64{1, 0, 0}}},
+		}},
+		"consumer-2": {State: "running", Boot: "c", answered: true}, // answers, but reports no router (added after deploy)
+	}}
+	applySteps(&st, specs)
+	want := map[string]NodeState{
+		"transform-1": {State: "running", Total: 6, Boot: "a,b"},
+		"router-1":    {State: "running", Total: 6, Errors: 1, LastError: "#2: rule 1: invalid operation", Boot: "a,b", Branches: []int64{3, 1, 0}, Unmatched: 1},
+		"router-2":    {State: "missing"},
+	}
+	for id, w := range want {
+		if got := st.Nodes[id]; !reflect.DeepEqual(got, w) {
+			t.Errorf("%s:\n got %+v\nwant %+v", id, got, w)
+		}
+	}
+}
+
 func TestStreamTicksEnds(t *testing.T) {
 	for _, c := range []struct {
 		name  string
