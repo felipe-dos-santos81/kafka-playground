@@ -8,7 +8,10 @@ export type ConsumerData = {
   auto_offset_reset: 'earliest' | 'latest'
   instances?: number
   sink: { kind: 'log' | 'http'; url?: string }
+  retry?: RetryData | null // null or absent: failures are not retried
+  dlq?: boolean // absent: false
 }
+export type RetryData = { attempts: number; delay_ms: number }
 export type TransformData = { expr: string }
 export type Rule = { when: string; to: string } // to: a topic node's id
 export type RouterData = { rules: Rule[]; default: string } // default: a topic node's id, '' for none

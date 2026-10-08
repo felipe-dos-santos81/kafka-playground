@@ -188,6 +188,39 @@ func TestValidate(t *testing.T) {
 			f.Nodes = append(f.Nodes, node("topic-2", "topic", topic("archive")), node("consumer-2", "consumer", `{"group":"g2"}`))
 			f.Edges = append(f.Edges, edge("consumer-1", "topic-2"), edge("topic-2", "consumer-2"))
 		}, ""},
+		{"retry and DLQ valid", Deploy, func(f *Flow) {
+			f.Nodes[2].Data = json.RawMessage(`{"group":"g","retry":{"attempts":3,"delay_ms":5000},"dlq":true}`)
+		}, ""},
+		{"DLQ alone valid", Deploy, func(f *Flow) { f.Nodes[2].Data = json.RawMessage(`{"group":"g","dlq":true}`) }, ""},
+		{"retry null is no retry", Deploy, func(f *Flow) { f.Nodes[2].Data = json.RawMessage(`{"group":"g","retry":null}`) }, ""},
+		{"retry without DLQ", Deploy, func(f *Flow) {
+			f.Nodes[2].Data = json.RawMessage(`{"group":"g","retry":{"attempts":3,"delay_ms":5000}}`)
+		}, "retry needs a DLQ: records go there once their attempts run out"},
+		{"retry attempts 0", Deploy, func(f *Flow) {
+			f.Nodes[2].Data = json.RawMessage(`{"group":"g","retry":{"attempts":0,"delay_ms":5000},"dlq":true}`)
+		}, "retry attempts must be between 1 and 10"},
+		{"retry attempts 11", Deploy, func(f *Flow) {
+			f.Nodes[2].Data = json.RawMessage(`{"group":"g","retry":{"attempts":11,"delay_ms":5000},"dlq":true}`)
+		}, "retry attempts must be between 1 and 10"},
+		{"retry delay 99", Deploy, func(f *Flow) {
+			f.Nodes[2].Data = json.RawMessage(`{"group":"g","retry":{"attempts":3,"delay_ms":99},"dlq":true}`)
+		}, "retry delay_ms must be between 100 and 60000"},
+		{"retry delay 60001", Deploy, func(f *Flow) {
+			f.Nodes[2].Data = json.RawMessage(`{"group":"g","retry":{"attempts":3,"delay_ms":60001},"dlq":true}`)
+		}, "retry delay_ms must be between 100 and 60000"},
+		{"retry half-built saves", Save, func(f *Flow) { f.Nodes[2].Data = json.RawMessage(`{"group":"g","retry":{"attempts":0}}`) }, ""},
+		{"input topic too long for its DLQ", Deploy, func(f *Flow) {
+			f.Nodes[1].Data = json.RawMessage(topic(strings.Repeat("a", 243)))
+			f.Nodes[2].Data = json.RawMessage(`{"group":"g","dlq":true}`)
+		}, "is too long for its __retry and __dlq topics"},
+		{"input topic of 242 fits", Deploy, func(f *Flow) {
+			f.Nodes[1].Data = json.RawMessage(topic(strings.Repeat("a", 242)))
+			f.Nodes[2].Data = json.RawMessage(`{"group":"g","retry":{"attempts":1,"delay_ms":100},"dlq":true}`)
+		}, ""},
+		{"input topic of 243 without retry or DLQ", Deploy, func(f *Flow) { f.Nodes[1].Data = json.RawMessage(topic(strings.Repeat("a", 243))) }, ""},
+		{"group too long for its retry group", Deploy, func(f *Flow) {
+			f.Nodes[2].Data = json.RawMessage(`{"group":"` + strings.Repeat("g", 249) + `","retry":{"attempts":1,"delay_ms":100},"dlq":true}`)
+		}, "group is too long for its __retry group"},
 		{"data missing", Deploy, func(f *Flow) { f.Nodes[0].Data = nil }, "data is required"},
 		{"data wrong shape", Deploy, func(f *Flow) { f.Nodes[1].Data = json.RawMessage(`{"partitions":"three"}`) }, "data:"},
 	}

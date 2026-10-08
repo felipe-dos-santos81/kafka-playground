@@ -67,11 +67,31 @@ type TopicData struct {
 }
 
 type ConsumerData struct {
-	Group           string `json:"group"`
-	AutoOffsetReset string `json:"auto_offset_reset"` // "earliest" (default) | "latest"
-	Instances       int    `json:"instances"`         // 0 = 1
-	Sink            Sink   `json:"sink"`
+	Group           string     `json:"group"`
+	AutoOffsetReset string     `json:"auto_offset_reset"` // "earliest" (default) | "latest"
+	Instances       int        `json:"instances"`         // 0 = 1
+	Sink            Sink       `json:"sink"`
+	Retry           *RetryData `json:"retry"` // nil: failures are not retried
+	DLQ             bool       `json:"dlq"`   // failures end in the DLQ
 }
+
+// RetryData is how a consumer retries a failure that may pass later (its sink's or
+// its forward's): through its retry topic, each try DelayMS after the last, up to
+// Attempts times after the first try.
+type RetryData struct {
+	Attempts int `json:"attempts"`
+	DelayMS  int `json:"delay_ms"`
+}
+
+// A consumer's retry and DLQ topics are named after the topic it reads, and the
+// group its retry loop reads in after its group.
+func retryTopic(topic string) string { return topic + "__retry" }
+func dlqTopic(topic string) string   { return topic + "__dlq" }
+func retryGroup(group string) string { return group + "__retry" }
+
+// maxInputTopic is the longest name a topic read by a consumer with a retry or a
+// DLQ may have: <name>__retry must stay within Kafka's 249 characters.
+const maxInputTopic = 249 - len("__retry")
 
 type Sink struct {
 	Kind string `json:"kind"` // "" or "log" | "http"
@@ -156,6 +176,7 @@ func Validate(f *Flow, level Level) []Problem {
 	inDegree := map[string]int{}  // node id → number of incoming edges
 	outDegree := map[string]int{} // node id → number of outgoing edges
 	next := map[string][]string{} // node id → targets of its valid edges, for the loop check
+	from := map[string]string{}   // node id → the source of a valid edge into it: the topic a consumer reads
 	edgeIDs := map[string]bool{}
 	seen := map[[2]string]bool{}
 	for _, e := range f.Edges {
@@ -187,12 +208,14 @@ func Validate(f *Flow, level Level) []Problem {
 		inDegree[e.Target]++
 		outDegree[e.Source]++
 		next[e.Source] = append(next[e.Source], e.Target)
+		from[e.Target] = e.Source
 	}
 	if level == Save {
 		return ps
 	}
 	topicNames := map[string]string{} // topic name → node id
 	topicOf := map[string]string{}    // topic node id → its name
+	var failing []string              // consumers with a retry or a DLQ: their input topic names two more
 	for _, n := range f.Nodes {
 		if types[n.ID] == "" {
 			continue // already reported
@@ -263,6 +286,23 @@ func Validate(f *Flow, level Level) []Problem {
 			default:
 				add(n.ID, "", `sink kind must be "log" or "http"`)
 			}
+			if d.Retry != nil {
+				if !d.DLQ {
+					add(n.ID, "", "retry needs a DLQ: records go there once their attempts run out")
+				}
+				if d.Retry.Attempts < 1 || d.Retry.Attempts > 10 {
+					add(n.ID, "", "retry attempts must be between 1 and 10")
+				}
+				if d.Retry.DelayMS < 100 || d.Retry.DelayMS > 60000 {
+					add(n.ID, "", "retry delay_ms must be between 100 and 60000")
+				}
+				if len(retryGroup(d.Group)) > 255 {
+					add(n.ID, "", "group is too long for its __retry group")
+				}
+			}
+			if d.Retry != nil || d.DLQ {
+				failing = append(failing, n.ID)
+			}
 			if inDegree[n.ID] != 1 {
 				add(n.ID, "", "a consumer needs exactly one edge from a topic")
 			}
@@ -288,6 +328,11 @@ func Validate(f *Flow, level Level) []Problem {
 				continue
 			}
 			checkRouter(n.ID, d, inDegree[n.ID], next[n.ID], add)
+		}
+	}
+	for _, id := range failing {
+		if name := topicOf[from[id]]; len(name) > maxInputTopic {
+			add(id, "", "topic name %q is too long for its __retry and __dlq topics", name)
 		}
 	}
 	// Every container a deploy starts needs a name of its own: a consumer
