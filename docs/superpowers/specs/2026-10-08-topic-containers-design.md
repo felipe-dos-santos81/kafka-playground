@@ -255,7 +255,7 @@ state:
 
 | Aspect | Desired | Action on a difference |
 |---|---|---|
-| Existence | the topic exists | `CreateTopic(partitions, rf, configs)`. `TopicAlreadyExists` (a race with Studio or another owner) counts as success. |
+| Existence | the topic exists | `CreateTopic(partitions, rf, configs)`. `TopicAlreadyExists` (a race with Studio or another owner) is no failure: nothing is logged as created, `/healthz` says `created by someone else first; reconciling it on the next pass`, and the next pass reconciles the topic it finds. |
 | Partitions | `PARTITIONS` (default 1) | Fewer: `UpdatePartitions(set)` raises them. Equal: no call. **More: cannot fix.** Partitions never decrease. |
 | Replication factor | `REPLICATION_FACTOR` (default 1, and only 1 is accepted) | Never changed. A different value on an existing topic **cannot be fixed**. |
 | Configs | role defaults, overridden by `TOPIC_CONFIG_*` (3.6) | `AlterTopicConfigs`, the incremental call. `SetConfig` for each desired key whose topic-level value (source `DYNAMIC_TOPIC_CONFIG`) differs or is missing. `DeleteConfig` for each topic-level override that is not desired. Broker and default values are left alone. |
@@ -552,7 +552,7 @@ label is limited to 63 characters.
 - **Reading:** strip `TOPIC_CONFIG_`, lower-case the rest, and replace `_` with `.`.
 - **Writing:** upper-case the name and replace `.` with `_`.
 
-The rule is reversible because every topic config name in Kafka 4.3.1 (32
+The rule is reversible because every topic config name in Kafka 4.3.1 (30
 names, read from `TopicConfig` in `kafka-clients-4.3.1.jar`) is lower-case,
 dotted, and has no `_`.
 
@@ -1275,7 +1275,7 @@ three topics from the start, and M2 lands on topics that already exist.
 - `config.go`: a table test of the name rules, with one failing input per rule
   (`a.b`, `a__b`, `a-2`, `_a`, `01`, `0`, a 243-character name, an unknown
   role, `REPLICATION_FACTOR=2`, `MAX_ATTEMPTS` on main). It also covers
-  `TOPIC_CONFIG_*` both ways over the 32 Kafka 4.3.1 config names, role
+  `TOPIC_CONFIG_*` both ways over the 30 Kafka 4.3.1 config names, role
   defaults with an empty override, and every fatal line of 3.6, word for word.
 - `reconcile.go`: a table test of the pure diff:
   - missing topic → create;
