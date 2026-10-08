@@ -62,12 +62,17 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 type FileNode = FlowFile['nodes'][number]
 
 // The node with every missing default data field filled in, one level into objects
-// such as sink, so a hand-edited file that omits fields still renders.
+// such as sink, and a router's rules made a list of {when, to}, so a hand-edited
+// file that omits fields still renders.
 export function fillDefaults(node: FileNode): FileNode {
   const data = { ...node.data }
   for (const [k, v] of Object.entries(defaultData(node.type))) {
     if (!(k in data)) data[k] = v
     else if (isObject(v) && isObject(data[k])) data[k] = { ...v, ...data[k] }
+  }
+  if (node.type === 'router') {
+    const rules = Array.isArray(data.rules) ? data.rules : []
+    data.rules = rules.map((r) => ({ when: '', to: '', ...(isObject(r) ? r : {}) }))
   }
   return { ...node, data }
 }

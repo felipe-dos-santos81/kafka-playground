@@ -310,7 +310,9 @@ func Validate(f *Flow, level Level) []Problem {
 				case !wired[r.To]:
 					add(n.ID, "", "rule %d: topic %q is not wired to the router", i+1, r.To)
 				}
-				used[r.To] = true
+				if r.To != "" {
+					used[r.To] = true
+				}
 			}
 			if d.Default != "" {
 				if !wired[d.Default] {

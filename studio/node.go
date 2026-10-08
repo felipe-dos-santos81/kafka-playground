@@ -247,7 +247,7 @@ func (p *producer) run(ctx context.Context, every time.Duration) {
 
 // consumer takes each fetched record of one consumer node through the tail, the
 // http sink (when set), the transform (when set) and the forward (when set). A
-// failed sink, transform or forward is counted and logged, not retried:
+// failed sink, transform, router or forward is counted and logged, not retried:
 // autocommit still moves past the record. The sink and the forward run under
 // context.WithoutCancel: a stop (SIGTERM) must not fail them with "context
 // canceled" before Close commits past this record.
@@ -422,7 +422,7 @@ func runNode() {
 				log.Fatal("transform: ", err) // Validate compiled the same source on deploy
 			}
 		}
-		if len(spec.Routes) > 0 {
+		if spec.RouterNode != "" {
 			if rt, err = newRouter(spec.Routes, spec.RouteDefault); err != nil {
 				log.Fatal("router: ", err) // Validate compiled the same rules on deploy
 			}

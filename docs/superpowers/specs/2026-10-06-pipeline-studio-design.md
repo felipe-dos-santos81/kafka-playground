@@ -259,8 +259,8 @@ Inside a node container:
   router if any (Router), and if the node forwards (to its next topic, or to the
   one its router picks), `ProduceSync` to that topic with the same key (through
   the same client, 10 s timeout). The sink and the forward are independent: a failed sink
-  does not stop the forward. A failed sink, transform or forward counts as an
-  error and is not retried. Once handled, the record is marked, and only marked
+  does not stop the forward. A failed sink, transform, router or forward counts
+  as an error and is not retried. Once handled, the record is marked, and only marked
   records are committed (autocommit of marks): a failed forward is still marked,
   so that record is lost to the next topic (at-most-once for forwards), except
   when it failed because the client was closing, which leaves it unmarked and
