@@ -1,8 +1,9 @@
 # Topic containers — design
 
-Status: approved on 2026-10-08. M1 and M2 are built, from
-`docs/superpowers/plans/2026-10-08-topic-containers-m1.md` and
-`docs/superpowers/plans/2026-10-08-topic-containers-m2.md`; M3 follows.
+Status: approved on 2026-10-08. M1, M2 and M3 are built, from
+`docs/superpowers/plans/2026-10-08-topic-containers-m1.md`,
+`docs/superpowers/plans/2026-10-08-topic-containers-m2.md` and
+`docs/superpowers/plans/2026-10-08-topic-containers-m3.md`.
 
 A topic deployed as three long-running containers on the playground's broker:
 `orders-1`, `orders-1__retry` and `orders-1__dlq`. Each container owns one
@@ -723,6 +724,10 @@ quoted because the verify target greps the alert name:
 | `TopicRetryWaiting` | `sum by (consumergroup, topic) (kafka_consumergroup_lag{topic=~".+__retry"}) > 0` | 5m | records sit in a retry topic longer than any sensible backoff: the worker is down, or a Studio loop stopped (3.5) |
 | `TopicOwnerUnhealthy` | `up{job="topic-owners"} == 0 or topic_owner_reconciled == 0` | 1m | a container is down or its topic drifted beyond repair |
 
+`TopicDLQGrowing` keeps firing for 10 minutes after the last parked record,
+also after its topic is deleted: `increase()` still sees the samples inside
+its window (M3). `make verify` leaves it firing for `owner-verify-1__dlq`.
+
 No Alertmanager. On a laptop there is nothing to route to, and the alerts page
 (http://localhost:9090/alerts) plus a dashboard panel on `ALERTS` show the
 state. Adding one later is an `alerting:` block in `prometheus.yml` and a
@@ -876,7 +881,8 @@ Why anchors:
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./grafana/dashboards:/var/lib/grafana-dashboards:ro
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
@@ -914,6 +920,10 @@ Why anchors:
 
 - **No volume.** It declares none (lab), so its SQLite database lives in the
   container layer and goes with it.
+- **Two provisioning mounts.** Mounting all of `/etc/grafana/provisioning`
+  hides the image's empty `plugins/` and `alerting/` directories, and Grafana
+  logs an error for each (M3). The service mounts `datasources/` and
+  `dashboards/` only.
 - **Phone-home.** `GF_PLUGINS_PREINSTALL_DISABLED` stops Grafana 13 from
   downloading about 18 plugins from grafana.com at start (lab). The bundled
   Prometheus datasource still works.
@@ -968,13 +978,16 @@ Grafana provisioning:
   `path: /var/lib/grafana-dashboards` and `allowUiUpdates: false`.
 - **`grafana/dashboards/topic-owners.json`:** uid `topic-owners`, title
   `Topic owners`. It has variables `base` and `topic_instance`, from
-  `label_values(topic_owner_info, …)`, and a row per role:
+  `label_values(topic_owner_info, …)` (multi-value, default All). A table of
+  firing `ALERTS` sits on top, then a row per role:
   - **main:** messages in/s, partitions, log size, lag per group;
   - **retry:** waiting, redeliveries/s, moves to the DLQ/s by reason, backoff p50 and p95, skipped/s;
-  - **dlq:** parked, age of the oldest record;
-  - **all:** a table of firing `ALERTS`.
+  - **dlq:** parked, age of the oldest record.
 
-  The section 4.2 expressions, word for word.
+  The section 4.2 expressions, word for word, plus one matcher that picks the
+  role's topic from the variables, `topic=~"${base}-${topic_instance}__retry"`
+  (braces, because `$topic_instance__retry` would name another variable).
+  Moves to the DLQ are summed `by (topic, reason)`.
 
 Alerts stay in Prometheus rule files, not Grafana alert provisioning. A
 Prometheus rule is three lines, while Grafana's provisioned rule is a query
@@ -1267,6 +1280,9 @@ three topics from the start, and M2 lands on topics that already exist.
 6. **Grafana anonymous `Admin`** is deprecated in 13 (it logs a warning) but
    works. If a later Grafana drops it, use `Viewer` plus
    `GF_USERS_VIEWERS_CAN_EDIT=true` for Explore; that pairing is unverified.
+   **Checked in M3, on 13.2.3:** the warning reads `auth.anonymous.org_role is
+   deprecated, only viewer role is supported`, yet an anonymous request created
+   a folder (`"canAdmin":true`). Admin still works.
 7. **Bytes in and out.** If they are wanted later, the exact change is:
    - a custom broker image or a bind-mounted `jmx_prometheus_javaagent-1.7.0.jar`
      (GitHub asset; sha256
@@ -1362,7 +1378,8 @@ with the evidence on a miss.
        sums to `0` once (c) is committed.
 6. **Alerts and Grafana (M3).**
    - `docker compose exec -T prometheus promtool check config /etc/prometheus/prometheus.yml`
-     succeeds, and so does `promtool check rules /etc/prometheus/rules.yml`.
+     succeeds. It also checks the rule files it names, so a separate
+     `promtool check rules` would add nothing (M3).
    - `/api/v1/rules` lists the four alerts with `"health":"ok"`.
    - `/api/v1/alerts` has `"alertname":"TopicDLQGrowing"` with
      `"topic":"owner-verify-1__dlq"` and `"state":"firing"`.

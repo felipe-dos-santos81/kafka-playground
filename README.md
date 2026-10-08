@@ -2,7 +2,7 @@
 
 A local Kafka sandbox. Produce JSON from a browser and watch partitions, consumer groups and fan-out. Pipeline Studio adds a canvas where you draw producer → topic → consumer flows and run them.
 
-Everything is local: no auth, no TLS, every port on `127.0.0.1`. `make down` deletes the Kafka data and the metrics; Studio flows are files in `flows/` and stay.
+Everything is local: no auth, no TLS, every port on `127.0.0.1`. `make down` deletes the Kafka data, the metrics and Grafana's state; Studio flows are files in `flows/` and stay.
 
 | Service | What it is | Where |
 |---|---|---|
@@ -13,7 +13,8 @@ Everything is local: no auth, no TLS, every port on `127.0.0.1`. `make down` del
 | `producer` | producer page (`producer/`, Go) | http://localhost:8081 |
 | `studio` | Pipeline Studio (`studio/`, Go + React Flow) | http://localhost:8082 |
 | `orders-1`, `orders-1__retry`, `orders-1__dlq` | topic owners: each creates its topic and keeps it in the desired state (`topic-owner/`, Go) | `make owners` |
-| `prometheus` | Prometheus: scrapes the topic owners | http://localhost:9090 |
+| `prometheus` | Prometheus: scrapes the topic owners and evaluates their alert rules | http://localhost:9090 |
+| `grafana` | Grafana: the topic-owners dashboard | http://localhost:3000/d/topic-owners |
 | `console` | Redpanda Console: topics, messages, groups | http://localhost:8080 |
 
 ## Quick start
@@ -84,7 +85,7 @@ Consumers with the same `GROUP_ID` split the partitions. Without one, each conta
 - It never lowers partitions or changes the replication factor. Such a difference makes the container unhealthy and says why: `docker inspect --format '{{json .State.Health.Log}}' orders-1`, or `make logs svc=orders-1`.
 - `make up` waits until every topic is in its desired state. So `depends_on: {orders-1: {condition: service_healthy}}` guarantees a consumer its topic, as a finished topic job does.
 - A config changed by hand, in Console or with `kafka-configs.sh`, is set back. To change one, change the container's environment and recreate it.
-- It serves `/metrics` for its topic on port 9000 inside the network. Prometheus (http://localhost:9090) finds the containers by their labels, with no target list.
+- It serves `/metrics` for its topic on port 9000 inside the network. Prometheus (http://localhost:9090) finds the containers by their labels, with no target list. Grafana shows them (below).
 - `make owners` lists them. `make query q='kafka_topic_partitions'` asks Prometheus. `make kcat args='-C -t orders-1 -o beginning -e -J'` runs kcat on the compose network (default `-L`).
 
 The retry container also runs the redelivery worker (below).
@@ -226,6 +227,26 @@ Some queries:
 - Records waiting in a retry topic: `sum by (topic) (kafka_consumergroup_lag{consumergroup=~".+__redelivery"})`.
 - Records parked in a DLQ: `sum by (topic) (kafka_topic_partition_current_offset{topic=~".+__dlq"} - kafka_topic_partition_oldest_offset{topic=~".+__dlq"})`.
 - Age of the oldest parked record, in seconds: `time() - min by (topic) (topic_owner_oldest_message_timestamp_seconds)`.
+
+### Dashboard and alerts
+
+Grafana at http://localhost:3000/d/topic-owners shows the `Topic owners` dashboard. Anyone can open it, as admin, without logging in. Choose `base` and `topic_instance` at the top (both default to All). It has:
+
+- a table of the alerts firing now;
+- **main:** messages in per second, partitions, log size, lag per group;
+- **retry:** waiting, redeliveries per second, moves to the DLQ per second by reason, backoff p50 and p95, skipped per second;
+- **dlq:** parked records, and the age of the oldest one.
+
+The dashboard and its datasource are files: `grafana/dashboards/topic-owners.json` and `grafana/provisioning/`. Grafana does not save changes made in the UI, and `make down` removes everything it stored. To change a panel, edit the JSON. Grafana reloads it within 10 s.
+
+Prometheus evaluates the alert rules in `prometheus/rules.yml` every 5 s. Firing alerts show at http://localhost:9090/alerts and in the dashboard's table. There is no Alertmanager, so nothing is sent anywhere.
+
+| Alert | Fires when |
+|---|---|
+| `TopicConsumerLagHigh` | a group's lag on a main topic stays above 100 for 2 minutes |
+| `TopicDLQGrowing` | a record was parked in a DLQ in the last 10 minutes; it keeps firing for 10 minutes after the last one, also after the topic is gone (`make verify` leaves one for `owner-verify-1__dlq`) |
+| `TopicRetryWaiting` | records wait in a retry topic for 5 minutes: the worker is down, or a Studio retry loop stopped |
+| `TopicOwnerUnhealthy` | for 1 minute, a topic owner is not scraped, or its topic is not in its desired state |
 
 Bytes in and out per topic are not exported. Only the broker's JMX has them, and the JMX agent would need a jar and a change to the `kafka` service.
 
