@@ -266,7 +266,9 @@ Inside a node container:
   records are committed (autocommit of marks): a failed forward is still marked,
   so that record is lost to the next topic (at-most-once for forwards), except
   when it failed because the client was closing, which leaves it unmarked and
-  redelivered. The image carries a CA bundle from M4 so `https` sinks work. On
+  redelivered. A consumer with a DLQ (Retry and DLQ, §7) instead ends a record's
+  path at its first failure and sends it to its retry topic or its DLQ; a second
+  client in the same container retries it. The image carries a CA bundle from M4 so `https` sinks work. On
   SIGTERM the node finishes the batch in hand (up to 3 s of the 5 s stop
   grace), commits what is marked, and closes the client, which leaves the
   group. `docker rm -f` (SIGKILL) skips that, so unmarked and uncommitted
@@ -287,7 +289,7 @@ Inside a node container:
 
 ### 3.6 Live status to the browser: SSE
 
-One `EventSource` per open flow on `GET /api/flows/{id}/events`. Each open stream runs its own loop: every second it takes a snapshot — `ContainerList` by label (container states), `GET /stats` on every running node container, `adm.Lag` for the flow's groups and `adm.ListEndOffsets` for its topics — computes `rate = Δtotal / Δt` against its previous snapshot (none when a node's `boot` changed), and sends it as a `tick`. The loop ends when `r.Context()` is done. One tab is one loop; a poller shared between streams is an optimisation for many viewers. A consumer node's `assigned` partitions come from the group description in `adm.Lag`, whose members carry the node's container name as their client id. From M4, a consumer with `instances` > 1 also carries `instances: [{instance, state, total, rate, errors, lastError, tailSeq, boot, assigned}]`, one entry per container; its node-level `total`, `rate` and `errors` are the sums, `lag` stays the group's, and its `state` is `running` only when every instance runs (otherwise the first instance's state that is not); its `lastError` is the first instance's that has one, prefixed `#<i>: `. From M6 a node container that does not answer `/stats` has no numbers and the reason in its `warning`, not its `lastError`. From M5 a transform node carries its consumer's state (`missing` while no container reports it) and the counters the consumer reports for it under `step`; a router node likewise, from `route`, plus `branches` (records per rule, then the default's) and `unmatched`, summed over instances.
+One `EventSource` per open flow on `GET /api/flows/{id}/events`. Each open stream runs its own loop: every second it takes a snapshot — `ContainerList` by label (container states), `GET /stats` on every running node container, `adm.Lag` for the flow's groups and `adm.ListEndOffsets` for its topics — computes `rate = Δtotal / Δt` against its previous snapshot (none when a node's `boot` changed), and sends it as a `tick`. The loop ends when `r.Context()` is done. One tab is one loop; a poller shared between streams is an optimisation for many viewers. A consumer node's `assigned` partitions come from the group description in `adm.Lag`, whose members carry the node's container name as their client id. From M4, a consumer with `instances` > 1 also carries `instances: [{instance, state, total, rate, errors, lastError, tailSeq, boot, assigned}]`, one entry per container; its node-level `total`, `rate` and `errors` are the sums, `lag` stays the group's, and its `state` is `running` only when every instance runs (otherwise the first instance's state that is not); its `lastError` is the first instance's that has one, prefixed `#<i>: `. From M6 a node container that does not answer `/stats` has no numbers and the reason in its `warning`, not its `lastError`. From M5 a transform node carries its consumer's state (`missing` while no container reports it) and the counters the consumer reports for it under `step`; a router node likewise, from `route`, plus `branches` (records per rule, then the default's) and `unmatched`, summed over instances. A consumer with retry or a DLQ also carries `retried` and `dlq`, summed over instances, and `waiting`, its retry group's lag on its retry topic (none until that group commits).
 
 ```
 event: tick
@@ -421,6 +423,8 @@ record and forward it to `orders-archive`.
 | | `auto_offset_reset` | M2 | `earliest` (default) or `latest` |
 | | `sink` | M2 | `{"kind":"log"}` (M2) or `{"kind":"http","url":"…"}` (M4), `url` must parse with scheme `http` or `https` |
 | | `instances` | M4 | integer 1–10; absent or 0 means 1 |
+| | `retry` | Retry/DLQ | absent or `null`, or `{attempts, delay_ms}`: attempts 1–10 (retries after the first try), delay_ms 100–60000; needs `dlq` |
+| | `dlq` | Retry/DLQ | `true` sends failures to `<input>__dlq`; the input topic's name must leave room for `__retry` (≤ 242 chars), the group for `__retry` (≤ 248) |
 | transform | `expr` | M5 | an `expr-lang/expr` program over `msg` (the decoded JSON value) returning the new value, or `nil` to drop the record; must compile on deploy |
 | router | `rules` | Router | ordered `[{when, to}]`: `when` an `expr-lang/expr` condition over `msg` that must compile as a boolean on deploy, `to` the id of a topic the router has an edge to |
 | | `default` | Router | the id of a topic the router has an edge to, or empty: no rule matching drops the record |
@@ -708,6 +712,16 @@ Designed in `docs/superpowers/specs/2026-10-07-studio-router-design.md`.
   router node reuses the transform's snapshot path (`applySteps`), its
   `branches` summed element-wise over instances; the edge labels are worked
   out in the canvas and never saved.
+
+### Retry and DLQ.
+
+Designed in `docs/superpowers/specs/2026-10-08-studio-retry-dlq-design.md`.
+
+- Consumer settings `retry: {attempts, delay_ms}` and `dlq: true`; topics `<input>__retry` and `<input>__dlq`, created on deploy; a retry group `<group>__retry`.
+- With a DLQ, a record's first failure ends its path: a sink or forward failure goes to the retry topic while tries remain, then to the DLQ; a transform or router failure straight to the DLQ; as read, with `studio-*` headers.
+- A second client in the consumer's container reads the retry topic, waits until each record is due, and runs it through the same path; another group's records are skipped.
+- **Demo:** a consumer with a failing http sink, `retry {attempts: 1, delay_ms: 1000}` and a DLQ: one record shows `1 retried`, then `1 dlq` and `0 waiting`; a log consumer on `<input>__dlq` shows its headers.
+- Built as decided in its plan: the retry counts join the consumer's runtime line; headers show in the tail; `handle` takes one record at a time, as the main and retry loops share the transform's and router's VMs; `verify-studio` reads one record through two consumers (a failing sink with retry, a failing transform) into one shared DLQ.
 
 ### Not planned
 

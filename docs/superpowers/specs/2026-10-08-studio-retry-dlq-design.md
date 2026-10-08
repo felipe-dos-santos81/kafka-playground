@@ -1,6 +1,6 @@
 # Pipeline Studio retry and DLQ topics — design
 
-Status: approved in brainstorming on 2026-10-08. The Studio spec
+Status: approved in brainstorming on 2026-10-08; built from `docs/superpowers/plans/2026-10-08-studio-retry-dlq.md`. The Studio spec
 (`docs/superpowers/specs/2026-10-06-pipeline-studio-design.md`) stays the
 authority for everything this does not change; this document adds failure
 handling to its consumer and, once built, its sections are updated to match
@@ -54,9 +54,10 @@ Consumer data gains two optional fields:
   comes from): `orders-1` gives `orders-1__retry` and `orders-1__dlq`. They are
   not editable.
 - Edges and `allowedEdges` do not change: the retry and DLQ topics are not nodes.
-- `studio/flow.go` (`ConsumerData`), `studio/ui/src/flow/schema.ts` (the
-  consumer's `defaultData`: no retry, `dlq: false`) and
-  `studio/ui/src/nodes/types.ts` change together (AGENTS.md).
+- `studio/flow.go` (`ConsumerData`) and `studio/ui/src/nodes/types.ts` change
+  together (AGENTS.md). `defaultData` in `studio/ui/src/flow/schema.ts` gets no
+  `dlq`: a filled-in default would make every existing flow look unsaved, so
+  `dlq` is optional in the UI (absent: false).
 
 ## 3. Validation (`studio/flow.go`)
 
@@ -144,6 +145,9 @@ A write to the retry topic or the DLQ that fails counts as an error
 (`retry: …` or `dlq: …`) and is logged, as a failed forward is today; the record
 still commits, unless the write failed because Stop closed the client, which
 leaves it uncommitted to be redelivered.
+A consumer's main loop and its retry loop share one `handle`, which takes one
+record at a time: the transform's and the router's VMs are not safe for
+concurrent use.
 
 ### 4.4 The retry loop
 
@@ -200,11 +204,11 @@ The stop budgets in `node.go` stay inside `stopGraceSeconds`.
     "wire a topic first" while the consumer has no named input topic.
   The two checkboxes are not coupled in the UI: deploy's refusal (§3) is shown
   in the top bar like any other. Every control has a label tied to it.
-- **Consumer node:** while running, with retry or DLQ on, a second runtime line
-  `4 retried · 2 waiting · 1 dlq`, each part shown once its container has
-  answered (`waiting` once the retry group has committed).
-- **Tail drawer:** a record's headers, when it has any, as `name: value` lines
-  under its value.
+- **Consumer node:** while running, its runtime line gains `4 retried`,
+  `2 waiting` and `1 dlq`; `retried` and `dlq` once nonzero, `waiting` once the
+  retry group has committed.
+- **Tail drawer:** a record's headers, when it has any, as `name: value` items
+  after its value.
 
 ## 7. Tests
 
@@ -224,14 +228,18 @@ The stop budgets in `node.go` stay inside `stopGraceSeconds`.
   - `engine_test`: `waiting` from the retry group's lag (none before its first
     commit); `retried` and `dlq` summed over instances; `instances` still last in
     the JSON.
-- **`verify-studio`:** a flow producer (manual) → topic `studio-verify-retry` →
-  consumer (http sink to a studio URL that answers 404, transform
-  `{qty: msg.qty * 2}`, `retry {attempts: 1, delay_ms: 1000}`, `dlq: true`), and
-  a drawn topic `studio-verify-retry__dlq` → a log consumer. Send `{"qty":2}`
-  (sink fails, one retry, fails again, DLQ) and `{}` (transform fails, straight
-  to DLQ); poll the snapshot until the consumer shows `"retried":1` and
-  `"dlq":2`; the DLQ consumer's tail shows a `studio-error` header. The exit trap
-  deletes `studio-verify-retry`, `…__retry` and `…__dlq`.
+- **`verify-studio`:** a flow producer (manual) → topic `studio-verify-retry`,
+  read by consumer-1 (http sink to a studio URL that answers 404,
+  `retry {attempts: 1, delay_ms: 1000}`, `dlq: true`) and by consumer-2 (log
+  sink, transform `{qty: msg.qty * 2}` → `studio-verify-retry-out`, `dlq: true`),
+  and a drawn topic `studio-verify-retry__dlq` → a log consumer. One record `{}`:
+  consumer-1's sink fails, it is retried once and fails again, then goes to the
+  DLQ with `studio-attempt` 2; consumer-2's transform fails and it goes there at
+  once with `studio-attempt` 1. Poll until the DLQ consumer's tail shows both and
+  consumer-1 shows `"retried":1,"dlq":1`. The same flow without consumer-1's DLQ
+  is refused first. (One consumer cannot show both: its sink runs, and fails,
+  before its transform.) The exit trap deletes `studio-verify-retry`, `…-out`,
+  `…__retry` and `…__dlq`.
 - **UI suite** (`studio/ui/e2e/nodes.spec.ts`): the Inspector's "On failure"
   group shows the derived names; Retry without DLQ is refused on deploy with the
   §3 message in the top bar; a deployed retry flow shows `retried`, `waiting`

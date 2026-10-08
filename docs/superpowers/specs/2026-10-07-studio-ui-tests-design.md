@@ -96,7 +96,7 @@ fixture gives. No page-object layer.
 
 ## 5. Tests
 
-Fourteen tests (the last three added since, below), run one at a time; each flow, topic and group has a unique name and
+Sixteen tests (the last five added since, below), run one at a time; each flow, topic and group has a unique name and
 is removed afterwards (§6).
 
 ### `e2e/editor.spec.ts` — the editor, flows built through the UI
@@ -168,6 +168,14 @@ is removed afterwards (§6).
     (`msg.total > 100` to one topic, default to another) deployed; two sends
     from the producer's drawer, one big and one small: the router shows
     `2 msgs` and its edges `#1 · 1` and `default · 1`.
+15. **Retry and DLQ settings** (`nodes.spec.ts`). The consumer's "On failure"
+    group shows `<topic>__retry` and `<topic>__dlq`; ticking Retry shows
+    Attempts 3 and Delay (ms) 5000; Save and Deploy: the top bar shows
+    `422: consumer-1: retry needs a DLQ: records go there once their attempts run out`.
+16. **Retry, then DLQ** (`nodes.spec.ts`). A consumer whose http sink always
+    fails, with `retry {attempts: 1, delay_ms: 1000}` and a DLQ: one send shows
+    `1 retried`, then `1 dlq` and `0 waiting` on its runtime line, and its tail
+    shows `studio-attempt: 1` on the retried record.
 
 ## 6. Cleanup, failures, timing
 
