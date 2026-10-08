@@ -173,20 +173,18 @@ type worker struct {
 	now       func() time.Time
 	produce   func(context.Context, *kgo.Record) error // waits for the broker's acknowledgement
 	mark      func(*kgo.Record)                        // marks a record for commit
-	pause     func(partition int32)
-	resume    func(partition int32)
-	cl        *kgo.Client // nil in tests
+	hold      func(partition int32, on bool)           // pauses (on) or resumes fetching the partition; both are idempotent
+	cl        *kgo.Client                              // nil in tests
 
 	mu     sync.Mutex
-	queues map[int32][]*kgo.Record // per partition, the records read and not yet done, in offset order
-	paused map[int32]bool
+	queues map[int32][]*kgo.Record // per partition, the records read and not yet done, in offset order; a queued partition is held
 }
 
 func newWorker(cfg Config, reg prometheus.Registerer) (*worker, error) {
 	w := &worker{
-		cfg: cfg, main: cfg.Name(), dlq: cfg.Name() + "__dlq",
+		cfg: cfg, main: cfg.Name(), dlq: cfg.TopicFor(RoleDLQ),
 		m: newWorkerMetrics(reg, cfg.Topic()), now: time.Now,
-		queues: map[int32][]*kgo.Record{}, paused: map[int32]bool{},
+		queues: map[int32][]*kgo.Record{},
 	}
 	cl, err := kgo.NewClient(
 		kgo.SeedBrokers(cfg.Brokers...),
@@ -209,8 +207,13 @@ func newWorker(cfg Config, reg prometheus.Registerer) (*worker, error) {
 	w.cl = cl
 	w.produce = func(ctx context.Context, r *kgo.Record) error { return cl.ProduceSync(ctx, r).FirstErr() }
 	w.mark = func(r *kgo.Record) { cl.MarkCommitRecords(r) }
-	w.pause = func(p int32) { cl.PauseFetchPartitions(map[string][]int32{cfg.Topic(): {p}}) }
-	w.resume = func(p int32) { cl.ResumeFetchPartitions(map[string][]int32{cfg.Topic(): {p}}) }
+	w.hold = func(p int32, on bool) {
+		if on {
+			cl.PauseFetchPartitions(map[string][]int32{cfg.Topic(): {p}})
+		} else {
+			cl.ResumeFetchPartitions(map[string][]int32{cfg.Topic(): {p}})
+		}
+	}
 	return w, nil
 }
 
@@ -273,20 +276,12 @@ func (w *worker) drain(ctx context.Context) time.Time {
 			}
 			q = q[1:]
 		}
-		switch {
-		case len(q) > 0:
+		if len(q) > 0 {
 			w.queues[p] = q
-			if !w.paused[p] {
-				w.pause(p)
-				w.paused[p] = true
-			}
-		default:
+		} else {
 			delete(w.queues, p)
-			if w.paused[p] {
-				w.resume(p)
-				delete(w.paused, p)
-			}
 		}
+		w.hold(p, len(q) > 0)
 	}
 	return next
 }
@@ -343,9 +338,6 @@ func (w *worker) forget(partitions []int32) {
 	defer w.mu.Unlock()
 	for _, p := range partitions {
 		delete(w.queues, p)
-		if w.paused[p] {
-			w.resume(p)
-			delete(w.paused, p)
-		}
+		w.hold(p, false)
 	}
 }

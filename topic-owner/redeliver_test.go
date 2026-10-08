@@ -106,10 +106,12 @@ func TestOnward(t *testing.T) {
 
 // testWorker is a worker on orders-1__retry with MAX_ATTEMPTS 3 and
 // BACKOFF_MS 5000 whose produce fails while *produceErr is set. It records
-// what it produced, marked, paused and resumed.
+// what it produced, marked, paused and resumed (a pause or resume is recorded
+// only when it changes the partition's state, as the real calls are idempotent).
 type testWorker struct {
 	*worker
 	produced, marked, pauses []string
+	held                     map[int32]bool
 	produceErr               error
 }
 
@@ -122,7 +124,7 @@ func newTestWorker(t *testing.T, now time.Time) *testWorker {
 		cfg: cfg, main: "orders-1", dlq: "orders-1__dlq",
 		m:      newWorkerMetrics(prometheus.NewRegistry(), cfg.Topic()),
 		now:    func() time.Time { return now },
-		queues: map[int32][]*kgo.Record{}, paused: map[int32]bool{},
+		queues: map[int32][]*kgo.Record{},
 	}
 	tw.produce = func(_ context.Context, r *kgo.Record) error {
 		if tw.produceErr != nil {
@@ -132,8 +134,18 @@ func newTestWorker(t *testing.T, now time.Time) *testWorker {
 		return nil
 	}
 	tw.mark = func(r *kgo.Record) { tw.marked = append(tw.marked, position(r)) }
-	tw.pause = func(p int32) { tw.pauses = append(tw.pauses, "pause") }
-	tw.resume = func(p int32) { tw.pauses = append(tw.pauses, "resume") }
+	tw.held = map[int32]bool{}
+	tw.hold = func(p int32, on bool) {
+		if tw.held[p] == on {
+			return
+		}
+		tw.held[p] = on
+		if on {
+			tw.pauses = append(tw.pauses, "pause")
+		} else {
+			tw.pauses = append(tw.pauses, "resume")
+		}
+	}
 	return tw
 }
 
@@ -196,13 +208,13 @@ func TestDrainProduceFails(t *testing.T) {
 	if next := tw.drain(context.Background()); !next.Equal(now.Add(produceRetry)) {
 		t.Fatalf("next %v, want now + %v", next, produceRetry)
 	}
-	if len(tw.marked) != 0 || len(tw.queues[0]) != 2 || !tw.paused[0] {
-		t.Fatalf("marked %q, queue %d, paused %v", tw.marked, len(tw.queues[0]), tw.paused[0])
+	if len(tw.marked) != 0 || len(tw.queues[0]) != 2 || !tw.held[0] {
+		t.Fatalf("marked %q, queue %d, paused %v", tw.marked, len(tw.queues[0]), tw.held[0])
 	}
 	tw.produceErr = nil
 	tw.drain(context.Background())
-	if want := []string{"orders-1__retry[0]@0", "orders-1__retry[0]@1"}; !slices.Equal(tw.marked, want) || tw.paused[0] {
-		t.Fatalf("marked %q, paused %v", tw.marked, tw.paused[0])
+	if want := []string{"orders-1__retry[0]@0", "orders-1__retry[0]@1"}; !slices.Equal(tw.marked, want) || tw.held[0] {
+		t.Fatalf("marked %q, paused %v", tw.marked, tw.held[0])
 	}
 }
 
@@ -213,8 +225,8 @@ func TestForget(t *testing.T) {
 	tw.queues[0] = []*kgo.Record{keyed(0, "a", "studio-backoff-ms=60000")}
 	tw.drain(context.Background())
 	tw.forget([]int32{0, 1})
-	if len(tw.queues) != 0 || len(tw.paused) != 0 || !slices.Equal(tw.pauses, []string{"pause", "resume"}) || len(tw.marked) != 0 {
-		t.Fatalf("queues %d, paused %v, pauses %q, marked %q", len(tw.queues), tw.paused, tw.pauses, tw.marked)
+	if len(tw.queues) != 0 || tw.held[0] || !slices.Equal(tw.pauses, []string{"pause", "resume"}) || len(tw.marked) != 0 {
+		t.Fatalf("queues %d, held %v, pauses %q, marked %q", len(tw.queues), tw.held, tw.pauses, tw.marked)
 	}
 }
 

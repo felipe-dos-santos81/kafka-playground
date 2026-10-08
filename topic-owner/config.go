@@ -55,8 +55,11 @@ type Config struct {
 func (c Config) Name() string { return c.Base + "-" + strconv.Itoa(c.Instance) }
 
 // Topic is the topic this container owns.
-func (c Config) Topic() string {
-	switch c.Role {
+func (c Config) Topic() string { return c.TopicFor(c.Role) }
+
+// TopicFor is the topic of this instance that role r owns.
+func (c Config) TopicFor(r Role) string {
+	switch r {
 	case RoleRetry:
 		return c.Name() + "__retry"
 	case RoleDLQ:

@@ -241,7 +241,6 @@ No state survives a restart. Everything is re-derived from the broker:
 | Last reconcile result (for `/healthz`) | memory | recomputed by the first reconcile |
 | Worker's position in `__retry` | committed offsets of group `<base>-<instance>__redelivery` | resumes from the last commit; uncommitted records are read again |
 | Records waiting for their due time | memory (one queue per paused partition) | read again from the last commit and waited out again (their due time comes from the record) |
-| DLQ oldest-record timestamps | memory cache, keyed by start offset | fetched again at the first scrape |
 | Counters (`…_total`) | memory | start again at 0; `rate()` and `increase()` treat that as a reset |
 
 `docker compose restart orders-1` and `make down && make up` therefore end in
@@ -687,14 +686,14 @@ updated by the worker as it works.
 
 How the oldest timestamp is fetched:
 
-- At each scrape, partitions whose start offset is unchanged reuse the cached
-  timestamp, so a record is fetched again only when retention, a
-  delete-records call or a new record into an empty partition moves the start.
-- The fetch is `kadm.ListOffsetsAfterMilli(ctx, 0, topic)`. It returns the
+- Each scrape of the DLQ role fetches it with
+  `kadm.ListOffsetsAfterMilli(ctx, 0, topic)`: one admin call that returns the
   first record with a timestamp ≥ 0, which is the oldest, with its timestamp,
-  and it consumes nothing. Section 9 asks to confirm the returned timestamp on
-  the broker. The fallback is a direct client reading one record from
-  `AtStart()`.
+  and consumes nothing (confirmed on the broker, section 9 question 2). Only
+  partitions the scrape read as non-empty get a series.
+- Nothing is cached. An earlier design kept the time per start offset; the
+  extra call every 5 s costs less than keeping that cache true when a DLQ is
+  emptied or recreated.
 
 Not exported: bytes in and out (2.3).
 
@@ -1312,8 +1311,8 @@ three topics from the start, and M2 lands on topics that already exist.
   - origin and first failure missing, and present (kept).
 - `metrics.go`: assembling series from kadm result structs built in the test.
   This covers lag only for committed partitions, under-replicated from ISR
-  against replicas, and the oldest-timestamp cache that refetches only when
-  the start offset moves.
+  against replicas, and the oldest record's time served for non-empty
+  partitions only, with `topic_owner_kafka_up` 0 when its fetch fails.
 
 **End to end:** `make verify-topics`, which `make verify` runs after
 `verify-ui`. Each step polls with a deadline and prints `TOPICS FAILED: <what>`

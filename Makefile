@@ -22,6 +22,9 @@ args ?= -L
 # Single-quote $(1) for the shell; fed $(value var), quotes, spaces and $ pass through untouched.
 shq = '$(subst ','\'',$(1))'
 
+# A one-off of the orders-audit service (the stack's pinned kcat image) on the compose network, with entrypoint $(1).
+kcat_run = $(COMPOSE) run --rm -T --no-deps --entrypoint $(1) orders-audit
+
 .PHONY: help up down ps logs topics groups nodes owners query produce kcat scale verify verify-studio verify-ui verify-topics test
 
 # ── Environment ──────────────────────────────────────────────────────────────
@@ -81,7 +84,7 @@ produce: ## [STEP 2] Produce one JSON record via the producer page (usage: make 
 
 # kcat from the stack's pinned image, on the compose network; sh -c splits args into words.
 kcat: ## Run kcat against the broker (usage: make kcat args='-C -t orders-1 -o beginning -e -J'; default -L)
-	@$(COMPOSE) run --rm -T --no-deps --entrypoint sh orders-audit -c $(call shq,exec kcat -b kafka:19092 $(value args))
+	@$(call kcat_run,sh) -c $(call shq,exec kcat -b kafka:19092 $(value args))
 
 # ── Scale ────────────────────────────────────────────────────────────────────
 
@@ -293,7 +296,7 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 		promis 'count(kafka_topic_partition_current_offset{topic="owner-verify-1__dlq"})' 3 && break; \
 		[ "$$i" = 30 ] && { echo "TOPICS FAILED: Prometheus never scraped owner-verify-1__dlq"; exit 1; }; sleep 1; \
 	done; \
-	kc() { $(COMPOSE) run --rm -T --no-deps --entrypoint kcat orders-audit -b kafka:19092 "$$@" 2>/dev/null; }; \
+	kc() { $(call kcat_run,kcat) -b kafka:19092 "$$@" 2>/dev/null; }; \
 	park() { k=$$1; shift; echo "{\"id\":\"$$k\"}" | kc -P -t owner-verify-1__retry -k "$$k" "$$@" || { echo "TOPICS FAILED: park $$k in owner-verify-1__retry"; return 1; }; }; \
 	park a -H studio-attempt=1 -H studio-backoff-ms=1000 && park b -H studio-attempt=2 && \
 		park c -H studio-group=owner-verify-studio && park d -H studio-backoff-ms=soon || exit 1; \
