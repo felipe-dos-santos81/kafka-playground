@@ -1,5 +1,5 @@
 // Node types and the tail drawer, on flows created through the API.
-import { chain, consumer, deployFlow, edge, edgeOf, expect, node, nodeOf, runtimeOf, simple, tail, test, timer, topBar, topic } from './studio'
+import { chain, consumer, deployFlow, edge, edgeOf, expect, field, manual, node, nodeOf, runtimeOf, simple, tail, test, timer, topBar, topic } from './studio'
 
 // The producer's records: the first has qty and price, the second neither, so
 // the transform cannot multiply them.
@@ -107,4 +107,42 @@ test("a consumer's group rewinds from the Inspector once the flow is stopped", a
   await expect(topBar(page).getByText('stopped', { exact: true })).toBeVisible({ timeout: 15_000 })
   await earliest.click()
   await expect(inspector).toContainText(`${name} on ${name}: 1 partition rewound to earliest`)
+})
+
+// An http sink every record fails at: the studio answers 404 for a flow that does not exist.
+const failingSink = { kind: 'http', url: 'http://studio:8082/api/flows/00000000/nodes/producer-1/send' }
+
+test("a consumer's On failure group names its topics, and a retry needs the DLQ", async ({ page, studio }) => {
+  const name = studio.unique('retry-names')
+  await studio.create(simple(name))
+  await studio.open(page, name)
+  await nodeOf(page, 'consumer-1').click()
+  const onFailure = page.locator('.inspector').getByRole('group', { name: 'On failure' })
+  await expect(onFailure).toContainText(`${name}__retry`)
+  await expect(onFailure).toContainText(`${name}__dlq`)
+
+  await field(page, 'Retry').check()
+  await expect(field(page, 'Attempts')).toHaveValue('3')
+  await expect(field(page, 'Delay (ms)')).toHaveValue('5000')
+  await page.getByRole('button', { name: 'Save' }).click()
+  await page.getByRole('button', { name: 'Deploy' }).click()
+  await expect(topBar(page)).toContainText('422: consumer-1: retry needs a DLQ: records go there once their attempts run out')
+})
+
+test('a consumer retries a failing sink, then sends the record to its DLQ', async ({ page, studio }) => {
+  const name = studio.unique('retry')
+  const retrying = consumer(name, { sink: failingSink, retry: { attempts: 1, delay_ms: 1000 }, dlq: true })
+  await deployFlow(await studio.create(chain(name, manual, topic(name), retrying)))
+  await studio.open(page, name)
+
+  await nodeOf(page, 'producer-1').click()
+  await tail(page).getByRole('button', { name: 'Send' }).click()
+  await expect(tail(page)).toContainText('at offset 0')
+  const line = runtimeOf(page, 'consumer-1')
+  await expect(line).toContainText(/(?<!\d)1 retried/, { timeout: 30_000 })
+  await expect(line).toContainText(/(?<!\d)1 dlq/, { timeout: 15_000 })
+  await expect(line).toContainText(/(?<!\d)0 waiting/, { timeout: 15_000 }) // the retry group committed past it
+
+  await nodeOf(page, 'consumer-1').click()
+  await expect(tail(page)).toContainText('studio-attempt: 1') // the try from the retry topic
 })
