@@ -13,6 +13,9 @@ groups:
       - alert: TopicRetryWaiting # the worker is down, or a Studio retry loop stopped
         expr: sum by (consumergroup, topic) (kafka_consumergroup_lag{topic=~".+__retry"}) > 0
         for: 5m
-      - alert: TopicOwnerUnhealthy # a running owner fails its scrapes, or its topic is not in its desired state
-        expr: up{job="topic-owners"} == 0 or topic_owner_reconciled == 0
+      # TopicOwnerUnhealthy: a running owner fails its scrapes, its topic is not in its desired state, or an
+      # owner seen in the last hour is gone (stopped or crashed: docker_sd drops it). A `docker compose run`
+      # one-off (oneoff="true", prometheus.yml) is meant to go away, so its absence is not news.
+      - alert: TopicOwnerUnhealthy
+        expr: up{job="topic-owners"} == 0 or topic_owner_reconciled == 0 or (max_over_time(topic_owner_info{oneoff=""}[1h]) unless topic_owner_info)
         for: 1m

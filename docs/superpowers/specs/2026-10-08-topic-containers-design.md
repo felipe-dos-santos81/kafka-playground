@@ -708,7 +708,7 @@ Not exported: bytes in and out (2.3).
 | waiting (Studio's word) | `sum by (topic) (kafka_consumergroup_lag{consumergroup=~".+__redelivery"})`: the worker group's lag on its retry topic |
 | parked in the DLQ | `sum by (topic) (kafka_topic_partition_current_offset{topic=~".+__dlq"} - kafka_topic_partition_oldest_offset{topic=~".+__dlq"})`. Offsets count records here: the DLQ is `delete`, not compacted, and its writers are not transactional. |
 | age of the oldest parked record | `time() - min by (topic) (topic_owner_oldest_message_timestamp_seconds)` |
-| redeliveries, moves to the DLQ | `rate(topic_owner_redeliveries_total[5m])`, `sum by (topic) (rate(topic_owner_dead_lettered_total[5m]))` |
+| redeliveries, moves to the DLQ | `rate(topic_owner_redeliveries_total[5m])`, `sum by (topic, reason) (rate(topic_owner_dead_lettered_total[5m]))` |
 | backoff p50 / p95 | `histogram_quantile(0.5, sum by (le, topic) (rate(topic_owner_backoff_seconds_bucket[5m])))` |
 
 The role is in the name (`__retry`, `__dlq`), so rules select by `topic` and
@@ -722,7 +722,7 @@ quoted because the verify target greps the alert name:
 | `TopicConsumerLagHigh` | `sum by (consumergroup, topic) (kafka_consumergroup_lag{topic!~".+__(retry\|dlq)"}) > 100` | 2m | a consumer of a main topic falls behind |
 | `TopicDLQGrowing` | `sum by (topic) (increase(kafka_topic_partition_current_offset{topic=~".+__dlq"}[10m])) > 0` | 0s | any newly parked record is news in a playground |
 | `TopicRetryWaiting` | `sum by (consumergroup, topic) (kafka_consumergroup_lag{topic=~".+__retry"}) > 0` | 5m | records sit in a retry topic longer than any sensible backoff: the worker is down, or a Studio loop stopped (3.5) |
-| `TopicOwnerUnhealthy` | `up{job="topic-owners"} == 0 or topic_owner_reconciled == 0` | 1m | a running owner fails its scrapes, or its topic is not in its desired state |
+| `TopicOwnerUnhealthy` | `up{job="topic-owners"} == 0 or topic_owner_reconciled == 0 or (max_over_time(topic_owner_info{oneoff=""}[1h]) unless topic_owner_info)` | 1m | a running owner fails its scrapes, its topic is not in its desired state, or an owner seen in the last hour is gone |
 
 `TopicDLQGrowing` keeps firing for 10 minutes after the last parked record,
 also after its topic is deleted: `increase()` still sees the samples inside
@@ -730,7 +730,11 @@ its window (M3). `make verify` leaves it firing for `owner-verify-1__dlq`.
 
 `up == 0` covers only a running owner that fails its scrapes: `docker_sd` lists
 running containers, so a stopped owner drops out of discovery and its `up`
-goes stale (M3). An alert for a missing owner is not built.
+goes stale (M3). The third arm catches that: an owner whose `topic_owner_info`
+was seen in the last hour but is gone now. It lasts until the owner returns or
+the hour passes. A `docker compose run` one-off (`verify-topics`' containers)
+is meant to go away: the scrape config labels its series `oneoff="true"`
+(5.4), and the arm skips them.
 
 No Alertmanager. On a laptop there is nothing to route to, and the alerts page
 (http://localhost:9090/alerts) plus a dashboard panel on `ALERTS` show the
@@ -953,6 +957,10 @@ scrape_configs:
       - source_labels: [__meta_docker_container_name]
         regex: '/(.*)'
         target_label: instance
+      - source_labels: [__meta_docker_container_label_com_docker_compose_oneoff]
+        regex: 'True'
+        target_label: oneoff
+        replacement: 'true'
 ```
 
 Discovery is by `docker_sd_configs`, filtered on the `topic-owner.role` label.
@@ -1384,9 +1392,12 @@ with the evidence on a miss.
    - `docker compose exec -T prometheus promtool check config /etc/prometheus/prometheus.yml`
      succeeds. It also checks the rule files it names, so a separate
      `promtool check rules` would add nothing (M3).
-   - `/api/v1/rules` lists the four alerts with `"health":"ok"`.
+   - `/api/v1/rules` lists every alert of `rules.yml` (counted from the file)
+     with `"health":"ok"`.
    - `/api/v1/alerts` has `"alertname":"TopicDLQGrowing"` with
-     `"topic":"owner-verify-1__dlq"` and `"state":"firing"`.
+     `"topic":"owner-verify-1__dlq"` and `"state":"firing"`. When that alert
+     was already firing before step 5 (a run in the last 10 minutes), the
+     step's line says this run cannot show it.
    - Grafana: `/api/health` answers 200, `/api/dashboards/uid/topic-owners`
      answers 200, and `/api/datasources/uid/prometheus/health` contains
      `Successfully queried the Prometheus API`.

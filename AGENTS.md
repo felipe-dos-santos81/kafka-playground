@@ -19,7 +19,7 @@ Local Kafka playground, run with Docker Compose. Usage is in README.md. Pipeline
 ```sh
 make test                  # go vet, gofmt, go test, UI build (tsc), UI tests type-check, compose config
 make down && make verify   # always: ends with STUDIO OK, UI OK, TOPICS OK and VERIFY OK (the first run downloads Chromium)
-make down                  # then `docker ps -aq -f label=studio.flow`, `docker ps -aq -f label=topic-owner.role` and `git status --short flows` print nothing
+make down                  # then `docker ps -aq -f label=studio.flow`, `docker ps -aq -f label=topic-owner.role`, `docker volume ls -q -f label=com.docker.compose.project=kafka-playground` and `git status --short flows` print nothing
 ```
 
 ## Rules
@@ -42,45 +42,32 @@ make down                  # then `docker ps -aq -f label=studio.flow`, `docker 
 - Studio node containers are not compose services: they carry the `studio.flow` label, and `make down` removes them before `docker compose down` (the network cannot go while they are attached). So does a topic owner started with `docker compose run` (labels `topic-owner.role` and `com.docker.compose.oneoff=True`), which `docker compose down` leaves behind. Keep that line in `down`; use `make nodes` to see them. `down` passes `-v`: the `kafka` and `prometheus` images declare anonymous volumes that would otherwise stay.
 - A topic owner's service, `container_name` and topic are the same string: `<base>-<instance>`, plus `__retry` or `__dlq` (the suffixes Studio uses). The name rules live in `topic-owner/config.go`, on top of Studio's `topicNameRe` and `maxInputTopic`. Its labels are `topic-owner.base`, `topic-owner.instance` and `topic-owner.role`, never `studio.flow`. Prometheus finds owners by `topic-owner.role`, so a new instance needs no Prometheus change: add one block of three services with their own anchors (README, "Add an instance").
 - The redelivery worker's header contract is Studio's (`studio/retry.go`) plus `studio-backoff-ms` and `studio-first-failure` (`topic-owner/redeliver.go`). A change to a header's name or format changes both files, the README table and both specs together. The worker owns the records without `studio-group`; its group `<base>-<instance>__redelivery` is franz-go only.
-- A topic owner's series that mean what kafka-exporter's mean keep its names and labels; the rest are `topic_owner_*`. `prometheus/rules.yml`, `grafana/dashboards/topic-owners.json` and `verify-topics` quote metric names (`verify-topics` also log lines and the alert `TopicDLQGrowing`); renaming one changes all three. Grafana does not save UI edits (`allowUiUpdates: false`): change the dashboard in its JSON, and check every query against a running stack. `verify-topics` owns the `owner-verify` prefix: don't give anything else that name.
+- A topic owner's series that mean what kafka-exporter's mean keep its names and labels; the rest are `topic_owner_*`. `prometheus/rules.yml`, `grafana/dashboards/topic-owners.json` and `verify-topics` quote metric names (`verify-topics` also log lines, the alert `TopicDLQGrowing` and Grafana's `Successfully queried the Prometheus API`); renaming one changes all three. Grafana does not save UI edits (`allowUiUpdates: false`): change the dashboard in its JSON, and check every query against a running stack. `verify-topics` owns the `owner-verify` prefix: don't give anything else that name.
 - Makefile: GNU make 3.81 on macOS with BSD tools (no `timeout`, no `base64 -w0`, no `sed -i` without `''`). Recipes use real tabs. Follow the existing style: `SERVICE`, `## ` help comments, `# ── Section ──` rules, lower-case `arg ?= default`. Pass user text to the shell as `$(call shq,$(value var))`.
 - Keep README.md, and the spec when behaviour departs from it, in sync with any behaviour change.
 
 ## Unit testing: write fewer, better tests
 
-Every test is code someone has to read, maintain, and wait on in CI. A test
-earns its place only if it can fail for a reason no other test already covers.
-Optimize for distinct behaviors verified, not for test count or coverage numbers.
+Every test is code someone has to read, maintain, and wait on in CI. A test earns its place only if it can fail for a reason no other test already covers. Optimize for distinct behaviors verified, not for test count or coverage numbers.
 
 ### Before writing any test
 
-1. Read the existing tests for the code you're touching. If a behavior is
-   already covered, do not cover it again. Extend or adjust the existing test
-   instead of adding a new one beside it.
-2. List the distinct behaviors you need to verify (one line each). If two items
-   on the list would fail for the same underlying bug, merge them.
-3. For each remaining item, ask: "If I deleted this test, what bug could slip
-   through that the other tests would miss?" If you can't name one, don't write it.
+1. Read the existing tests for the code you're touching. If a behavior is already covered, do not cover it again. Extend or adjust the existing test instead of adding a new one beside it.
+2. List the distinct behaviors you need to verify (one line each). If two items on the list would fail for the same underlying bug, merge them.
+3. For each remaining item, ask: "If I deleted this test, what bug could slip through that the other tests would miss?" If you can't name one, don't write it.
 
 ### What counts as redundant
 
-- Multiple inputs from the same equivalence class (e.g. testing 3, 5, and 7
-  when any positive integer exercises the same path). Pick one representative
-  plus the boundaries.
-- The same logic tested at several layers. Test it once at the lowest layer
-  that owns it; higher layers only test their own wiring and logic.
-- Tests that differ only in input and expected values. Collapse them into one
-  table-driven/parameterized test.
+- Multiple inputs from the same equivalence class (e.g. testing 3, 5, and 7 when any positive integer exercises the same path). Pick one representative plus the boundaries.
+- The same logic tested at several layers. Test it once at the lowest layer that owns it; higher layers only test their own wiring and logic.
+- Tests that differ only in input and expected values. Collapse them into one table-driven/parameterized test.
 - A new test that is a strict subset of an existing, broader one.
 
 ### What not to test at all
 
-- Trivial code with no logic: getters, setters, plain constructors, constants,
-  simple delegation.
+- Trivial code with no logic: getters, setters, plain constructors, constants, simple delegation.
 - The language, standard library, framework, or third-party dependencies.
-- Implementation details: private helpers, internal call order, or mock
-  interactions that merely restate the implementation. Test observable behavior
-  through the public interface.
+- Implementation details: private helpers, internal call order, or mock interactions that merely restate the implementation. Test observable behavior through the public interface.
 - Scenarios that the type system or compiler already makes impossible.
 
 ### What you should still test
@@ -92,12 +79,9 @@ Optimize for distinct behaviors verified, not for test count or coverage numbers
 
 ### When changing existing code
 
-- Update the tests that cover the changed behavior rather than adding parallel
-  ones. Delete tests made obsolete by the change.
+- Update the tests that cover the changed behavior rather than adding parallel ones. Delete tests made obsolete by the change.
 - Don't add tests for code you didn't change unless asked.
 
 ### Reporting
 
-When you finish, state briefly which behaviors you tested and any you
-deliberately skipped as redundant or trivial, so the reviewer can disagree
-if needed.
+When you finish, state briefly which behaviors you tested and any you deliberately skipped as redundant or trivial, so the reviewer can disagree if needed.

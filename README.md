@@ -244,9 +244,9 @@ Prometheus evaluates the alert rules in `prometheus/rules.yml` every 5 s. Firing
 | Alert | Fires when |
 |---|---|
 | `TopicConsumerLagHigh` | a group's lag on a main topic stays above 100 for 2 minutes |
-| `TopicDLQGrowing` | a record was parked in a DLQ in the last 10 minutes; it keeps firing for 10 minutes after the last one, also after the topic is gone (`make verify` leaves one for `owner-verify-1__dlq`) |
+| `TopicDLQGrowing` | a record was parked in a DLQ in the last 10 minutes; it keeps firing for 10 minutes after the last one, also after the topic is gone (`make verify` leaves one for `owner-verify-1__dlq`, and a second run within those 10 minutes says it cannot show the alert again) |
 | `TopicRetryWaiting` | records wait in a retry topic for 5 minutes: the worker is down, or a Studio retry loop stopped |
-| `TopicOwnerUnhealthy` | for 1 minute, a running owner's scrapes fail, or its topic is not in its desired state; a stopped or crashed owner drops out of discovery and raises no alert (`make owners` shows it missing, and its panels go empty) |
+| `TopicOwnerUnhealthy` | for 1 minute, a running owner's scrapes fail, its topic is not in its desired state, or an owner seen in the last hour is gone (stopped or crashed). A `docker compose run` one-off, such as `make verify`'s, is meant to go away: Prometheus labels its series `oneoff="true"`, and its absence raises nothing |
 
 Bytes in and out per topic are not exported. Only the broker's JMX has them, and the JMX agent would need a jar and a change to the `kafka` service.
 

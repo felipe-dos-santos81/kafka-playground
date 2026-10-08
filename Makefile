@@ -249,7 +249,8 @@ verify-studio: up ## Check the studio API end to end: every node type, retry and
 
 # Runs owners of its own base, owner-verify, as one-offs of the orders-1 service
 # (same image, network and healthcheck; labels and environment overridden).
-# Step 6 sees the alert of a run within the last 10 minutes: a rerun without `make down` passes it on the old one.
+# TopicDLQGrowing lasts 10 minutes: when an earlier run's alert for owner-verify-1__dlq
+# is still firing, step 6 says this run cannot show it.
 verify-topics: up ## Check the topic owners end to end: refusals, reconcile, metrics, the redelivery worker and the DLQ, alerts and Grafana; cleans up its containers, topics and group
 	@trap 'docker rm -f owner-verify-refused owner-verify-1 owner-verify-1__retry owner-verify-1__dlq >/dev/null 2>&1; $(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --delete --topic "owner-verify-1(__retry|__dlq)?" >/dev/null 2>&1; $(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --delete --group owner-verify-1__redelivery >/dev/null 2>&1' EXIT; \
 	own() { n=$$1 r=$$2 p=$$3; shift 3; docker rm -f "$$n" >/dev/null 2>&1; \
@@ -300,6 +301,7 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 	done; \
 	kc() { $(call kcat_run,kcat) -b kafka:19092 "$$@" 2>/dev/null; }; \
 	park() { k=$$1; shift; echo "{\"id\":\"$$k\"}" | kc -P -t owner-verify-1__retry -k "$$k" "$$@" || { echo "TOPICS FAILED: park $$k in owner-verify-1__retry"; return 1; }; }; \
+	stale=$$(curl -sS $(PROMETHEUS_URL)/api/v1/alerts | grep -c '"alertname":"TopicDLQGrowing","topic":"owner-verify-1__dlq"}'); \
 	park a -H studio-attempt=1 -H studio-backoff-ms=1000 && park b -H studio-attempt=2 && \
 		park c -H studio-group=owner-verify-studio && park d -H studio-backoff-ms=soon || exit 1; \
 	for i in $$(seq 30); do \
@@ -318,18 +320,21 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 	echo "$$main$$dlq" | grep -q '"key":"c"' && { echo "TOPICS FAILED: c (studio-group set) was forwarded: $$main $$dlq"; exit 1; }; \
 	echo "topics worker: a redelivered, b and d dead-lettered, c left to its Studio loop, 2 parked"; \
 	out=$$($(COMPOSE) exec -T prometheus promtool check config /etc/prometheus/prometheus.yml 2>&1) || { echo "TOPICS FAILED: promtool check config: $$out"; exit 1; }; \
+	n=$$(grep -c '^ *- alert:' prometheus/rules.yml); \
 	for i in $$(seq 30); do \
 		rules=$$(curl -sS "$(PROMETHEUS_URL)/api/v1/rules?type=alert"); \
-		[ "$$(echo "$$rules" | grep -o '"health":"ok"' | wc -l | tr -d ' ')" = 4 ] && \
+		[ "$$(echo "$$rules" | grep -o '"health":"ok"' | wc -l | tr -d ' ')" = "$$n" ] && \
 			curl -sS $(PROMETHEUS_URL)/api/v1/alerts | grep -q '"alertname":"TopicDLQGrowing","topic":"owner-verify-1__dlq"},"annotations":{[^}]*},"state":"firing"' && break; \
-		[ "$$i" = 30 ] && { echo "TOPICS FAILED: want 4 healthy alert rules and TopicDLQGrowing firing for owner-verify-1__dlq: rules $$rules alerts $$(curl -sS $(PROMETHEUS_URL)/api/v1/alerts)"; exit 1; }; sleep 1; \
+		[ "$$i" = 30 ] && { echo "TOPICS FAILED: want $$n healthy alert rules and TopicDLQGrowing firing for owner-verify-1__dlq: rules $$rules alerts $$(curl -sS $(PROMETHEUS_URL)/api/v1/alerts)"; exit 1; }; sleep 1; \
 	done; \
 	for p in /api/health /api/dashboards/uid/topic-owners; do \
 		curl -sSf -o /dev/null $(GRAFANA_URL)$$p || { echo "TOPICS FAILED: Grafana $$p"; exit 1; }; \
 	done; \
 	out=$$(curl -sS $(GRAFANA_URL)/api/datasources/uid/prometheus/health); \
 	echo "$$out" | grep -q 'Successfully queried the Prometheus API' || { echo "TOPICS FAILED: Grafana's Prometheus datasource: $$out"; exit 1; }; \
-	echo "topics alerts: 4 rules, TopicDLQGrowing firing for owner-verify-1__dlq; Grafana: dashboard topic-owners, datasource healthy"; \
+	alert="TopicDLQGrowing firing for owner-verify-1__dlq"; \
+	[ "$$stale" = 0 ] || alert="TopicDLQGrowing for owner-verify-1__dlq already firing from a run in the last 10 minutes, so this run cannot show it"; \
+	echo "topics alerts: $$n rules, $$alert; Grafana: dashboard topic-owners, datasource healthy"; \
 	echo "TOPICS OK"
 
 verify-ui: up studio/ui/.chromium ## Check the studio UI in Chromium (Playwright); installs Chromium once
