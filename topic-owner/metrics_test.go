@@ -156,8 +156,18 @@ func TestOldestTimes(t *testing.T) {
 		t.Fatalf("times %v, %d fetches; want none, no fetch", times, fetches)
 	}
 
+	// The topic is deleted and recreated, so the partition was seen empty above
+	// and a new record lands at the same start offset: its time is fetched, the
+	// deleted record's is not served.
+	listed["orders-1__dlq"][0] = kadm.ListedOffset{Topic: "orders-1__dlq", Partition: 0, Offset: 1, Timestamp: t0.Add(2 * time.Minute).UnixMilli()}
+	parts[0].start, parts[0].end = 1, 2
+	times, err = o.get(context.Background(), "orders-1__dlq", parts)
+	if err != nil || fetches != 3 || !times[0].Equal(t0.Add(2*time.Minute)) {
+		t.Fatalf("times %v, err %v, %d fetches; want the new record, fetched once more", times, err, fetches)
+	}
+
 	// A failed fetch reports its error and serves nothing stale.
-	parts[0].end = 3
+	parts[0].start, parts[0].end = 2, 3
 	o.fetch = func(context.Context) (kadm.ListedOffsets, error) { return nil, errors.New("unable to dial") }
 	if times, err := o.get(context.Background(), "orders-1__dlq", parts); err == nil || len(times) != 0 {
 		t.Fatalf("times %v, err %v", times, err)

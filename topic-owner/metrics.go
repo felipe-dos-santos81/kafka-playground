@@ -155,11 +155,14 @@ func (o *oldestTimes) get(ctx context.Context, topic string, parts []partitionSt
 		}
 	}
 	times := map[int32]time.Time{}
+	next := map[int32]oldestAt{} // an emptied partition forgets its entry, so a recreated topic's record at the same start is fetched
 	for _, p := range parts {
 		if k, ok := o.known[p.partition]; ok && nonEmpty(p) && k.start == p.start {
 			times[p.partition] = k.at
+			next[p.partition] = k
 		}
 	}
+	o.known = next
 	return times, err
 }
 

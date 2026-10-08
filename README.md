@@ -172,6 +172,8 @@ What a consumer of `orders-1` sees:
 
 `MAX_ATTEMPTS` counts tries, the first included: with 3, a record is tried 3 times. Studio's `attempts` counts retries after the first try, so Studio's `attempts: 3` is `MAX_ATTEMPTS: 4`.
 
+A Studio consumer with Retry that fails a record the worker redelivered parks it again with its own `studio-group` and restarts `studio-attempt` at 1. From then on its own loop retries it, so a record can be tried more than `MAX_ATTEMPTS` times in all.
+
 Park a record by hand, as a failing consumer would:
 
 ```sh

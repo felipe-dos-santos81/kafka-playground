@@ -446,11 +446,13 @@ unhandled record is not due yet, the worker:
 The other partitions keep flowing. The poll loop sleeps until the earliest due
 time among the queues, or until new records arrive. The worker's fetches wait
 at most 1 s on the broker (`FetchMaxWait`), so a resumed partition's records
-arrive within a second instead of after kgo's default 5 s long poll. kgo keeps a paused
-partition assigned, and it holds back records already buffered for that
-partition without dropping them (source, kgo v1.22.1). On a rebalance, the
-queues of revoked partitions are dropped, because their records were never
-committed, and the next owner reads them again.
+arrive within a second instead of after kgo's default 5 s long poll. kgo keeps
+a paused partition assigned. It strips that partition's already buffered
+records from the poll without advancing its cursor, and fetches them again from
+the same offset after the resume (source, kgo v1.22.1): nothing is lost and
+nothing is delivered twice. On a rebalance, the queues of revoked partitions
+are dropped, because their records were never committed, and the next owner
+reads them again.
 
 The alternatives:
 
@@ -482,7 +484,8 @@ Spring Kafka makes the same choice and states the same limit.
   reason the two coexist: a Studio consumer keeps its retries private, while
   this worker serves any client that can write headers.
 - **Telling a redelivery from an original.** A redelivery carries
-  `studio-attempt` (and `studio-origin`); an original carries neither.
+  `studio-origin`, and `studio-attempt` if its publisher set one; an original
+  carries neither.
 - **Deduplicating.** A consumer that must not act twice dedupes on
   `studio-origin` when present, else on its own `topic[partition]@offset`. The
   two values are the same for the original and every redelivery of it.
