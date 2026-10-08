@@ -1,7 +1,8 @@
 // Topic owner: one long-running container per topic. ROLE=main owns
-// <base>-<instance>, retry owns <base>-<instance>__retry, dlq owns
-// <base>-<instance>__dlq. Each creates its topic, keeps it in the desired state
-// (reconcile.go) and serves /healthz and /metrics (metrics.go) on :9000.
+// <base>-<instance>, retry owns <base>-<instance>__retry and runs the
+// redelivery worker (redeliver.go), dlq owns <base>-<instance>__dlq. Each
+// creates its topic, keeps it in the desired state (reconcile.go) and serves
+// /healthz and /metrics (metrics.go) on :9000.
 // `topic-owner -healthcheck` is the compose healthcheck (the scratch image has
 // no curl); it prints why the topic is not in its desired state.
 package main
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -45,18 +47,30 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
-	go o.run(ctx)
+	var wg sync.WaitGroup // what must finish before exit: the reconcile loop, the worker
+	wg.Go(func() { o.run(ctx) })
+	if cfg.Role == RoleRetry {
+		w, err := newWorker(cfg, reg)
+		if err != nil {
+			log.Fatalf("topic-owner: %v", err)
+		}
+		wg.Go(func() { w.run(ctx) })
+	}
 	srv := &http.Server{Addr: addr, Handler: routes(o.health, reg)}
+	shutDown := make(chan struct{})
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		srv.Shutdown(sctx)
+		close(shutDown)
 	}()
 	log.Printf("%s: owner (role %s) on %s", cfg.Topic(), cfg.Role, addr)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("topic-owner: %v", err)
 	}
+	<-shutDown // Shutdown has drained the open requests
+	wg.Wait()  // the worker has committed what it marked and left its group
 }
 
 // routes serves GET /healthz (200 "ok", or 503 and why not) and GET /metrics.

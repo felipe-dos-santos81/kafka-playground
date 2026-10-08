@@ -245,7 +245,7 @@ verify-studio: up ## Check the studio API end to end: every node type, retry and
 
 # Runs owners of its own base, owner-verify, as one-offs of the orders-1 service
 # (same image, network and healthcheck; labels and environment overridden).
-verify-topics: up ## Check the topic owners end to end: refusals, reconcile, metrics in Prometheus; cleans up its containers and topics
+verify-topics: up ## Check the topic owners end to end: refusals, reconcile, metrics, the redelivery worker and the DLQ; cleans up its containers, topics and group
 	@trap 'docker rm -f owner-verify-refused owner-verify-1 owner-verify-1__retry owner-verify-1__dlq >/dev/null 2>&1; $(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --delete --topic "owner-verify-1(__retry|__dlq)?" >/dev/null 2>&1; $(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --delete --group owner-verify-1__redelivery >/dev/null 2>&1' EXIT; \
 	own() { n=$$1 r=$$2 p=$$3; shift 3; docker rm -f "$$n" >/dev/null 2>&1; \
 		out=$$($(COMPOSE) run -d --no-deps --name "$$n" -l topic-owner.base=owner-verify -l topic-owner.instance=1 -l topic-owner.role="$$r" \
@@ -287,6 +287,33 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 		[ "$$i" = 30 ] && { echo "TOPICS FAILED: Prometheus never scraped owner-verify-1 with 3 partitions: $$(curl -sS $(PROMETHEUS_URL)/api/v1/query --data-urlencode 'query={topic="owner-verify-1"}')"; exit 1; }; sleep 1; \
 	done; \
 	echo "topics prometheus: owner-verify-1 up, 3 partitions"; \
+	own owner-verify-1__dlq dlq 3 && healthy owner-verify-1__dlq || exit 1; \
+	own owner-verify-1__retry retry 3 -e MAX_ATTEMPTS=2 && healthy owner-verify-1__retry || exit 1; \
+	for i in $$(seq 30); do \
+		promis 'count(kafka_topic_partition_current_offset{topic="owner-verify-1__dlq"})' 3 && break; \
+		[ "$$i" = 30 ] && { echo "TOPICS FAILED: Prometheus never scraped owner-verify-1__dlq"; exit 1; }; sleep 1; \
+	done; \
+	kc() { $(COMPOSE) run --rm -T --no-deps --entrypoint kcat orders-audit -b kafka:19092 "$$@" 2>/dev/null; }; \
+	park() { k=$$1; shift; echo "{\"id\":\"$$k\"}" | kc -P -t owner-verify-1__retry -k "$$k" "$$@" || { echo "TOPICS FAILED: park $$k in owner-verify-1__retry"; return 1; }; }; \
+	park a -H studio-attempt=1 -H studio-backoff-ms=1000 && park b -H studio-attempt=2 && \
+		park c -H studio-group=owner-verify-studio && park d -H studio-backoff-ms=soon || exit 1; \
+	for i in $$(seq 30); do \
+		main=$$(kc -C -t owner-verify-1 -o beginning -e -J); dlq=$$(kc -C -t owner-verify-1__dlq -o beginning -e -J); \
+		echo "$$main" | grep '"key":"a"' | grep -q '"studio-origin","owner-verify-1__retry\[' && echo "$$dlq" | grep -q '"key":"b"' && \
+			echo "$$dlq" | grep '"key":"d"' | grep -qF 'retry: bad header studio-backoff-ms \"soon\"' && break; \
+		[ "$$i" = 30 ] && { echo "TOPICS FAILED: want a back on owner-verify-1 with its studio-origin, b and d (bad header) on the DLQ: main $$main dlq $$dlq"; exit 1; }; sleep 1; \
+	done; \
+	echo "$$main$$dlq" | grep -q '"key":"c"' && { echo "TOPICS FAILED: c (studio-group set) left owner-verify-1__retry: $$main $$dlq"; exit 1; }; \
+	for i in $$(seq 30); do \
+		promis 'topic_owner_redeliveries_total{topic="owner-verify-1__retry"}' 1 && \
+			promis 'sum(topic_owner_dead_lettered_total{topic="owner-verify-1__retry"})' 2 && \
+			promis 'topic_owner_skipped_total{topic="owner-verify-1__retry"}' 1 && \
+			promis 'sum(kafka_topic_partition_current_offset{topic="owner-verify-1__dlq"} - kafka_topic_partition_oldest_offset{topic="owner-verify-1__dlq"})' 2 && \
+			promis 'count(topic_owner_oldest_message_timestamp_seconds{topic="owner-verify-1__dlq"}) > bool 0' 1 && \
+			promis 'sum(kafka_consumergroup_lag{consumergroup="owner-verify-1__redelivery"})' 0 && break; \
+		[ "$$i" = 30 ] && { echo "TOPICS FAILED: want 1 redelivered, 2 dead-lettered, 1 skipped, 2 parked, an oldest time and no lag: $$(curl -sS $(PROMETHEUS_URL)/api/v1/query --data-urlencode 'query={__name__=~"topic_owner_(redeliveries|dead_lettered|skipped)_total|topic_owner_oldest_message_timestamp_seconds"}')"; exit 1; }; sleep 1; \
+	done; \
+	echo "topics worker: a redelivered, b and d dead-lettered, c left to its Studio loop, 2 parked"; \
 	echo "TOPICS OK"
 
 verify-ui: up studio/ui/.chromium ## Check the studio UI in Chromium (Playwright); installs Chromium once
