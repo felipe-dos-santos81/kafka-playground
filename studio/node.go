@@ -471,15 +471,15 @@ func (c *consumer) retry(ctx context.Context, cl *kgo.Client) {
 
 // retryRecord takes one record of the retry topic. Another group's (a shared input
 // topic) or one no consumer sent is only marked. Ours waits until it is due, the
-// retry delay after it was written, then goes through handle. It reports whether
-// r may be marked: false when Stop cut the wait (or closed the client), which
+// retry delay after it was written (at most the delay, for one dated in the
+// future), then goes through handle. It reports whether r may be marked: false when Stop cut the wait (or closed the client), which
 // leaves r for the next deploy to retry.
 func (c *consumer) retryRecord(ctx context.Context, r *kgo.Record) bool {
 	if header(r, headerGroup) != c.spec.Group {
 		return true
 	}
-	due := r.Timestamp.Add(time.Duration(c.spec.Retry.DelayMS) * time.Millisecond)
-	if !wait(ctx, time.Until(due)) {
+	delay := time.Duration(c.spec.Retry.DelayMS) * time.Millisecond
+	if !wait(ctx, min(time.Until(r.Timestamp.Add(delay)), delay)) { // a record dated in the future waits no longer than the delay
 		return false
 	}
 	return c.handle(ctx, r)
@@ -527,11 +527,6 @@ func postJSON(ctx context.Context, url string, body []byte) error {
 	return nil
 }
 
-// runNode is `studio node`: it runs until SIGTERM (Stop). A consumer then waits
-// up to 3 s for the batches in hand (its main loop's, and its retry loop's) to
-// finish their sink and writes, commits the records it handled in each group (it
-// marks each one; unhandled ones are redelivered) and closes its clients, which
-// leaves the groups.
 // groupOpts are a consumer group client's options: topic read in group, from
 // reset while the group has no commit, committing only the records marked.
 func groupOpts(group, topic string, reset kgo.Offset) []kgo.Opt {
@@ -545,6 +540,11 @@ func groupOpts(group, topic string, reset kgo.Offset) []kgo.Opt {
 // crash that long. Heartbeats stay every 3 s.
 const groupSessionTimeout = 10 * time.Second
 
+// runNode is `studio node`: it runs until SIGTERM (Stop). A consumer then waits
+// up to 3 s for the batches in hand (its main loop's, and its retry loop's) to
+// finish their sink and writes, commits the records it handled in each group (it
+// marks each one; unhandled ones are redelivered) and closes its clients, which
+// leaves the groups.
 func runNode() {
 	var spec NodeSpec
 	if err := json.Unmarshal([]byte(os.Getenv("STUDIO_NODE")), &spec); err != nil {

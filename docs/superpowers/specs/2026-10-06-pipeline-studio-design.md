@@ -423,8 +423,8 @@ record and forward it to `orders-archive`.
 | | `auto_offset_reset` | M2 | `earliest` (default) or `latest` |
 | | `sink` | M2 | `{"kind":"log"}` (M2) or `{"kind":"http","url":"…"}` (M4), `url` must parse with scheme `http` or `https` |
 | | `instances` | M4 | integer 1–10; absent or 0 means 1 |
-| | `retry` | Retry/DLQ | absent or `null`, or `{attempts, delay_ms}`: attempts 1–10 (retries after the first try), delay_ms 100–60000; needs `dlq` |
-| | `dlq` | Retry/DLQ | `true` sends failures to `<input>__dlq`; the input topic's name must leave room for `__retry` (≤ 242 chars), the group for `__retry` (≤ 248) |
+| | `retry` | Retry/DLQ | absent or `null`, or `{attempts, delay_ms}`: attempts 1–10 (retries after the first try), delay_ms 100–60000; needs `dlq`; the group must leave room for `__retry` (≤ 248 chars) |
+| | `dlq` | Retry/DLQ | `true` sends failures to `<input>__dlq`; with `retry` or `dlq`, the input topic's name must leave room for `__retry` (≤ 242 chars) |
 | transform | `expr` | M5 | an `expr-lang/expr` program over `msg` (the decoded JSON value) returning the new value, or `nil` to drop the record; must compile on deploy |
 | router | `rules` | Router | ordered `[{when, to}]`: `when` an `expr-lang/expr` condition over `msg` that must compile as a boolean on deploy, `to` the id of a topic the router has an edge to |
 | | `default` | Router | the id of a topic the router has an edge to, or empty: no rule matching drops the record |

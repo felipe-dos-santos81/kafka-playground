@@ -464,6 +464,40 @@ func TestConsumerFailuresOfARecordWithHeaders(t *testing.T) {
 	}
 }
 
+// A forward failure may pass later: it goes to the retry topic. A forward cut by a
+// closed client (Stop) sends nothing on and leaves the record uncommitted, DLQ or not.
+func TestConsumerForwardFailures(t *testing.T) {
+	var sent []*kgo.Record
+	fwdErr := errors.New("broker down")
+	c := &consumer{
+		spec: NodeSpec{Topic: "orders", Group: "g", Forward: "archive",
+			Retry: &RetrySpec{Topic: "orders__retry", Group: "g__retry", Attempts: 1, DelayMS: 100}, DLQ: "orders__dlq"},
+		tail:   &tail{},
+		counts: &counters{},
+		produce: func(_ context.Context, r *kgo.Record) error {
+			if r.Topic == "archive" {
+				return fwdErr
+			}
+			sent = append(sent, r)
+			return nil
+		},
+	}
+	if !c.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{"id":1}`)}) {
+		t.Fatal("a forward failure sent on commits")
+	}
+	if len(sent) != 1 || sent[0].Topic != "orders__retry" || !strings.HasPrefix(headersOf(sent[0])["studio-error"], "forward: broker down") {
+		t.Fatalf("a forward failure goes to the retry topic; sent %+v", sent)
+	}
+
+	fwdErr, sent = kgo.ErrClientClosed, nil
+	if c.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{"id":2}`)}) {
+		t.Fatal("a forward cut by a closed client must leave the record uncommitted")
+	}
+	if len(sent) != 0 {
+		t.Fatalf("a forward cut by a closed client sends nothing on; sent %+v", sent)
+	}
+}
+
 // The retry loop handles only its own group's records, each once it is due; Stop
 // during the wait leaves the record unhandled and unmarked.
 func TestConsumerRetryRecord(t *testing.T) {
@@ -500,10 +534,16 @@ func TestConsumerRetryRecord(t *testing.T) {
 		t.Fatalf("a record waits out its delay: tailed %d in %s", c.tail.last(), time.Since(start))
 	}
 
+	// Ours, dated an hour ahead (written by hand): waits the delay, not the hour.
+	start = time.Now()
+	if !c.retryRecord(ctx, retried(start.Add(time.Hour))) || c.tail.last() != 3 || time.Since(start) > time.Second {
+		t.Fatalf("a record dated in the future waits at most the delay: tailed %d in %s", c.tail.last(), time.Since(start))
+	}
+
 	// Stop during the wait: not handled, not marked.
 	stopped, cancel := context.WithCancel(ctx)
 	cancel()
-	if c.retryRecord(stopped, retried(time.Now())) || c.tail.last() != 2 {
+	if c.retryRecord(stopped, retried(time.Now())) || c.tail.last() != 3 {
 		t.Fatal("a wait cut by Stop leaves the record unhandled and unmarked")
 	}
 	if s := c.counts.read(); s.Total != 0 {

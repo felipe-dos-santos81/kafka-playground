@@ -145,6 +145,7 @@ A write to the retry topic or the DLQ that fails counts as an error
 (`retry: …` or `dlq: …`) and is logged, as a failed forward is today; the record
 still commits, unless the write failed because Stop closed the client, which
 leaves it uncommitted to be redelivered.
+
 A consumer's main loop and its retry loop share one `handle`, which takes one
 record at a time: the transform's and the router's VMs are not safe for
 concurrent use.
