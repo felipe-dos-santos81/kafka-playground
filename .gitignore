@@ -1,6 +1,7 @@
-# Go build and test output (go build in producer/ or studio/; go test -c, -coverprofile)
+# Go build and test output (go build in producer/, studio/ or topic-owner/; go test -c, -coverprofile)
 /producer/producer
 /studio/studio
+/topic-owner/topic-owner
 *.test
 *.out
 
