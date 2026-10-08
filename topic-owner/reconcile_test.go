@@ -78,13 +78,17 @@ func TestDiff(t *testing.T) {
 	}
 }
 
-// fakeOwner is an owner whose broker is have and whose apply fails with applyErr.
-func fakeOwner(cfg Config, have *Actual, describeErr, applyErr *error, applied *[]Plan) *owner {
+// fakeOwner is an owner whose broker is have and whose apply fails with applyErr,
+// after landing *landed of the plan's logs (all of them when applyErr is nil).
+func fakeOwner(cfg Config, have *Actual, describeErr, applyErr *error, landed *int, applied *[]Plan) *owner {
 	o := &owner{cfg: cfg, problem: cfg.Topic() + ": not reconciled yet"}
 	o.describe = func(context.Context) (Actual, error) { return *have, *describeErr }
-	o.apply = func(_ context.Context, p Plan) error {
+	o.apply = func(_ context.Context, p Plan) (int, error) {
 		*applied = append(*applied, p)
-		return *applyErr
+		if *applyErr != nil {
+			return *landed, *applyErr
+		}
+		return len(p.Logs), nil
 	}
 	return o
 }
@@ -98,8 +102,9 @@ func TestOwnerPass(t *testing.T) {
 	cfg := want(2, map[string]string{})
 	actual := have(3, 1, map[string]string{})
 	var describeErr, applyErr error
+	var landed int
 	var applied []Plan
-	o := fakeOwner(cfg, &actual, &describeErr, &applyErr, &applied)
+	o := fakeOwner(cfg, &actual, &describeErr, &applyErr, &landed, &applied)
 	if o.health() == "" {
 		t.Fatal("healthy before the first pass")
 	}
@@ -142,8 +147,9 @@ func TestOwnerRecovers(t *testing.T) {
 	cfg := want(2, map[string]string{})
 	actual := Actual{}
 	describeErr, applyErr := error(errors.New("unable to dial")), error(nil)
+	var landed int
 	var applied []Plan
-	o := fakeOwner(cfg, &actual, &describeErr, &applyErr, &applied)
+	o := fakeOwner(cfg, &actual, &describeErr, &applyErr, &landed, &applied)
 	o.pass(context.Background())
 	if o.health() != "owner-verify-1: kafka: unable to dial" || len(applied) != 0 {
 		t.Fatalf("kafka down: health %q, applied %d plans", o.health(), len(applied))
@@ -159,6 +165,31 @@ func TestOwnerRecovers(t *testing.T) {
 	o.pass(context.Background())
 	if o.health() != "" || len(applied) != 3 || !applied[2].Create {
 		t.Fatalf("topic deleted: health %q, plans %+v", o.health(), applied)
+	}
+}
+
+// A raise of partitions lands, then the config alter fails: the partitions line
+// is logged (it changed the topic), the config line is not (it did not), and
+// the next pass would see the partitions already there.
+func TestOwnerPartialApply(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	defer func() { log.SetOutput(os.Stderr); log.SetFlags(log.LstdFlags) }()
+
+	cfg := want(3, map[string]string{"retention.ms": "1"})
+	actual := have(2, 1, map[string]string{})
+	var describeErr, applyErr error
+	var landed int
+	var applied []Plan
+	o := fakeOwner(cfg, &actual, &describeErr, &applyErr, &landed, &applied)
+	applyErr, landed = errors.New("alter configs: INVALID_CONFIG"), 1
+	o.pass(context.Background())
+	if !strings.Contains(logs.String(), "owner-verify-1: partitions 2 -> 3\n") || strings.Contains(logs.String(), "retention.ms") {
+		t.Fatalf("logs %q, want the partitions line and not the config line", logs.String())
+	}
+	if o.health() != "owner-verify-1: alter configs: INVALID_CONFIG" {
+		t.Fatalf("health %q", o.health())
 	}
 }
 

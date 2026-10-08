@@ -32,7 +32,7 @@ type Plan struct {
 	Create     bool               // the topic is missing: create it with the desired partitions and configs
 	Partitions int                // > 0: raise the partition count to this
 	Alter      []kadm.AlterConfig // incremental config changes, in name order
-	Logs       []string           // one line per change, logged once it is applied
+	Logs       []string           // one line per change, in step order: the create line; or the partitions line (when Partitions > 0), then one line per Alter entry in the same order (diff builds them so)
 	Problems   []string           // differences no pass can fix
 }
 
@@ -84,8 +84,8 @@ func diff(topic string, want Config, have Actual) Plan {
 // pass left it there.
 type owner struct {
 	cfg      Config
-	describe func(context.Context) (Actual, error) // the topic as the broker has it
-	apply    func(context.Context, Plan) error     // carries out a plan
+	describe func(context.Context) (Actual, error)    // the topic as the broker has it
+	apply    func(context.Context, Plan) (int, error) // carries out a plan; reports how many of its Logs landed
 
 	mu      sync.Mutex
 	problem string // why the topic is not in its desired state; "" when it is
@@ -94,7 +94,7 @@ type owner struct {
 func newOwner(cfg Config, adm *kadm.Client) *owner {
 	o := &owner{cfg: cfg, problem: cfg.Topic() + ": not reconciled yet"}
 	o.describe = func(ctx context.Context) (Actual, error) { return describe(ctx, adm, cfg.Topic()) }
-	o.apply = func(ctx context.Context, p Plan) error { return apply(ctx, adm, cfg, p) }
+	o.apply = func(ctx context.Context, p Plan) (int, error) { return apply(ctx, adm, cfg, p) }
 	return o
 }
 
@@ -128,12 +128,13 @@ func (o *owner) pass(ctx context.Context) {
 		problem = fmt.Sprintf("%s: kafka: %v", topic, err)
 	} else {
 		p := diff(topic, o.cfg, have)
-		if err := o.apply(ctx, p); err != nil {
+		n, err := o.apply(ctx, p)
+		for _, l := range p.Logs[:n] {
+			log.Print(l)
+		}
+		if err != nil {
 			problem = fmt.Sprintf("%s: %v", topic, err)
 		} else {
-			for _, l := range p.Logs {
-				log.Print(l)
-			}
 			problem = strings.Join(p.Problems, "; ")
 		}
 	}
@@ -200,8 +201,9 @@ func createErr(err error) error {
 	return nil
 }
 
-// apply carries out p on cfg's topic.
-func apply(ctx context.Context, adm *kadm.Client, cfg Config, p Plan) error {
+// apply carries out p on cfg's topic. It returns how many of p.Logs landed:
+// the partitions raise and the config alter are separate steps, in that order.
+func apply(ctx context.Context, adm *kadm.Client, cfg Config, p Plan) (int, error) {
 	topic := cfg.Topic()
 	if p.Create {
 		configs := map[string]*string{}
@@ -209,16 +211,21 @@ func apply(ctx context.Context, adm *kadm.Client, cfg Config, p Plan) error {
 			configs[k] = kadm.StringPtr(v)
 		}
 		_, err := adm.CreateTopic(ctx, int32(cfg.Partitions), int16(cfg.ReplicationFactor), configs, topic)
-		return createErr(err)
+		if err := createErr(err); err != nil {
+			return 0, err
+		}
+		return len(p.Logs), nil
 	}
+	landed := 0
 	if p.Partitions > 0 {
 		rs, err := adm.UpdatePartitions(ctx, p.Partitions, topic)
 		if err == nil {
 			err = rs.Error()
 		}
 		if err != nil {
-			return fmt.Errorf("partitions: %w", err)
+			return 0, fmt.Errorf("partitions: %w", err)
 		}
+		landed = 1
 	}
 	if len(p.Alter) > 0 {
 		rs, err := adm.AlterTopicConfigs(ctx, p.Alter, topic)
@@ -230,8 +237,8 @@ func apply(ctx context.Context, adm *kadm.Client, cfg Config, p Plan) error {
 			}
 		}
 		if err != nil {
-			return fmt.Errorf("alter configs: %w", err)
+			return landed, fmt.Errorf("alter configs: %w", err)
 		}
 	}
-	return nil
+	return len(p.Logs), nil
 }
