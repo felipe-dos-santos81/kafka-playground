@@ -463,3 +463,50 @@ func TestConsumerFailuresOfARecordWithHeaders(t *testing.T) {
 		t.Fatalf("want its own headers kept, studio-* replaced, the origin kept; got %+v", sent)
 	}
 }
+
+// The retry loop handles only its own group's records, each once it is due; Stop
+// during the wait leaves the record unhandled and unmarked.
+func TestConsumerRetryRecord(t *testing.T) {
+	ctx := context.Background()
+	c := &consumer{
+		spec:   NodeSpec{Topic: "orders", Group: "g", Retry: &RetrySpec{Topic: "orders__retry", Group: "g__retry", Attempts: 3, DelayMS: 100}, DLQ: "orders__dlq"},
+		tail:   &tail{},
+		counts: &counters{},
+	}
+	ours := []kgo.RecordHeader{{Key: "studio-group", Value: []byte("g")}, {Key: "studio-attempt", Value: []byte("1")}}
+	retried := func(at time.Time) *kgo.Record {
+		return &kgo.Record{Topic: "orders__retry", Value: []byte(`{}`), Headers: ours, Timestamp: at}
+	}
+
+	// Another group's record, and one no consumer sent: marked, not handled.
+	for _, hs := range [][]kgo.RecordHeader{{{Key: "studio-group", Value: []byte("h")}}, nil} {
+		if !c.retryRecord(ctx, &kgo.Record{Topic: "orders__retry", Value: []byte(`{}`), Headers: hs, Timestamp: time.Now()}) {
+			t.Fatalf("headers %v: a record that is not ours is marked", hs)
+		}
+	}
+	if c.tail.last() != 0 {
+		t.Fatal("a record that is not ours is not handled")
+	}
+
+	// Ours, written a second ago: due, handled at once.
+	start := time.Now()
+	if !c.retryRecord(ctx, retried(start.Add(-time.Second))) || c.tail.last() != 1 || time.Since(start) > 90*time.Millisecond {
+		t.Fatalf("a due record is handled at once: tailed %d in %s", c.tail.last(), time.Since(start))
+	}
+
+	// Ours, written just now: handled once the 100 ms delay is out.
+	start = time.Now()
+	if !c.retryRecord(ctx, retried(start)) || c.tail.last() != 2 || time.Since(start) < 90*time.Millisecond {
+		t.Fatalf("a record waits out its delay: tailed %d in %s", c.tail.last(), time.Since(start))
+	}
+
+	// Stop during the wait: not handled, not marked.
+	stopped, cancel := context.WithCancel(ctx)
+	cancel()
+	if c.retryRecord(stopped, retried(time.Now())) || c.tail.last() != 2 {
+		t.Fatal("a wait cut by Stop leaves the record unhandled and unmarked")
+	}
+	if s := c.counts.read(); s.Total != 0 {
+		t.Fatalf("retries are not counted in total: %+v", s)
+	}
+}

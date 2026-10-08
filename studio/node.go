@@ -446,6 +446,61 @@ func (c *consumer) consume(ctx context.Context, cl *kgo.Client) {
 	}
 }
 
+// retry is the retry loop: it polls c's retry topic in its retry group (cl) until
+// ctx ends, takes each record through retryRecord and marks the ones it may
+// commit. The first it may not ends the loop: Stop came.
+func (c *consumer) retry(ctx context.Context, cl *kgo.Client) {
+	for {
+		fs := cl.PollFetches(ctx)
+		if ctx.Err() != nil || fs.IsClientClosed() {
+			return
+		}
+		fs.EachError(func(topic string, partition int32, err error) {
+			c.counts.fail(fmt.Errorf("retry fetch: %w", err))
+			log.Printf("retry fetch %s[%d]: %v", topic, partition, err)
+		})
+		for it := fs.RecordIter(); !it.Done(); {
+			r := it.Next()
+			if !c.retryRecord(ctx, r) {
+				return
+			}
+			cl.MarkCommitRecords(r)
+		}
+	}
+}
+
+// retryRecord takes one record of the retry topic. Another group's (a shared input
+// topic) or one no consumer sent is only marked. Ours waits until it is due, the
+// retry delay after it was written, then goes through handle. It reports whether
+// r may be marked: false when Stop cut the wait (or closed the client), which
+// leaves r for the next deploy to retry.
+func (c *consumer) retryRecord(ctx context.Context, r *kgo.Record) bool {
+	if header(r, headerGroup) != c.spec.Group {
+		return true
+	}
+	due := r.Timestamp.Add(time.Duration(c.spec.Retry.DelayMS) * time.Millisecond)
+	if !wait(ctx, time.Until(due)) {
+		return false
+	}
+	return c.handle(ctx, r)
+}
+
+// wait waits d (nothing when d ≤ 0) and reports whether it did: false when ctx
+// ended first.
+func wait(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
 // sinkClient does not follow redirects: a 3xx would turn the POST into a GET and
 // could pass for success, so it is an error like any other non-2xx answer.
 var sinkClient = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -473,9 +528,17 @@ func postJSON(ctx context.Context, url string, body []byte) error {
 }
 
 // runNode is `studio node`: it runs until SIGTERM (Stop). A consumer then waits
-// up to 3 s for the batch in hand to finish its sink and forward, commits the
-// records it handled (it marks each one; unhandled ones are redelivered) and
-// closes its client, which leaves the group.
+// up to 3 s for the batches in hand (its main loop's, and its retry loop's) to
+// finish their sink and writes, commits the records it handled in each group (it
+// marks each one; unhandled ones are redelivered) and closes its clients, which
+// leaves the groups.
+// groupOpts are a consumer group client's options: topic read in group, from
+// reset while the group has no commit, committing only the records marked.
+func groupOpts(group, topic string, reset kgo.Offset) []kgo.Opt {
+	return []kgo.Opt{kgo.ConsumerGroup(group), kgo.ConsumeTopics(topic), kgo.ConsumeResetOffset(reset), kgo.AutoCommitMarks(),
+		kgo.SessionTimeout(groupSessionTimeout)}
+}
+
 // groupSessionTimeout is how long the broker keeps a consumer that stopped
 // heartbeating (killed, or its container gone) in its group; until then a new
 // member's join waits. franz-go's default, 45 s, would stall a redeploy after a
@@ -491,18 +554,28 @@ func runNode() {
 	if brokers == "" {
 		log.Fatal("KAFKA_BROKERS is required")
 	}
-	opts := []kgo.Opt{kgo.SeedBrokers(brokers), kgo.ClientID(spec.ref().name())}
+	opts := func(more ...kgo.Opt) []kgo.Opt {
+		return append([]kgo.Opt{kgo.SeedBrokers(brokers), kgo.ClientID(spec.ref().name())}, more...)
+	}
+	var group []kgo.Opt
 	if spec.Type == "consumer" {
 		reset := kgo.NewOffset().AtStart()
 		if spec.AutoOffsetReset == "latest" {
 			reset = kgo.NewOffset().AtEnd()
 		}
-		opts = append(opts, kgo.ConsumerGroup(spec.Group), kgo.ConsumeTopics(spec.Topic), kgo.ConsumeResetOffset(reset), kgo.AutoCommitMarks(),
-			kgo.SessionTimeout(groupSessionTimeout))
+		group = groupOpts(spec.Group, spec.Topic, reset)
 	}
-	cl, err := kgo.NewClient(opts...)
+	cl, err := kgo.NewClient(opts(group...)...)
 	if err != nil {
 		log.Fatal(err)
+	}
+	clients := []*kgo.Client{cl} // a consumer's: committed and closed on stop
+	var retryCl *kgo.Client      // a consumer's retry loop's, in its retry group; nil without retry
+	if spec.Type == "consumer" && spec.Retry != nil {
+		if retryCl, err = kgo.NewClient(opts(groupOpts(spec.Retry.Group, spec.Retry.Topic, kgo.NewOffset().AtStart())...)...); err != nil {
+			log.Fatal(err)
+		}
+		clients = append(clients, retryCl)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
@@ -510,7 +583,7 @@ func runNode() {
 	t, counts, boot := &tail{}, &counters{}, NewID()
 	var tr *transform           // a consumer's transform; nil without one
 	var rt *router              // a consumer's router; nil without one
-	var consuming chan struct{} // closed when a consumer's poll loop has returned; nil for a producer
+	var consuming chan struct{} // closed when a consumer's poll loops have returned; nil for a producer
 	var c *consumer             // nil for a producer
 	produce := func(ctx context.Context, rec *kgo.Record) error {
 		return cl.ProduceSync(ctx, rec).FirstErr()
@@ -556,8 +629,13 @@ func runNode() {
 		}
 		c = &consumer{spec: spec, tail: t, counts: counts, transform: tr, router: rt, post: postJSON, produce: produce}
 		consuming = make(chan struct{})
+		var loops sync.WaitGroup
+		loops.Go(func() { c.consume(ctx, cl) })
+		if retryCl != nil {
+			loops.Go(func() { c.retry(ctx, retryCl) })
+		}
 		go func() {
-			c.consume(ctx, cl)
+			loops.Wait()
 			close(consuming)
 		}()
 	}
@@ -570,20 +648,28 @@ func runNode() {
 	log.Printf("node %s (%s) on topic %s, boot %s", spec.Node, spec.Type, spec.Topic, boot)
 
 	<-ctx.Done()
-	if consuming != nil { // let the batch in hand finish its sink and forward
+	if consuming != nil { // let the batches in hand finish their sink and writes
 		select {
 		case <-consuming:
 		case <-time.After(batchWait):
-			log.Printf("stop: the batch in hand did not finish in %s; its unhandled records stay uncommitted", batchWait)
+			log.Printf("stop: the batches in hand did not finish in %s; their unhandled records stay uncommitted", batchWait)
 		}
 		commit, cancel := context.WithTimeout(context.Background(), commitBudget)
-		if err := cl.CommitMarkedOffsets(commit); err != nil {
-			log.Printf("stop: commit: %v", err)
+		var commits sync.WaitGroup // each group's commit at once, within one budget
+		for _, k := range clients {
+			commits.Go(func() {
+				if err := k.CommitMarkedOffsets(commit); err != nil {
+					log.Printf("stop: commit: %v", err)
+				}
+			})
 		}
+		commits.Wait()
 		cancel()
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), shutdownBudget)
 	defer cancel()
 	srv.Shutdown(shutdown)
-	cl.Close()
+	for _, k := range clients {
+		k.Close()
+	}
 }
