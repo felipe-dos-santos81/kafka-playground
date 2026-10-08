@@ -1,0 +1,19 @@
+# Prometheus for the playground: scrapes every topic-owner container, found
+# through the Docker socket by its topic-owner.role label (no target list).
+global:
+  scrape_interval: 5s
+  scrape_timeout: 4s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: topic-owners
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        port: 9000
+        filters: [{name: label, values: [topic-owner.role]}]
+    relabel_configs:
+      # instance is the container name (= the topic), not its IP
+      - source_labels: [__meta_docker_container_name]
+        regex: '/(.*)'
+        target_label: instance

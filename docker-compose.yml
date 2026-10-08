@@ -1,5 +1,6 @@
 # Local Kafka playground: one KRaft broker, one-shot topic jobs, kcat consumers,
-# a small producer page and Redpanda Console. No auth, no TLS, nothing persisted.
+# a small producer page, Redpanda Console, Pipeline Studio, topic owners and
+# Prometheus. No auth, no TLS, nothing persisted.
 # Containers reach the broker at kafka:19092; the host at localhost:9092.
 
 # One-shot job: create a topic, exit 0 (also when it already exists).
@@ -34,6 +35,22 @@ x-consumer: &consumer
         -X auto.offset.reset="$${AUTO_OFFSET_RESET:-earliest}" \
         -u -f 'partition=%p offset=%o key=%k value=%s\n' \
         "$${TOPIC_NAME:?TOPIC_NAME is required}"
+
+# Topic owner: one long-running container per topic (topic-owner/, Go).
+# ROLE=main owns <base>-<instance>; retry owns <base>-<instance>__retry; dlq
+# owns <base>-<instance>__dlq. Each creates its topic, keeps it in the desired
+# state (every 10 s) and serves /healthz and /metrics on :9000 inside the
+# network. Declare one block of three per instance, after `producer` (they use
+# its *bootstrap anchor); container name = service name = topic name.
+x-topic-owner: &topic-owner
+  build: ./topic-owner
+  image: kafka-playground/topic-owner:0.1.0
+  pull_policy: build
+  depends_on: *after-kafka
+  healthcheck:
+    test: ["CMD", "/topic-owner", "-healthcheck"]
+    interval: 2s
+    retries: 30
 
 services:
   kafka:
@@ -148,5 +165,52 @@ services:
       ANALYTICS_ENABLED: "false"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/admin/health"]
+      interval: 2s
+      retries: 30
+
+  # Topic owners for orders-1, its retry topic and its DLQ (README, "Topic owners").
+  orders-1:
+    <<: *topic-owner
+    container_name: orders-1
+    labels: &orders-1-labels
+      topic-owner.base: orders
+      topic-owner.instance: "1"
+      topic-owner.role: main
+    environment: &orders-1-env
+      KAFKA_BROKERS: *bootstrap
+      BASE_NAME: orders
+      INSTANCE: 1
+      ROLE: main
+      PARTITIONS: 3
+
+  # Produces to orders-1 and orders-1__dlq (from M2 on), so it starts after both.
+  orders-1__retry:
+    <<: *topic-owner
+    container_name: orders-1__retry
+    depends_on:
+      <<: *after-kafka
+      orders-1: {condition: service_healthy}
+      orders-1__dlq: {condition: service_healthy}
+    labels: {<<: *orders-1-labels, topic-owner.role: retry}
+    environment: {<<: *orders-1-env, ROLE: retry, MAX_ATTEMPTS: 3}
+
+  orders-1__dlq:
+    <<: *topic-owner
+    container_name: orders-1__dlq
+    labels: {<<: *orders-1-labels, topic-owner.role: dlq}
+    environment: {<<: *orders-1-env, ROLE: dlq}
+
+  # Prometheus: scrapes every topic owner, found by its labels through the
+  # Docker socket (no target list): http://localhost:9090
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    group_add: ["0"]    # Docker Desktop shows the socket as root:root 0660 inside containers
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./prometheus:/etc/prometheus:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9090/-/ready"]
       interval: 2s
       retries: 30

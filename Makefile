@@ -1,5 +1,5 @@
 # Kafka Playground: a local Kafka sandbox (KRaft broker, topic jobs, kcat consumers,
-# producer page, Redpanda Console, Pipeline Studio).
+# producer page, Redpanda Console, Pipeline Studio, topic owners, Prometheus).
 # Typical use: up → produce → logs → scale → groups → down. verify checks it all end to end.
 SERVICE = Kafka Playground
 
@@ -8,6 +8,7 @@ COMPOSE = docker compose
 PRODUCER_URL ?= http://localhost:8081
 CONSOLE_URL ?= http://localhost:8080
 STUDIO_URL ?= http://localhost:8082
+PROMETHEUS_URL ?= http://localhost:9090
 KAFKA_BIN = $(COMPOSE) exec -T kafka /opt/kafka/bin
 BOOTSTRAP = --bootstrap-server localhost:19092
 topic ?= orders
@@ -15,11 +16,13 @@ key ?=
 value ?=
 n ?= 3
 svc ?= orders-workers orders-audit
+q ?=
+args ?= -L
 
 # Single-quote $(1) for the shell; fed $(value var), quotes, spaces and $ pass through untouched.
 shq = '$(subst ','\'',$(1))'
 
-.PHONY: help up down ps logs topics groups nodes produce scale verify verify-studio verify-ui test
+.PHONY: help up down ps logs topics groups nodes owners query produce kcat scale verify verify-studio verify-ui verify-topics test
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
@@ -34,11 +37,14 @@ help: ## Print this help message
 
 up: ## [STEP 1] Start everything and wait until it is healthy
 	$(COMPOSE) up -d --wait
-	@echo "Producer page: $(PRODUCER_URL)   Console: $(CONSOLE_URL)   Studio: $(STUDIO_URL)   Broker from the host: localhost:9092"
+	@echo "Producer page: $(PRODUCER_URL)   Console: $(CONSOLE_URL)   Studio: $(STUDIO_URL)   Prometheus: $(PROMETHEUS_URL)   Broker from the host: localhost:9092"
 
-down: ## Remove every container, Studio nodes first (deletes topics and messages)
-	@ids=$$(docker ps -aq -f label=studio.flow); [ -z "$$ids" ] || docker rm -f $$ids >/dev/null
-	$(COMPOSE) down --remove-orphans
+# Studio nodes and topic-owner one-offs (docker compose run) are not services:
+# remove them first, or the network cannot go. -v removes the anonymous volumes
+# the kafka and prometheus images declare.
+down: ## Remove every container and volume, Studio nodes first (deletes topics, messages and metrics)
+	@ids=$$(docker ps -aq -f label=studio.flow; docker ps -aq -f label=topic-owner.role -f label=com.docker.compose.oneoff=True); [ -z "$$ids" ] || docker rm -f $$ids >/dev/null
+	$(COMPOSE) down -v --remove-orphans
 
 ps: ## Show every container, including exited topic jobs
 	$(COMPOSE) ps -a
@@ -57,6 +63,13 @@ groups: ## [STEP 5] Describe every consumer group: members, partitions, lag
 nodes: ## List Studio node containers (one per producer and consumer instance)
 	docker ps -a -f label=studio.flow
 
+owners: ## List topic-owner containers (main, retry and dlq per topic) and their health
+	docker ps -a -f label=topic-owner.role
+
+query: ## Ask Prometheus an instant PromQL query (usage: make query q='kafka_topic_partitions{topic="orders-1"}')
+	@$(if $(value q),true,{ echo "q is required, e.g. make query q='kafka_topic_partitions'"; exit 1; })
+	@curl -sS --fail-with-body $(PROMETHEUS_URL)/api/v1/query --data-urlencode $(call shq,query=$(value q)); echo
+
 # ── Produce ──────────────────────────────────────────────────────────────────
 
 produce: ## [STEP 2] Produce one JSON record via the producer page (usage: make produce value='{"id":1}' [topic=orders] [key=k1])
@@ -65,6 +78,10 @@ produce: ## [STEP 2] Produce one JSON record via the producer page (usage: make 
 		--url-query $(call shq,topic=$(value topic)) \
 		$(if $(value key),--url-query $(call shq,key=$(value key))) \
 		--data-binary $(call shq,$(value value))
+
+# kcat from the stack's pinned image, on the compose network; sh -c splits args into words.
+kcat: ## Run kcat against the broker (usage: make kcat args='-C -t orders-1 -o beginning -e -J'; default -L)
+	@$(COMPOSE) run --rm -T --no-deps --entrypoint sh orders-audit -c $(call shq,exec kcat -b kafka:19092 $(value args))
 
 # ── Scale ────────────────────────────────────────────────────────────────────
 
@@ -226,12 +243,54 @@ verify-studio: up ## Check the studio API end to end: every node type, retry and
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$qid || { echo "STUDIO FAILED: delete the retry flow"; exit 1; }; \
 	echo "STUDIO OK ($$id)"
 
+# Runs owners of its own base, owner-verify, as one-offs of the orders-1 service
+# (same image, network and healthcheck; labels and environment overridden).
+verify-topics: up ## Check the topic owners end to end: refusals, reconcile, metrics in Prometheus; cleans up its containers and topics
+	@trap 'docker rm -f owner-verify-refused owner-verify-1 owner-verify-1__retry owner-verify-1__dlq >/dev/null 2>&1; $(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --delete --topic "owner-verify-1(__retry|__dlq)?" >/dev/null 2>&1; $(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --delete --group owner-verify-1__redelivery >/dev/null 2>&1' EXIT; \
+	own() { n=$$1 r=$$2 p=$$3; shift 3; docker rm -f "$$n" >/dev/null 2>&1; \
+		out=$$($(COMPOSE) run -d --no-deps --name "$$n" -l topic-owner.base=owner-verify -l topic-owner.instance=1 -l topic-owner.role="$$r" \
+			-e BASE_NAME=owner-verify -e INSTANCE=1 -e ROLE="$$r" -e PARTITIONS="$$p" "$$@" orders-1 2>&1) || { echo "TOPICS FAILED: start $$n: $$out"; return 1; }; }; \
+	healthlog() { docker inspect -f '{{range .State.Health.Log}}{{.Output}}{{end}}' "$$1" 2>/dev/null; }; \
+	healthy() { for i in $$(seq 30); do [ "$$(docker inspect -f '{{.State.Health.Status}}' "$$1" 2>/dev/null)" = healthy ] && return 0; sleep 1; done; echo "TOPICS FAILED: $$1 never became healthy: $$(healthlog $$1)"; return 1; }; \
+	desc() { $(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --describe --topic "$$1" 2>/dev/null | head -1; }; \
+	refused() { out=$$($(COMPOSE) run --rm --no-deps --name owner-verify-refused "$$@" orders-1 2>&1) && { echo "TOPICS FAILED: $$* was accepted"; return 1; }; echo "$$out"; }; \
+	out=$$(refused -e BASE_NAME=owner.verify) || exit 1; \
+	echo "$$out" | grep -q 'BASE_NAME "owner.verify" is not a base name' || { echo "TOPICS FAILED: BASE_NAME owner.verify: $$out"; exit 1; }; \
+	out=$$(refused -e BASE_NAME=owner-verify -e REPLICATION_FACTOR=3) || exit 1; \
+	echo "$$out" | grep -q 'owner-verify-1: single-broker playground: replication_factor must be 1' || { echo "TOPICS FAILED: REPLICATION_FACTOR=3: $$out"; exit 1; }; \
+	echo "topics refused: a base name with a dot, replication factor 3"; \
+	own owner-verify-1 main 2 -e TOPIC_CONFIG_RETENTION_MS=3600000 && healthy owner-verify-1 || exit 1; \
+	d=$$(desc owner-verify-1); \
+	echo "$$d" | grep -q 'PartitionCount: 2' && echo "$$d" | grep -q 'retention.ms=3600000' || { echo "TOPICS FAILED: want 2 partitions and retention.ms=3600000: $$d"; exit 1; }; \
+	$(KAFKA_BIN)/kafka-configs.sh $(BOOTSTRAP) --alter --entity-type topics --entity-name owner-verify-1 --add-config retention.ms=1000 >/dev/null || { echo "TOPICS FAILED: alter retention.ms"; exit 1; }; \
+	for i in $$(seq 15); do \
+		docker logs owner-verify-1 2>&1 | grep -q 'owner-verify-1: set retention.ms=3600000 (was 1000)' && break; \
+		[ "$$i" = 15 ] && { echo "TOPICS FAILED: retention.ms=1000 was not reverted: $$(desc owner-verify-1)"; exit 1; }; sleep 1; \
+	done; \
+	echo "topics reconcile: $$(desc owner-verify-1)"; \
+	own owner-verify-1 main 3 -e TOPIC_CONFIG_RETENTION_MS=3600000 && healthy owner-verify-1 || exit 1; \
+	docker logs owner-verify-1 2>&1 | grep -q 'owner-verify-1: partitions 2 -> 3' || { echo "TOPICS FAILED: partitions not raised: $$(docker logs owner-verify-1 2>&1)"; exit 1; }; \
+	own owner-verify-1 main 2 -e TOPIC_CONFIG_RETENTION_MS=3600000 || exit 1; \
+	for i in $$(seq 15); do \
+		healthlog owner-verify-1 | grep -q 'has 3 partitions, wants 2: partitions never decrease' && break; \
+		[ "$$i" = 15 ] && { echo "TOPICS FAILED: a decrease to 2 partitions was not refused: $$(healthlog owner-verify-1)"; exit 1; }; sleep 1; \
+	done; \
+	echo "topics partitions: raised 2 -> 3, a decrease refused"; \
+	own owner-verify-1 main 3 -e TOPIC_CONFIG_RETENTION_MS=3600000 && healthy owner-verify-1 || exit 1; \
+	q() { curl -sS $(PROMETHEUS_URL)/api/v1/query --data-urlencode "query=$$1" | grep -q "\"value\":\[[0-9.]*,\"$$2\"\]"; }; \
+	for i in $$(seq 30); do \
+		q 'up{job="topic-owners",instance="owner-verify-1"}' 1 && q 'kafka_topic_partitions{topic="owner-verify-1"}' 3 && q 'topic_owner_info{topic="owner-verify-1",role="main"}' 1 && break; \
+		[ "$$i" = 30 ] && { echo "TOPICS FAILED: Prometheus never scraped owner-verify-1 with 3 partitions: $$(curl -sS $(PROMETHEUS_URL)/api/v1/query --data-urlencode 'query={topic="owner-verify-1"}')"; exit 1; }; sleep 1; \
+	done; \
+	echo "topics prometheus: owner-verify-1 up, 3 partitions"; \
+	echo "TOPICS OK"
+
 verify-ui: up studio/ui/.chromium ## Check the studio UI in Chromium (Playwright); installs Chromium once
 	@cd studio/ui && STUDIO_URL=$(STUDIO_URL) KAFKA_BOOTSTRAP=$(lastword $(BOOTSTRAP)) npx playwright test && echo "UI OK"
 
 # Waits until both groups have committed past the record (so it can no longer be
 # redelivered), then counts it in the logs: exactly once per group.
-verify: up verify-studio verify-ui ## Full check: studio API, studio UI, then one record seen once per consumer group
+verify: up verify-studio verify-ui verify-topics ## Full check: studio API, studio UI, topic owners, then one record seen once per consumer group
 	@id="verify-$$(date +%s)"; \
 	sent=$$($(MAKE) --no-print-directory produce key="$$id" value="{\"id\":\"$$id\"}") || exit 1; \
 	partition=$$(echo "$$sent" | sed 's/.*"partition":\([0-9]*\).*/\1/'); \
