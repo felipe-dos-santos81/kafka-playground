@@ -84,12 +84,14 @@ function Studio() {
   const load = (id: string) =>
     withTopBarError(async () => {
       const f = await api.get(id)
-      // Hand-edited files may omit data fields: fill them from the defaults so the node
-      // components never crash. The snapshot is the file as stored, so a fill shows as unsaved.
-      setNodes(f.nodes.map(fillDefaults) as unknown as StudioNode[])
+      // Hand-edited or older files may omit data fields: fill them from the defaults so
+      // the node components never crash. The snapshot is taken after the fill, so a
+      // default is not an edit; the next save writes it.
+      const filled = f.nodes.map(fillDefaults)
+      setNodes(filled as unknown as StudioNode[])
       setEdges(f.edges)
       setCurrent({ id: f.id, name: f.name, viewport: f.viewport ?? undefined }) // Canvas mounts per flow and reads it as defaultViewport
-      setSavedSnapshot(snapshot(f.name, f.nodes, f.edges))
+      setSavedSnapshot(snapshot(f.name, filled, f.edges))
       setDeployedSnapshot('')
       setError('')
     })

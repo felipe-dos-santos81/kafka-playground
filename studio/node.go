@@ -291,11 +291,11 @@ type consumer struct {
 // handle reports whether r may be committed: false only when a write failed
 // because the client was closed (a stop that outlasted its grace), so the record
 // is redelivered rather than lost. Any other failure is counted and logged, and r
-// is still committed. A record from the retry topic is tailed but not counted in
-// total again.
-func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
+// is still committed. A record the retry loop took (retried) is tailed but not
+// counted in total again, and its studio-attempt says how often it failed.
+func (c *consumer) handle(ctx context.Context, r *kgo.Record, retried bool) bool {
 	work := context.WithoutCancel(ctx)
-	if !c.fromRetry(r) {
+	if !retried {
 		c.counts.ok()
 	}
 	c.tail.push(r)
@@ -307,7 +307,7 @@ func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
 	case errors.Is(f.err, kgo.ErrClientClosed):
 		return false
 	default:
-		return c.sendOn(work, r, *f)
+		return c.sendOn(work, r, *f, retried)
 	}
 }
 
@@ -354,13 +354,16 @@ func (c *consumer) path(ctx context.Context, r *kgo.Record) *failure {
 	return nil
 }
 
+// take is how the main loop takes a record of the input topic.
+func (c *consumer) take(ctx context.Context, r *kgo.Record) bool { return c.handle(ctx, r, false) }
+
 // stepFailed counts and logs a failed step of a record's path. It returns the
 // failure when it ends the path (a DLQ is set, or a closed client cut a write),
 // nil when the record goes on.
 func (c *consumer) stepFailed(err error, retryable bool) *failure {
 	c.counts.fail(err)
 	log.Print(err)
-	if c.spec.DLQ == "" && !errors.Is(err, kgo.ErrClientClosed) {
+	if !c.spec.DLQ && !errors.Is(err, kgo.ErrClientClosed) {
 		return nil
 	}
 	return &failure{err: err, retryable: retryable}
@@ -473,7 +476,7 @@ func runNode() {
 	clients := []*kgo.Client{cl} // a consumer's: committed and closed on stop
 	var retryCl *kgo.Client      // a consumer's retry loop's, in its retry group; nil without retry
 	if spec.Type == "consumer" && spec.Retry != nil {
-		if retryCl, err = kgo.NewClient(opts(groupOpts(spec.Retry.Group, spec.Retry.Topic, kgo.NewOffset().AtStart())...)...); err != nil {
+		if retryCl, err = kgo.NewClient(opts(groupOpts(retryGroup(spec.Group), retryTopic(spec.Topic), kgo.NewOffset().AtStart())...)...); err != nil {
 			log.Fatal(err)
 		}
 		clients = append(clients, retryCl)
@@ -507,7 +510,7 @@ func runNode() {
 			n := c.retried.Load()
 			s.Retried = &n
 		}
-		if c != nil && c.spec.DLQ != "" {
+		if c != nil && c.spec.DLQ {
 			n := c.deadLettered.Load()
 			s.DLQ = &n
 		}
@@ -536,7 +539,7 @@ func runNode() {
 		c = &consumer{spec: spec, tail: t, counts: counts, transform: tr, router: rt, post: postJSON, produce: produce}
 		consuming = make(chan struct{})
 		var loops sync.WaitGroup
-		loops.Go(func() { c.poll(ctx, cl, "fetch", c.handle) })
+		loops.Go(func() { c.poll(ctx, cl, "fetch", c.take) })
 		if retryCl != nil {
 			loops.Go(func() { c.poll(ctx, retryCl, "retry fetch", c.retryRecord) })
 		}

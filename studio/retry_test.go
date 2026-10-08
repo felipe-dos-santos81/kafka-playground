@@ -25,7 +25,7 @@ func TestConsumerFailures(t *testing.T) {
 	}
 	c := &consumer{
 		spec: NodeSpec{Topic: "orders", Group: "g", SinkURL: "http://sink", Forward: "archive",
-			Retry: &RetrySpec{Topic: "orders__retry", Group: "g__retry", Attempts: 2, DelayMS: 100}, DLQ: "orders__dlq"},
+			Retry: &RetryData{Attempts: 2, DelayMS: 100}, DLQ: true},
 		tail:      &tail{},
 		counts:    &counters{},
 		transform: tr,
@@ -41,7 +41,7 @@ func TestConsumerFailures(t *testing.T) {
 		},
 	}
 	in := &kgo.Record{Topic: "orders", Partition: 2, Offset: 57, Key: []byte("k"), Value: []byte(`{"qty":2}`)}
-	if !c.handle(ctx, in) {
+	if !c.handle(ctx, in, false) {
 		t.Fatal("a record sent on commits")
 	}
 	if len(sent) != 1 || sent[0].Topic != "orders__retry" || string(sent[0].Key) != "k" || string(sent[0].Value) != `{"qty":2}` {
@@ -58,7 +58,7 @@ func TestConsumerFailures(t *testing.T) {
 		back := sent[0]
 		back.Partition, back.Offset = 0, int64(i)
 		sent = nil
-		c.handle(ctx, back)
+		c.handle(ctx, back, true) // read back from the retry topic
 		h := headerMap(sent[0].Headers)
 		if len(sent) != 1 || sent[0].Topic != wantTopic || h["studio-attempt"] != strconv.Itoa(i+2) || h["studio-origin"] != "orders[2]@57" {
 			t.Fatalf("failure %d: want %s with studio-attempt %d and the first origin; sent %+v, headers %v", i+2, wantTopic, i+2, sent, h)
@@ -67,7 +67,7 @@ func TestConsumerFailures(t *testing.T) {
 
 	// A transform error never passes: straight to the DLQ.
 	sinkUp, sent = true, nil
-	c.handle(ctx, &kgo.Record{Topic: "orders", Value: []byte(`{}`)})
+	c.handle(ctx, &kgo.Record{Topic: "orders", Value: []byte(`{}`)}, false)
 	if len(sent) != 1 || sent[0].Topic != "orders__dlq" || headerMap(sent[0].Headers)["studio-attempt"] != "1" || !strings.HasPrefix(headerMap(sent[0].Headers)["studio-error"], "transform: ") {
 		t.Fatalf("a transform error goes straight to the DLQ; sent %+v", sent)
 	}
@@ -78,7 +78,7 @@ func TestConsumerFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.transform, c.router, sent = nil, rt, nil
-	c.handle(ctx, &kgo.Record{Topic: "orders", Value: []byte(`{"id":4}`)})
+	c.handle(ctx, &kgo.Record{Topic: "orders", Value: []byte(`{"id":4}`)}, false)
 	if len(sent) != 1 || sent[0].Topic != "orders__dlq" || !strings.HasPrefix(headerMap(sent[0].Headers)["studio-error"], "router: rule 1: ") {
 		t.Fatalf("a router error goes straight to the DLQ; sent %+v", sent)
 	}
@@ -94,11 +94,11 @@ func TestConsumerFailures(t *testing.T) {
 	// A send cut by a closed client (Stop) leaves the record uncommitted; any other
 	// failed send is an error, and the record commits.
 	c.produce = func(context.Context, *kgo.Record) error { return kgo.ErrClientClosed }
-	if c.handle(ctx, &kgo.Record{Topic: "orders", Value: []byte(`{"id":5}`)}) {
+	if c.handle(ctx, &kgo.Record{Topic: "orders", Value: []byte(`{"id":5}`)}, false) {
 		t.Fatal("a send cut by a closed client must leave the record uncommitted")
 	}
 	c.produce = func(context.Context, *kgo.Record) error { return errors.New("broker down") }
-	if !c.handle(ctx, &kgo.Record{Topic: "orders", Value: []byte(`{"id":6}`)}) || !strings.HasPrefix(c.counts.read().LastError, "dlq: broker down") {
+	if !c.handle(ctx, &kgo.Record{Topic: "orders", Value: []byte(`{"id":6}`)}, false) || !strings.HasPrefix(c.counts.read().LastError, "dlq: broker down") {
 		t.Fatalf("a failed send is counted and the record commits; got %+v", c.counts.read())
 	}
 }
@@ -108,7 +108,7 @@ func TestConsumerFailures(t *testing.T) {
 func TestConsumerFailuresOfARecordWithHeaders(t *testing.T) {
 	var sent []*kgo.Record
 	c := &consumer{
-		spec:    NodeSpec{Topic: "orders__dlq", Group: "watch", SinkURL: "http://sink", DLQ: "orders__dlq__dlq"},
+		spec:    NodeSpec{Topic: "orders__dlq", Group: "watch", SinkURL: "http://sink", DLQ: true},
 		tail:    &tail{},
 		counts:  &counters{},
 		post:    func(context.Context, string, []byte) error { return errors.New("down") },
@@ -116,7 +116,7 @@ func TestConsumerFailuresOfARecordWithHeaders(t *testing.T) {
 	}
 	in := &kgo.Record{Topic: "orders__dlq", Value: []byte(`{}`), Headers: []kgo.RecordHeader{
 		{Key: "trace", Value: []byte("t1")}, {Key: "studio-foo", Value: []byte("kept")}, {Key: "studio-group", Value: []byte("g")}, {Key: "studio-attempt", Value: []byte("3")}, {Key: "studio-origin", Value: []byte("orders[0]@1")}}}
-	c.handle(context.Background(), in)
+	c.handle(context.Background(), in, false)
 	want := map[string]string{"trace": "t1", "studio-foo": "kept", "studio-group": "watch", "studio-attempt": "1", "studio-error": "sink: down", "studio-origin": "orders[0]@1"}
 	if len(sent) != 1 || !reflect.DeepEqual(headerMap(sent[0].Headers), want) {
 		t.Fatalf("want its own headers kept (a studio-foo too), the four studio-* headers replaced, the origin kept; got %+v", sent)
@@ -130,7 +130,7 @@ func TestConsumerForwardFailures(t *testing.T) {
 	fwdErr := errors.New("broker down")
 	c := &consumer{
 		spec: NodeSpec{Topic: "orders", Group: "g", Forward: "archive",
-			Retry: &RetrySpec{Topic: "orders__retry", Group: "g__retry", Attempts: 1, DelayMS: 100}, DLQ: "orders__dlq"},
+			Retry: &RetryData{Attempts: 1, DelayMS: 100}, DLQ: true},
 		tail:   &tail{},
 		counts: &counters{},
 		produce: func(_ context.Context, r *kgo.Record) error {
@@ -141,7 +141,7 @@ func TestConsumerForwardFailures(t *testing.T) {
 			return nil
 		},
 	}
-	if !c.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{"id":1}`)}) {
+	if !c.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{"id":1}`)}, false) {
 		t.Fatal("a forward failure sent on commits")
 	}
 	if len(sent) != 1 || sent[0].Topic != "orders__retry" || headerMap(sent[0].Headers)["studio-error"] != "forward to archive: broker down" {
@@ -149,7 +149,7 @@ func TestConsumerForwardFailures(t *testing.T) {
 	}
 
 	fwdErr, sent = kgo.ErrClientClosed, nil
-	if c.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{"id":2}`)}) {
+	if c.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{"id":2}`)}, false) {
 		t.Fatal("a forward cut by a closed client must leave the record uncommitted")
 	}
 	if len(sent) != 0 {
@@ -162,7 +162,7 @@ func TestConsumerForwardFailures(t *testing.T) {
 func TestConsumerRetryRecord(t *testing.T) {
 	ctx := context.Background()
 	c := &consumer{
-		spec:   NodeSpec{Topic: "orders", Group: "g", Retry: &RetrySpec{Topic: "orders__retry", Group: "g__retry", Attempts: 3, DelayMS: 100}, DLQ: "orders__dlq"},
+		spec:   NodeSpec{Topic: "orders", Group: "g", Retry: &RetryData{Attempts: 3, DelayMS: 100}, DLQ: true},
 		tail:   &tail{},
 		counts: &counters{},
 	}

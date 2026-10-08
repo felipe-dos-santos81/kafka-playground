@@ -177,7 +177,7 @@ func TestConsumerHandle(t *testing.T) {
 		},
 	}
 	for _, r := range []struct{ key, value string }{{"k1", `{"id":1}`}, {"k2", `{"bad":true}`}, {"down", `{"id":3}`}} {
-		c.handle(context.Background(), &kgo.Record{Topic: "orders", Key: []byte(r.key), Value: []byte(r.value)})
+		c.handle(context.Background(), &kgo.Record{Topic: "orders", Key: []byte(r.key), Value: []byte(r.value)}, false)
 	}
 	// Every record reaches the sink; a failed sink does not stop the forward.
 	if len(posted) != 3 || posted[0] != `application/json {"id":1}` {
@@ -195,7 +195,7 @@ func TestConsumerHandle(t *testing.T) {
 	before := s.Errors
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	c.handle(cancelled, &kgo.Record{Topic: "orders", Key: []byte("k4"), Value: []byte(`{"id":4}`)})
+	c.handle(cancelled, &kgo.Record{Topic: "orders", Key: []byte("k4"), Value: []byte(`{"id":4}`)}, false)
 	if len(posted) != 4 || len(forwarded) != 3 || string(forwarded[2].Key) != "k4" {
 		t.Fatalf("a cancelled context must not skip the record: posted %q, forwarded %d", posted, len(forwarded))
 	}
@@ -205,7 +205,7 @@ func TestConsumerHandle(t *testing.T) {
 
 	// Without a sink or a forward, a record is only counted and tailed.
 	bare := &consumer{spec: NodeSpec{Topic: "orders"}, tail: &tail{}, counts: &counters{}}
-	bare.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{}`)})
+	bare.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{}`)}, false)
 	if s := bare.counts.stats("b", bare.tail.last()); s.Total != 1 || s.Errors != 0 {
 		t.Fatalf("bare consumer: %+v", s)
 	}
@@ -232,7 +232,7 @@ func TestConsumerHandleCommitDecision(t *testing.T) {
 		want bool
 	}{{nil, true}, {errors.New("broker down"), true}, {kgo.ErrClientClosed, false}, {fmt.Errorf("wrapped: %w", kgo.ErrClientClosed), false}} {
 		fwdErr = tc.err
-		if got := c.handle(context.Background(), rec); got != tc.want {
+		if got := c.handle(context.Background(), rec, false); got != tc.want {
 			t.Errorf("forward error %v: handle = %v, want %v", tc.err, got, tc.want)
 		}
 	}
@@ -274,7 +274,7 @@ func TestConsumerTransform(t *testing.T) {
 		},
 	}
 	for _, v := range []string{`{"id":3,"qty":1}`, `{"id":1,"qty":2,"price":3}`, `{"id":2,"qty":0}`} {
-		if !c.handle(context.Background(), &kgo.Record{Topic: "orders", Key: []byte("k"), Value: []byte(v)}) {
+		if !c.handle(context.Background(), &kgo.Record{Topic: "orders", Key: []byte("k"), Value: []byte(v)}, false) {
 			t.Fatalf("%s: a transform outcome never holds back the commit", v)
 		}
 	}
@@ -313,7 +313,7 @@ func TestConsumerRouter(t *testing.T) {
 		},
 	}
 	for _, v := range []string{`{"id":1,"qty":2,"price":100}`, `{"id":2,"qty":1,"price":5}`, `{"id":3,"qty":1,"price":"x"}`, `{"id":4,"qty":0}`} {
-		if !c.handle(context.Background(), &kgo.Record{Topic: "orders", Key: []byte("k"), Value: []byte(v)}) {
+		if !c.handle(context.Background(), &kgo.Record{Topic: "orders", Key: []byte("k"), Value: []byte(v)}, false) {
 			t.Fatalf("%s: a router outcome never holds back the commit", v)
 		}
 	}
@@ -332,7 +332,7 @@ func TestConsumerRouter(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.transform, c.router, forwarded = nil, failing, nil
-	if !c.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{"id":4}`)}) {
+	if !c.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{"id":4}`)}, false) {
 		t.Fatal("a router error never holds back the commit")
 	}
 	if len(forwarded) != 0 {
@@ -371,14 +371,14 @@ func TestConsumerHandlesConcurrently(t *testing.T) {
 	}
 	slow := make(chan struct{})
 	go func() {
-		c.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{"qty":0}`)})
+		c.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{"qty":0}`)}, false)
 		close(slow)
 	}()
 	var loops sync.WaitGroup // two loops at once, both on the transform and the router
 	for range 2 {
 		loops.Go(func() {
 			for i := 1; i <= 50; i++ {
-				c.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(fmt.Sprintf(`{"qty":%d}`, i))})
+				c.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(fmt.Sprintf(`{"qty":%d}`, i))}, false)
 			}
 		})
 	}

@@ -502,7 +502,7 @@ func TestRewindTarget(t *testing.T) {
 // A consumer with retry: waiting is its retry group's lag on its retry topic,
 // none until that group has committed, counted from the start for the rest.
 func TestApplyKafkaWaiting(t *testing.T) {
-	spec := NodeSpec{Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "g", Retry: &RetrySpec{Topic: "orders__retry", Group: "g__retry"}}
+	spec := NodeSpec{Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "g", Retry: &RetryData{}}
 	main := kadm.DescribedGroupLag{Group: "g", Lag: kadm.GroupLag{"orders": {0: {Topic: "orders", Partition: 0, Commit: kadm.Offset{At: 4}}}}}
 	three := int64(3)
 	for _, c := range []struct {

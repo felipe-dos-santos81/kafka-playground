@@ -49,7 +49,7 @@ export function defaultData(type: NodeType): Record<string, unknown> {
     case 'topic':
       return { name: '', partitions: 1, replication_factor: 1 }
     case 'consumer':
-      return { group: '', auto_offset_reset: 'earliest', sink: { kind: 'log' } }
+      return { group: '', auto_offset_reset: 'earliest', sink: { kind: 'log' }, dlq: false }
     case 'transform':
       return { expr: 'msg' }
     case 'router':

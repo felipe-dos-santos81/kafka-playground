@@ -9,7 +9,7 @@ export type ConsumerData = {
   instances?: number
   sink: { kind: 'log' | 'http'; url?: string }
   retry?: RetryData | null // null or absent: failures are not retried
-  dlq?: boolean // absent: false
+  dlq: boolean
 }
 export type RetryData = { attempts: number; delay_ms: number }
 export type TransformData = { expr: string }

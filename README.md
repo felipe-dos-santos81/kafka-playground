@@ -83,7 +83,7 @@ Try it: wire a Producer with source `timer` to a Topic and a Consumer, then Save
 ### Flows
 
 - Allowed edges: Producer → Topic, Topic → Consumer, and from a Consumer: → Topic (a forward), → Transform → Topic, → Router → Topics, or → Transform → Router → Topics. The editor refuses other edges, and the server rejects them on save.
-- Each flow is a file, `flows/<id>.json`: React Flow's nodes and edges, plus `id`, `name` and `viewport`. You can edit, copy or commit these files. The studio logs and skips a file that does not parse. It fills in missing node fields when you open a flow, which then shows as unsaved.
+- Each flow is a file, `flows/<id>.json`: React Flow's nodes and edges, plus `id`, `name` and `viewport`. You can edit, copy or commit these files. The studio logs and skips a file that does not parse. It fills in missing node fields with their defaults when you open a flow; the next save writes them.
 - Deploy refuses (422, naming the node) a forward that loops back to a topic it reads, and node ids whose container names clash (a consumer `consumer-1` with two instances next to a node `consumer-1-2`).
 
 ### Nodes

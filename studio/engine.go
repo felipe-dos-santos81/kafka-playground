@@ -337,7 +337,7 @@ func (e *Engine) Snapshot(ctx context.Context, id string) (FlowState, error) {
 			groups = append(groups, s.Group)
 		}
 		if s.Retry != nil {
-			groups = append(groups, s.Retry.Group)
+			groups = append(groups, retryGroup(s.Group))
 		}
 	}
 	slices.Sort(groups)
@@ -505,8 +505,8 @@ func applyKafka(st *FlowState, flow string, specs []NodeSpec, topics map[string]
 		}
 		ns.Lag = groupLag(gl.Lag[s.Topic], s.AutoOffsetReset)
 		if s.Retry != nil {
-			if rl, ok := lags[s.Retry.Group]; ok && rl.Error() == nil {
-				ns.Waiting = groupLag(rl.Lag[s.Retry.Topic], "earliest") // the retry loop reads from the start
+			if rl, ok := lags[retryGroup(s.Group)]; ok && rl.Error() == nil {
+				ns.Waiting = groupLag(rl.Lag[retryTopic(s.Topic)], "earliest") // the retry loop reads from the start
 			}
 		}
 		held := map[*NodeState][]int32{} // container → partitions its client holds

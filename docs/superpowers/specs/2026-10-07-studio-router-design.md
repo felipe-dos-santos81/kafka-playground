@@ -93,8 +93,9 @@ router → forward.
   transform or forward).
 - The forward keeps the record's key and carries the (transformed) value; a
   failed forward counts on the consumer, as today.
-- The consumer compiles the rules when it starts and reuses one VM, as the
-  Transform does.
+- The consumer compiles the rules when it starts. Since retry and DLQ, each
+  record runs on a fresh VM (`expr.Run`), as the Transform's does: a consumer's
+  main loop and retry loop route at once.
 
 ## 5. Counts and the snapshot
 

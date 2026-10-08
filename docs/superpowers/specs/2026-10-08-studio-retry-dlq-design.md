@@ -54,10 +54,10 @@ Consumer data gains two optional fields:
   comes from): `orders-1` gives `orders-1__retry` and `orders-1__dlq`. They are
   not editable.
 - Edges and `allowedEdges` do not change: the retry and DLQ topics are not nodes.
-- `studio/flow.go` (`ConsumerData`) and `studio/ui/src/nodes/types.ts` change
-  together (AGENTS.md). `defaultData` in `studio/ui/src/flow/schema.ts` gets no
-  `dlq`: a filled-in default would make every existing flow look unsaved, so
-  `dlq` is optional in the UI (absent: false).
+- `studio/flow.go` (`ConsumerData`), `studio/ui/src/flow/schema.ts` (the
+  consumer's `defaultData` gains `dlq: false`) and `studio/ui/src/nodes/types.ts`
+  change together (AGENTS.md). The editor takes its unsaved-changes snapshot
+  after filling defaults, so opening an older flow does not mark it unsaved.
 
 ## 3. Validation (`studio/flow.go`)
 
@@ -85,16 +85,12 @@ Consumer data gains two optional fields:
 The consumer's `NodeSpec` gains:
 
 ```go
-Retry *RetrySpec `json:"retry,omitempty"` // consumer: where and how its failures are retried
-DLQ   string     `json:"dlq,omitempty"`   // consumer: the topic its spent or hopeless records go to
-
-type RetrySpec struct {
-	Topic    string `json:"topic"`
-	Group    string `json:"group"`
-	Attempts int    `json:"attempts"`
-	DelayMS  int    `json:"delay_ms"`
-}
+Retry *RetryData `json:"retry,omitempty"` // consumer: its retry settings (attempts, delay_ms); nil without retry
+DLQ   bool       `json:"dlq,omitempty"`   // consumer: failures end in the DLQ
 ```
+
+The names are not stored: the node runner and the snapshot derive them from the
+spec's `Topic` and `Group` (`retryTopic`, `dlqTopic`, `retryGroup`).
 
 `Resolve` adds `<input>__retry` and `<input>__dlq` to the topics a deploy
 creates, with the input topic node's partitions and replication factor 1. A
@@ -148,9 +144,11 @@ A write to the retry topic or the DLQ that fails counts as an error
 still commits, unless the write failed because Stop closed the client, which
 leaves it uncommitted to be redelivered.
 
-A consumer's main loop and its retry loop call `handle` at once. The transform
-and the router each lock their own VM, which is not safe for concurrent use, so
-a slow sink in one loop never holds up the other.
+A consumer's main loop and its retry loop call `handle` at once, each saying
+where its record came from (only the retry loop's records have their
+`studio-attempt` counted). The transform and the router run each record on a
+fresh VM (`expr.Run`), so nothing is shared and a slow sink in one loop never
+holds up the other.
 
 ### 4.4 The retry loop
 
@@ -281,7 +279,7 @@ The stop budgets in `node.go` stay inside `stopGraceSeconds`.
 - `AGENTS.md`: retry and DLQ topics take derived names (`<input>__retry`,
   `<input>__dlq`), run in the consumer's container as a second client in group
   `<group>__retry`, and the `studio-group` header keeps a shared retry topic's
-  groups apart; `RetrySpec`/`NodeSpec` change with `ConsumerData`.
+  groups apart; `NodeSpec` carries `ConsumerData`'s `Retry`/`DLQ` as they are.
 - The UI tests spec (`2026-10-07-studio-ui-tests-design.md`) §5: the new tests
   and the quoted refusal.
 

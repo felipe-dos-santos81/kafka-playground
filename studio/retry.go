@@ -24,26 +24,22 @@ type failure struct {
 	retryable bool // it may pass later: the sink or the forward, not the transform or the router
 }
 
-// fromRetry says whether r was read from c's retry topic, not from its input topic.
-func (c *consumer) fromRetry(r *kgo.Record) bool {
-	return c.spec.Retry != nil && r.Topic == c.spec.Retry.Topic
-}
-
 // sendOn sends r, whose path f ended, to the retry topic when f is retryable,
 // retry is on and tries remain, else to the DLQ. What it sends is r as read (key
 // and value, not the transformed value), so a retry runs r's whole path again,
 // with failureHeaders. It reports whether r may be committed: a failed send is
 // counted and logged and r still commits, unless the client was closed (Stop),
-// which leaves r to be redelivered.
-func (c *consumer) sendOn(ctx context.Context, r *kgo.Record, f failure) bool {
+// which leaves r to be redelivered. retried says r came from the retry topic,
+// so its studio-attempt counts its earlier failed tries.
+func (c *consumer) sendOn(ctx context.Context, r *kgo.Record, f failure, retried bool) bool {
 	tries := 1 // tries of r that failed, this one included
-	if c.fromRetry(r) {
+	if retried {
 		n, _ := strconv.Atoi(header(r, headerAttempt))
 		tries += n
 	}
-	to, kind, sent := c.spec.DLQ, "dlq", &c.deadLettered
-	if spec := c.spec.Retry; f.retryable && spec != nil && tries <= spec.Attempts {
-		to, kind, sent = spec.Topic, "retry", &c.retried
+	to, kind, sent := dlqTopic(c.spec.Topic), "dlq", &c.deadLettered
+	if retry := c.spec.Retry; f.retryable && retry != nil && tries <= retry.Attempts {
+		to, kind, sent = retryTopic(c.spec.Topic), "retry", &c.retried
 	}
 	if err := c.write(ctx, &kgo.Record{Topic: to, Key: r.Key, Value: r.Value, Headers: failureHeaders(r, c.spec.Group, tries, f.err)}); err != nil {
 		c.counts.fail(fmt.Errorf("%s: %w", kind, err))
@@ -112,7 +108,7 @@ func (c *consumer) retryRecord(ctx context.Context, r *kgo.Record) bool {
 	if !wait(ctx, min(time.Until(r.Timestamp.Add(delay)), delay)) {
 		return false
 	}
-	return c.handle(ctx, r)
+	return c.handle(ctx, r, true)
 }
 
 // wait waits d (nothing when d ≤ 0) and reports whether it did: false when ctx

@@ -29,18 +29,8 @@ type NodeSpec struct {
 	Routes          []Route    `json:"routes,omitempty"`         // consumer: its router's rules, in order; set, they choose the forward
 	RouteDefault    string     `json:"route_default,omitempty"`  // consumer: the router's default topic; "" drops what no rule matches
 	RouterNode      string     `json:"router_node,omitempty"`    // consumer: the router's node id, which its counts are reported under
-	Retry           *RetrySpec `json:"retry,omitempty"`          // consumer: how its retry loop retries failures; nil without retry
-	DLQ             string     `json:"dlq,omitempty"`            // consumer: the topic its failures end in; "" without a DLQ
-}
-
-// RetrySpec is a consumer's retry: the topic its failures wait in, the group its
-// retry loop reads it in, how many retries a record gets after its first try and
-// how long each waits.
-type RetrySpec struct {
-	Topic    string `json:"topic"`
-	Group    string `json:"group"`
-	Attempts int    `json:"attempts"`
-	DelayMS  int    `json:"delay_ms"`
+	Retry           *RetryData `json:"retry,omitempty"`          // consumer: its retry settings; nil without retry (topic and group: retryTopic, retryGroup)
+	DLQ             bool       `json:"dlq,omitempty"`            // consumer: failures end in dlqTopic(Topic)
 }
 
 // Route is one router rule as a consumer runs it: a condition and a topic name.
@@ -155,13 +145,12 @@ func Resolve(f Flow) ([]NodeSpec, []TopicData) {
 			derive := func(name string) { // a retry or DLQ topic, with the input topic's partitions
 				derived = append(derived, TopicData{Name: name, Partitions: partitions[src.ID], ReplicationFactor: 1})
 			}
+			spec.Retry, spec.DLQ = d.Retry, d.DLQ
 			if d.Retry != nil {
-				spec.Retry = &RetrySpec{Topic: retryTopic(spec.Topic), Group: retryGroup(d.Group), Attempts: d.Retry.Attempts, DelayMS: d.Retry.DelayMS}
-				derive(spec.Retry.Topic)
+				derive(retryTopic(spec.Topic))
 			}
 			if d.DLQ {
-				spec.DLQ = dlqTopic(spec.Topic)
-				derive(spec.DLQ)
+				derive(dlqTopic(spec.Topic))
 			}
 			for _, i := range instancesOf(dst) {
 				spec.Instance = i

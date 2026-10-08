@@ -102,7 +102,7 @@ func TestResolveRetryAndDLQ(t *testing.T) {
 	f.Nodes = append(f.Nodes, node("topic-2", "topic", `{"name":"orders__dlq","partitions":1,"replication_factor":1}`))
 	specs, topics := Resolve(f)
 	want := NodeSpec{Flow: "0a1b2c3d", Node: "consumer-1", Type: "consumer", Topic: "orders", Group: "g",
-		Retry: &RetrySpec{Topic: "orders__retry", Group: "g__retry", Attempts: 3, DelayMS: 5000}, DLQ: "orders__dlq"}
+		Retry: &RetryData{Attempts: 3, DelayMS: 5000}, DLQ: true}
 	if len(specs) != 2 || !reflect.DeepEqual(specs[1], want) {
 		t.Fatalf("the consumer's spec names its retry topic and group and its DLQ:\n got %+v\nwant %+v", specs, want)
 	}

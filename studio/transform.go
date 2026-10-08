@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
@@ -34,13 +33,11 @@ func compileTransform(src string, opts ...expr.Option) (*vm.Program, error) {
 	return p, nil
 }
 
-// transform is one consumer's compiled expression, the VM it runs on and its own
-// counts. A consumer's main loop and retry loop run it at once; mu keeps them off
-// the VM together.
+// transform is one consumer's compiled expression and its own counts. Each run
+// gets its own VM (expr.Run), so the consumer's main loop and retry loop can run
+// it at once.
 type transform struct {
 	program *vm.Program
-	mu      sync.Mutex
-	vm      vm.VM
 	counts  counters
 }
 
@@ -58,9 +55,7 @@ func newTransform(src string) (*transform, error) {
 // which is not an error.
 func (t *transform) run(value []byte) ([]byte, error) {
 	t.counts.ok()
-	t.mu.Lock()
 	out, err := t.eval(value)
-	t.mu.Unlock()
 	if err != nil {
 		t.counts.fail(err)
 	}
@@ -74,7 +69,7 @@ func (t *transform) eval(value []byte) (out []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := t.vm.Run(t.program, transformEnv{Msg: msg})
+	res, err := expr.Run(t.program, transformEnv{Msg: msg})
 	if err != nil {
 		return nil, firstLine(err)
 	}

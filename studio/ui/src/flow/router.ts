@@ -1,4 +1,5 @@
-// A router's rules as the canvas shows and edits them.
+// A router's rules as the canvas shows and edits them, and the topic lookups the
+// Inspector shares.
 import type { Edge } from '@xyflow/react'
 import type { RouterData, StudioNode } from '../nodes/types'
 
@@ -29,6 +30,14 @@ export function wiredTopics(id: string, nodes: StudioNode[], edges: Edge[]): { i
     const t = e.source === id ? nodes.find((n) => n.id === e.target) : undefined
     return t?.type === 'topic' ? [{ id: t.id, name: topicName(t.id, t) }] : []
   })
+}
+
+// The name of the topic a consumer reads, '' while it reads none or the topic has
+// no name yet (a consumer's retry and DLQ topics are named after it).
+export function inputTopic(id: string, nodes: StudioNode[], edges: Edge[]): string {
+  const from = edges.find((e) => e.target === id)?.source
+  const topic = nodes.find((n) => n.id === from)
+  return topic?.type === 'topic' ? topic.data.name : ''
 }
 
 // A topic as a router shows it: its name, or its node id while it has none (or
