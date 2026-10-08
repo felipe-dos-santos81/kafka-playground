@@ -2,7 +2,7 @@
 
 A local Kafka sandbox. Produce JSON from a browser and watch partitions, consumer groups and fan-out. Pipeline Studio adds a canvas where you draw producer → topic → consumer flows and run them.
 
-Everything is local: no auth, no TLS, every port on `127.0.0.1`. `make down` deletes the Kafka data; Studio flows are files in `flows/` and stay.
+Everything is local: no auth, no TLS, every port on `127.0.0.1`. `make down` deletes the Kafka data and the metrics; Studio flows are files in `flows/` and stay.
 
 | Service | What it is | Where |
 |---|---|---|
@@ -12,6 +12,8 @@ Everything is local: no auth, no TLS, every port on `127.0.0.1`. `make down` del
 | `orders-audit` | kcat consumer in its own group on `orders` | `make logs svc=orders-audit` |
 | `producer` | producer page (`producer/`, Go) | http://localhost:8081 |
 | `studio` | Pipeline Studio (`studio/`, Go + React Flow) | http://localhost:8082 |
+| `orders-1`, `orders-1__retry`, `orders-1__dlq` | topic owners: each creates its topic and keeps it in the desired state (`topic-owner/`, Go) | `make owners` |
+| `prometheus` | Prometheus: scrapes the topic owners | http://localhost:9090 |
 | `console` | Redpanda Console: topics, messages, groups | http://localhost:8080 |
 
 ## Quick start
@@ -73,6 +75,91 @@ Also add `topic-payments: {condition: service_completed_successfully}` under `pr
 ```
 
 Consumers with the same `GROUP_ID` split the partitions. Without one, each container gets every record. Add members with `deploy.replicas: N` or `docker compose up -d --scale <service>=N`.
+
+## Topic owners
+
+`orders-1`, `orders-1__retry` and `orders-1__dlq` are long-running containers, one per topic (`topic-owner/`, Go). Each one owns its topic:
+
+- It creates the topic. Then, every 10 s, it puts the topic back in its desired state: it sets missing configs, sets changed ones back, removes topic-level overrides nobody asked for, and raises partitions.
+- It never lowers partitions or changes the replication factor. Such a difference makes the container unhealthy and says why: `docker inspect --format '{{json .State.Health.Log}}' orders-1`, or `make logs svc=orders-1`.
+- `make up` waits until every topic is in its desired state. So `depends_on: {orders-1: {condition: service_healthy}}` guarantees a consumer its topic, as a finished topic job does.
+- A config changed by hand, in Console or with `kafka-configs.sh`, is set back. To change one, change the container's environment and recreate it.
+- It serves `/metrics` for its topic on port 9000 inside the network. Prometheus (http://localhost:9090) finds the containers by their labels, with no target list.
+- `make owners` lists them. `make query q='kafka_topic_partitions'` asks Prometheus. `make kcat args='-C -t orders-1 -o beginning -e -J'` runs kcat on the compose network (default `-L`).
+
+The retry container owns its topic like the other two. The redelivery worker that will read it is a later milestone.
+
+### Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `BASE_NAME`, `INSTANCE`, `ROLE` | required | The topic is `<base>-<instance>`, plus `__retry` for `ROLE: retry` or `__dlq` for `ROLE: dlq`. |
+| `KAFKA_BROKERS` | required | `*bootstrap` |
+| `PARTITIONS` | `1` | Raised on an existing topic, never lowered. |
+| `REPLICATION_FACTOR` | `1` | Anything else is refused: there is one broker. |
+| `TOPIC_CONFIG_<NAME>` | role defaults | `TOPIC_CONFIG_RETENTION_MS: 3600000` sets `retention.ms`. An empty value removes a role default. |
+| `MAX_ATTEMPTS`, `BACKOFF_MS` | `3`, `5000` | Retry role only (1–10 and 100–60000). |
+
+Role defaults: the retry topic gets `message.timestamp.type=LogAppendTime`, so the broker stamps each record. The DLQ gets `retention.ms=-1`, so parked records stay.
+
+A base name has letters, digits, `_` and `-`. It starts with a letter or digit, has no `__`, and does not end in `-<digits>`. `<base>-<instance>` has at most 242 characters. A `.` is not allowed: Kafka treats `a.b` and `a_b` as the same name in its metrics, and every retry and DLQ name contains `_`.
+
+### Add an instance
+
+Copy the three `orders-1` services with new anchors and numbers:
+
+```yaml
+  orders-2:
+    <<: *topic-owner
+    container_name: orders-2
+    labels: &orders-2-labels
+      topic-owner.base: orders
+      topic-owner.instance: "2"
+      topic-owner.role: main
+    environment: &orders-2-env
+      KAFKA_BROKERS: *bootstrap
+      BASE_NAME: orders
+      INSTANCE: 2
+      ROLE: main
+      PARTITIONS: 6
+
+  orders-2__retry:
+    <<: *topic-owner
+    container_name: orders-2__retry
+    depends_on:
+      <<: *after-kafka
+      orders-2: {condition: service_healthy}
+      orders-2__dlq: {condition: service_healthy}
+    labels: {<<: *orders-2-labels, topic-owner.role: retry}
+    environment: {<<: *orders-2-env, ROLE: retry, MAX_ATTEMPTS: 5}
+
+  orders-2__dlq:
+    <<: *topic-owner
+    container_name: orders-2__dlq
+    labels: {<<: *orders-2-labels, topic-owner.role: dlq}
+    environment: {<<: *orders-2-env, ROLE: dlq}
+```
+
+Instances share nothing: `orders-2` has its own topics and settings. Prometheus finds the new containers by their labels.
+
+### Metrics
+
+Every series has a `topic` label. Where a series means what a [kafka-exporter](https://github.com/danielqsj/kafka_exporter) series means, it has the same name and labels, so dashboards made for kafka-exporter work.
+
+| Metric | |
+|---|---|
+| `kafka_topic_partitions` | partitions |
+| `kafka_topic_partition_under_replicated_partition` | 1 when a partition has fewer in-sync replicas than replicas (always 0 on one broker) |
+| `kafka_topic_partition_current_offset`, `kafka_topic_partition_oldest_offset` | log end and start offsets |
+| `kafka_consumergroup_current_offset`, `kafka_consumergroup_lag` | each group's committed offset and lag, for partitions it has committed |
+| `topic_owner_partition_log_size_bytes` | log size |
+| `topic_owner_info` | `base`, `topic_instance` and `role` (Prometheus reserves `instance`, which is the container name) |
+| `topic_owner_reconciled` | 1 when the topic is in its desired state |
+| `topic_owner_kafka_up` | 1 when the last scrape reached Kafka |
+
+Messages in per second: `sum by (topic) (rate(kafka_topic_partition_current_offset[1m]))`. Bytes in and out per topic are not exported. Only the broker's JMX has them, and the JMX agent would need a jar and a change to the `kafka` service.
+
+Prometheus reads the Docker socket with `group_add: ["0"]`, because Docker Desktop shows the socket as `root:root 0660` inside containers. On native Linux, use the host's docker gid instead. The socket gives root on the host, which is one more reason everything stays on `127.0.0.1`.
 
 ## Pipeline Studio
 

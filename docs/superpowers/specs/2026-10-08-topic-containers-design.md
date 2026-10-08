@@ -1,8 +1,8 @@
 # Topic containers — design
 
-Status: design approved in brainstorming on 2026-10-08; this spec is under
-review. No code yet. One implementation plan per milestone follows in
-`docs/superpowers/plans/`.
+Status: approved on 2026-10-08. M1 is built, from
+`docs/superpowers/plans/2026-10-08-topic-containers-m1.md`; M2 and M3 follow,
+one plan each.
 
 A topic deployed as three long-running containers on the playground's broker:
 `orders-1`, `orders-1__retry` and `orders-1__dlq`. Each container owns one

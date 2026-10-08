@@ -1,22 +1,24 @@
 # AGENTS.md
 
-Local Kafka playground, run with Docker Compose. Usage is in README.md. Pipeline Studio's design is `docs/superpowers/specs/2026-10-06-pipeline-studio-design.md` (the authority; §7 lists the milestones), with one implementation plan per milestone in `docs/superpowers/plans/`. Its UI tests are designed in `docs/superpowers/specs/2026-10-07-studio-ui-tests-design.md`.
+Local Kafka playground, run with Docker Compose. Usage is in README.md. Pipeline Studio's design is `docs/superpowers/specs/2026-10-06-pipeline-studio-design.md` (the authority; §7 lists the milestones), with one implementation plan per milestone in `docs/superpowers/plans/`. Its UI tests are designed in `docs/superpowers/specs/2026-10-07-studio-ui-tests-design.md`. The topic owners are designed in `docs/superpowers/specs/2026-10-08-topic-containers-design.md`, with one plan per milestone.
 
 ## Layout
 
-- `docker-compose.yml`: broker, topic jobs (`x-topic` anchor), kcat consumers (`x-consumer`), producer page, Pipeline Studio, Console.
+- `docker-compose.yml`: broker, topic jobs (`x-topic` anchor), kcat consumers (`x-consumer`), producer page, Pipeline Studio, Console, topic owners (`x-topic-owner`, one block of three services per instance), Prometheus.
 - `producer/`: producer page. Go (franz-go), `main.go` plus embedded `index.html`, multi-stage `Dockerfile` onto `scratch`.
 - `studio/`: Pipeline Studio. Go control plane (`main.go`, `api.go`, `flow.go`, `store.go`, `resolve.go`, `engine.go`, `stream.go`, `docker.go`, `kafka.go`, `transform.go`, `router.go`) and node runner (`node.go`, with its retry loop and failure path in `retry.go`, run as `studio node` in one container per producer, consumer and consumer instance), embedding the React Flow UI built from `studio/ui/` (`go:embed all:ui/dist`; keep `ui/dist/.gitkeep`).
 - `studio/ui/e2e/`: the UI tests (Playwright, `playwright.config.ts` beside them): `flows.ts` (the API and flow parts), `locators.ts`, `studio.ts` (the fixture), and one `*.spec.ts` per area. `make verify-ui` runs them against the running stack.
+- `topic-owner/`: topic owner. Go (franz-go, client_golang): `config.go` (environment, name rules, role defaults), `reconcile.go` (the desired-state diff and its loop), `metrics.go` (`/metrics`), `main.go` (`/healthz`, `-healthcheck`); multi-stage `Dockerfile` onto `scratch`. It runs as one container per topic.
+- `prometheus/`: `prometheus.yml`, bind-mounted read-only into the `prometheus` service.
 - `flows/`: Studio flow files, bind-mounted into the `studio` container; `flows/0a1b2c3d.json` is the example.
-- `Makefile`: day-to-day commands; `make test` runs the static checks and unit tests, `make verify` the end-to-end test (`verify-studio` deletes its flows and its `studio-verify…` topics when it exits; name a new test topic in that trap too).
+- `Makefile`: day-to-day commands; `make test` runs the static checks and unit tests, `make verify` the end-to-end test (`verify-studio` deletes its flows and its `studio-verify…` topics when it exits, and `verify-topics` its `owner-verify…` containers, topics and group; name a new test topic or group in that trap too).
 
 ## Check your change
 
 ```sh
 make test                  # go vet, gofmt, go test, UI build (tsc), UI tests type-check, compose config
-make down && make verify   # always: ends with STUDIO OK, UI OK and VERIFY OK (the first run downloads Chromium)
-make down                  # then `docker ps -aq -f label=studio.flow` and `git status --short flows` print nothing
+make down && make verify   # always: ends with STUDIO OK, UI OK, TOPICS OK and VERIFY OK (the first run downloads Chromium)
+make down                  # then `docker ps -aq -f label=studio.flow`, `docker ps -aq -f label=topic-owner.role` and `git status --short flows` print nothing
 ```
 
 ## Rules
@@ -36,6 +38,8 @@ make down                  # then `docker ps -aq -f label=studio.flow` and `git 
 - Studio consumers need their own groups: franz-go and the kcat consumers' librdkafka share no assignor, so the broker refuses a mixed group.
 - One `.gitignore`, at the root; don't add nested ones (a nested `dist` rule would hide `studio/ui/dist/.gitkeep`).
 - The UI tests (`studio/ui/e2e/`, Playwright, `make verify-ui`) find elements by role, label and text, and by `data-testid` where there is none (`node-<id>`, `runtime-<id>`, `tail`). A change to the UI's visible text, roles or those ids runs `make verify-ui`; the top-bar messages they check are quoted in the Studio spec or the UI tests spec (§5), so rewording one goes through the spec. Everything they make is named `studio-ui-…`, a namespace the suite owns: each test removes every such flow, and the run removes every such topic and group after the last test. Don't give anything else that prefix.
-- Studio node containers are not compose services: they carry the `studio.flow` label, and `make down` removes them before `docker compose down` (the network cannot go while they are attached). Keep that line in `down`; use `make nodes` to see them.
+- Studio node containers are not compose services: they carry the `studio.flow` label, and `make down` removes them before `docker compose down` (the network cannot go while they are attached). So does a topic owner started with `docker compose run` (labels `topic-owner.role` and `com.docker.compose.oneoff=True`), which `docker compose down` leaves behind. Keep that line in `down`; use `make nodes` to see them. `down` passes `-v`: the `kafka` and `prometheus` images declare anonymous volumes that would otherwise stay.
+- A topic owner's service, `container_name` and topic are the same string: `<base>-<instance>`, plus `__retry` or `__dlq` (the suffixes Studio uses). The name rules live in `topic-owner/config.go`, on top of Studio's `topicNameRe` and `maxInputTopic`. Its labels are `topic-owner.base`, `topic-owner.instance` and `topic-owner.role`, never `studio.flow`. Prometheus finds owners by `topic-owner.role`, so a new instance needs no Prometheus change: add one block of three services with their own anchors (README, "Add an instance").
+- A topic owner's series that mean what kafka-exporter's mean keep its names and labels; the rest are `topic_owner_*`. `verify-topics` greps metric names and log lines; renaming one changes it too. `verify-topics` owns the `owner-verify` prefix: don't give anything else that name.
 - Makefile: GNU make 3.81 on macOS with BSD tools (no `timeout`, no `base64 -w0`, no `sed -i` without `''`). Recipes use real tabs. Follow the existing style: `SERVICE`, `## ` help comments, `# ── Section ──` rules, lower-case `arg ?= default`. Pass user text to the shell as `$(call shq,$(value var))`.
 - Keep README.md, and the spec when behaviour departs from it, in sync with any behaviour change.
