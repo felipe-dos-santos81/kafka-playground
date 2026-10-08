@@ -255,9 +255,10 @@ Inside a node container:
   append to the tail, then the sink — `log` (each record also goes to the
   container's stdout, so `docker logs` shows it), `http` (POST the value with
   `Content-Type: application/json`, 5 s timeout, redirects not followed, any
-  answer but 2xx counts as an error) — then the transform if any (M5), and if the
-  node forwards, `ProduceSync` to that topic with the same key (through the same
-  client, 10 s timeout). The sink and the forward are independent: a failed sink
+  answer but 2xx counts as an error) — then the transform if any (M5), then the
+  router if any (Router), and if the node forwards (to its next topic, or to the
+  one its router picks), `ProduceSync` to that topic with the same key (through
+  the same client, 10 s timeout). The sink and the forward are independent: a failed sink
   does not stop the forward. A failed sink, transform or forward counts as an
   error and is not retried. Once handled, the record is marked, and only marked
   records are committed (autocommit of marks): a failed forward is still marked,
@@ -268,7 +269,7 @@ Inside a node container:
   grace), commits what is marked, and closes the client, which leaves the
   group. `docker rm -f` (SIGKILL) skips that, so unmarked and uncommitted
   records are redelivered — at-least-once, on purpose, worth a README line.
-- **Stats:** counters count records where they pass — produced by a producer, fetched by a consumer — with fetch and produce errors and the last error; `/stats` returns `{boot, total, errors, lastError, tailSeq}` (from M5 also `step: {total, errors, lastError}` on a consumer that runs a transform), where `boot` is random per process so a restarted container starts over visibly. `/tail?since=` returns records from a 100-entry ring buffer (values truncated to 4 KiB). The control plane adds the container state from Docker and lag and partitions from the broker. The HTTP server listens on `:9000` inside the compose network only.
+- **Stats:** counters count records where they pass — produced by a producer, fetched by a consumer — with fetch and produce errors and the last error; `/stats` returns `{boot, total, errors, lastError, tailSeq}` (from M5 also `step: {total, errors, lastError}` on a consumer that runs a transform, and `route: {total, errors, lastError, branches, unmatched}` on one that runs a router), where `boot` is random per process so a restarted container starts over visibly. `/tail?since=` returns records from a 100-entry ring buffer (values truncated to 4 KiB). The control plane adds the container state from Docker and lag and partitions from the broker. The HTTP server listens on `:9000` inside the compose network only.
 
 ### 3.5 State store
 
@@ -284,7 +285,7 @@ Inside a node container:
 
 ### 3.6 Live status to the browser: SSE
 
-One `EventSource` per open flow on `GET /api/flows/{id}/events`. Each open stream runs its own loop: every second it takes a snapshot — `ContainerList` by label (container states), `GET /stats` on every running node container, `adm.Lag` for the flow's groups and `adm.ListEndOffsets` for its topics — computes `rate = Δtotal / Δt` against its previous snapshot (none when a node's `boot` changed), and sends it as a `tick`. The loop ends when `r.Context()` is done. One tab is one loop; a poller shared between streams is an optimisation for many viewers. A consumer node's `assigned` partitions come from the group description in `adm.Lag`, whose members carry the node's container name as their client id. From M4, a consumer with `instances` > 1 also carries `instances: [{instance, state, total, rate, errors, lastError, tailSeq, boot, assigned}]`, one entry per container; its node-level `total`, `rate` and `errors` are the sums, `lag` stays the group's, and its `state` is `running` only when every instance runs (otherwise the first instance's state that is not); its `lastError` is the first instance's that has one, prefixed `#<i>: `. From M6 a node container that does not answer `/stats` has no numbers and the reason in its `warning`, not its `lastError`. From M5 a transform node carries its consumer's state (`missing` while no container reports it) and the counters the consumer reports for it under `step`.
+One `EventSource` per open flow on `GET /api/flows/{id}/events`. Each open stream runs its own loop: every second it takes a snapshot — `ContainerList` by label (container states), `GET /stats` on every running node container, `adm.Lag` for the flow's groups and `adm.ListEndOffsets` for its topics — computes `rate = Δtotal / Δt` against its previous snapshot (none when a node's `boot` changed), and sends it as a `tick`. The loop ends when `r.Context()` is done. One tab is one loop; a poller shared between streams is an optimisation for many viewers. A consumer node's `assigned` partitions come from the group description in `adm.Lag`, whose members carry the node's container name as their client id. From M4, a consumer with `instances` > 1 also carries `instances: [{instance, state, total, rate, errors, lastError, tailSeq, boot, assigned}]`, one entry per container; its node-level `total`, `rate` and `errors` are the sums, `lag` stays the group's, and its `state` is `running` only when every instance runs (otherwise the first instance's state that is not); its `lastError` is the first instance's that has one, prefixed `#<i>: `. From M6 a node container that does not answer `/stats` has no numbers and the reason in its `warning`, not its `lastError`. From M5 a transform node carries its consumer's state (`missing` while no container reports it) and the counters the consumer reports for it under `step`; a router node likewise, from `route`, plus `branches` (records per rule, then the default's) and `unmatched`, summed over instances.
 
 ```
 event: tick
@@ -419,6 +420,8 @@ record and forward it to `orders-archive`.
 | | `sink` | M2 | `{"kind":"log"}` (M2) or `{"kind":"http","url":"…"}` (M4), `url` must parse with scheme `http` or `https` |
 | | `instances` | M4 | integer 1–10; absent or 0 means 1 |
 | transform | `expr` | M5 | an `expr-lang/expr` program over `msg` (the decoded JSON value) returning the new value, or `nil` to drop the record; must compile on deploy |
+| router | `rules` | Router | ordered `[{when, to}]`: `when` an `expr-lang/expr` condition over `msg` that must compile as a boolean on deploy, `to` the id of a topic the router has an edge to |
+| | `default` | Router | the id of a topic the router has an edge to, or empty: no rule matching drops the record |
 
 "From" is the milestone whose runtime first uses a field. Save accepts every
 field from M1, so the editor shows and edits the ones it has a form for (the
@@ -437,14 +440,18 @@ flowchart LR
   C -- "0..1 forward" --> T2[Topic]
   C -- "0..1 (M5)" --> X[Transform]
   X -- "exactly 1" --> T3[Topic]
+  C -- "0..1 (Router)" --> R[Router]
+  X -- "0..1 (Router)" --> R
+  R -- "1..n, one per rule or default" --> T4[Topic]
 ```
 
 | Rule | Checked by |
 |---|---|
-| Allowed pairs: producer→topic, topic→consumer, consumer→topic, consumer→transform, transform→topic. Anything else is refused at drag time (`isValidConnection`) and on save (422). | browser + Go |
+| Allowed pairs: producer→topic, topic→consumer, consumer→topic, consumer→transform, transform→topic, consumer→router, transform→router, router→topic. Anything else is refused at drag time (`isValidConnection`) and on save (422). | browser + Go |
 | producer: exactly one outgoing edge, none incoming | Go, deploy |
-| consumer: exactly one incoming edge; at most one outgoing edge in total, to either a topic or a transform | Go, deploy |
-| transform: exactly one incoming (from a consumer) and one outgoing (to a topic) | Go, deploy |
+| consumer: exactly one incoming edge; at most one outgoing edge in total, to a topic, a transform or a router | Go, deploy |
+| transform: exactly one incoming (from a consumer) and one outgoing (to a topic or a router) | Go, deploy |
+| router: exactly one incoming (from a consumer or a transform); every outgoing edge is a rule's or the default's topic, and every rule's and the default's topic has an edge | Go, deploy |
 | topic: any number of edges; a topic feeding no consumer or fed by nothing is fine (warning in the UI, not an error) | Go, deploy |
 | no cycle through forwards (a consumer forwarding, directly or through other consumers, back to a topic it reads from); the problem names the topic that consumer reads | Go, deploy |
 | every container a deploy starts has a name of its own (a consumer `consumer-1` with two instances runs `…-consumer-1-2`, which a node `consumer-1-2` would also take) | Go, deploy |
@@ -678,6 +685,28 @@ The M3 review leftovers, after M4 and M5.
   consumer's tick still arrives about once a second.
 - Built as decided in its plan, and after its review: the `/stats` calls and the end-offset call run in parallel while the lag call runs, all under one 800 ms budget (`snapshotBudget`), so ticks stay about a second apart (`verify-studio` checks it with three instances); a container created less than 5 s ago (`statsGrace`) that does not answer says nothing, and the UI shows a node's counts only once a container answered; a Transform node is `missing` only when its consumer's containers answer without reporting it; a node with instances carries its first instance's warning, prefixed `#<i>: `; a group shows no lag until it has committed, then a committed partition counts from its commit (`Commit.At` ≥ 0) and one without from where `auto_offset_reset` starts (the partition's start for `earliest`, as kadm measures it; nothing for `latest`), so a partly committed group does not hide its backlog; the stream ends with a `gone` event when its flow's file is gone (a reconnect would get the 404, which the UI also reads as gone); the UI reopens a refused stream every 2 s unless the flow answers 404; the tail drawer retries a failed fetch a second later, the next tick's time, from a timer of its own; `verify-studio` deletes the topics it creates, by name, when it exits.
 
+### Router.
+
+Designed in `docs/superpowers/specs/2026-10-07-studio-router-design.md`.
+
+- A Router node after a consumer or its transform: ordered rules (an
+  `expr-lang/expr` condition and a wired topic each), first match wins, an
+  optional default; no match and no default drops the record, counted as
+  `unmatched`.
+- Runs inside the upstream consumer: tail → sink → transform → router →
+  forward. A value that is not JSON or a failing condition is a router error
+  (and its consumer's): the record is not forwarded and later rules are not
+  tried.
+- **Demo:** `msg.total > 100` to one topic, default to another; a big and a
+  small record each arrive on their own topic; the router's edges read
+  `#1 · 1` and `default · 1`.
+- Built as decided in its plan: conditions compile with `expr.AsBool()` in a
+  transform's environment, so one known not to be a boolean (`"x"`, `1 + 2`)
+  is refused on deploy and one of unknown type is checked when it runs; the
+  router node reuses the transform's snapshot path (`applySteps`), its
+  `branches` summed element-wise over instances; the edge labels are worked
+  out in the canvas and never saved.
+
 ### Not planned
 
 A choice of partitioner (open question 3), a separate webhook node with a
@@ -751,7 +780,8 @@ Open questions to answer before M2 starts (defaults in bold):
   described in M2; extended in
   M3 with a timer flow asserting `rate > 0` and `lag == 0` from a `tick`, and
   in M4 with the two-flow chain and three instances, in M5 with a transform
-  (one record through, one error), and in M6 with `/events` answering 404
+  (one record through, one error), with a router (one record per branch, a rule
+  that does not compile refused), and in M6 with `/events` answering 404
   once its flow is deleted and with the test topics removed at the end.
 - Static: `go vet`, `gofmt -l`, `tsc --noEmit`, `npm run build`, `docker
   compose config --quiet`, all listed in `AGENTS.md`.

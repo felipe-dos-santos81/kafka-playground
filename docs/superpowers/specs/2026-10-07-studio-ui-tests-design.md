@@ -96,7 +96,7 @@ fixture gives. No page-object layer.
 
 ## 5. Tests
 
-Eleven tests, run one at a time; each flow, topic and group has a unique name and
+Fourteen tests (the last three added since, below), run one at a time; each flow, topic and group has a unique name and
 is removed afterwards (§6).
 
 ### `e2e/editor.spec.ts` — the editor, flows built through the UI
@@ -149,6 +149,23 @@ is removed afterwards (§6).
 11. **Tail scroll.** A timer at 250 ms fills the drawer. Scrolled to the top, the
     first visible record stays the same while new ones arrive; scrolled back to
     the bottom, the newest record comes into view.
+
+### Added since
+
+12. **Rewind** (`nodes.spec.ts`). On a deployed flow the consumer's "to earliest"
+    is disabled and says to stop the flow; after Stop it rewinds and shows
+    `<group> on <topic>: 1 partition rewound to earliest`.
+13. **Router in the editor** (`editor.spec.ts`). On an API-created flow shown
+    unfitted (one column, room for the router), drop a Router from the palette
+    and wire consumer → router → two topics: the Inspector shows two rules
+    with those topics, the node reads `2 rules · no default`. Save and Deploy:
+    the top bar shows `422: router-1: rule 1: when is required`. Fill rule 1,
+    remove rule 2, make its topic the default: the edges read `#1` and
+    `default`; Save and Deploy run the flow.
+14. **Router counts** (`nodes.spec.ts`). An API-created router flow
+    (`msg.total > 100` to one topic, default to another) deployed; two sends
+    from the producer's drawer, one big and one small: the router shows
+    `2 msgs` and its edges `#1 · 1` and `default · 1`.
 
 ## 6. Cleanup, failures, timing
 

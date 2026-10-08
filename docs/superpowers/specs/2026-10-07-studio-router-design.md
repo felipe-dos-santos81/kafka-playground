@@ -1,7 +1,7 @@
 # Pipeline Studio Router node — design
 
-Status: approved in brainstorming on 2026-10-07; implementation plan to follow
-in `docs/superpowers/plans/`. The Studio spec
+Status: approved in brainstorming on 2026-10-07; built from
+`docs/superpowers/plans/2026-10-07-studio-router.md`. The Studio spec
 (`docs/superpowers/specs/2026-10-06-pipeline-studio-design.md`) stays the
 authority for everything this does not change; this document adds a node type
 to it and, once built, its sections are updated to match (§9 below).
@@ -54,8 +54,8 @@ Edge table additions: `consumer → router`, `transform → router`,
 
 ## 3. Validation (`studio/flow.go`)
 
-- **Save:** the router's data decodes (an object with a `rules` array of
-  `{when, to}` and an optional string `default`). A half-built router saves.
+- **Save:** like every node's, only the node and edge checks (ids, type,
+  allowed pairs); a half-built router saves, and its data is checked on deploy.
 - **Deploy**, each a 422 naming the router (and the rule, as `rule <i>: …`):
   - exactly one edge in, from a consumer or a transform; at least one edge out;
   - at least one rule;
@@ -86,8 +86,10 @@ router → forward.
   None true: the default topic, or the record is dropped and counted as
   unmatched (not an error).
 - A value that is not JSON, or a runtime error in a condition (`nil > 100`), is a
-  router error: the record is not forwarded, later rules are not tried, and the
-  record still commits (at-most-once, like a failed transform or forward).
+  router error, counted on the Router node and as its consumer's error
+  (`router: …`, as a transform's failure is): the record is not forwarded, later
+  rules are not tried, and the record still commits (at-most-once, like a failed
+  transform or forward).
 - The forward keeps the record's key and carries the (transformed) value; a
   failed forward counts on the consumer, as today.
 - The consumer compiles the rules when it starts and reuses one VM, as the
