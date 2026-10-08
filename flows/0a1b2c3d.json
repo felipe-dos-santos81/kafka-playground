@@ -5,7 +5,10 @@
     {
       "id": "producer-1",
       "type": "producer",
-      "position": { "x": 40, "y": 160 },
+      "position": {
+        "x": 40,
+        "y": 160
+      },
       "data": {
         "source": "timer",
         "interval_ms": 1000,
@@ -16,31 +19,66 @@
     {
       "id": "topic-1",
       "type": "topic",
-      "position": { "x": 340, "y": 160 },
-      "data": { "name": "orders", "partitions": 3, "replication_factor": 1 }
+      "position": {
+        "x": 340,
+        "y": 160
+      },
+      "data": {
+        "name": "orders",
+        "partitions": 3,
+        "replication_factor": 1
+      }
     },
     {
       "id": "consumer-1",
       "type": "consumer",
-      "position": { "x": 640, "y": 160 },
+      "position": {
+        "x": 622,
+        "y": 249
+      },
       "data": {
         "group": "orders-studio",
         "auto_offset_reset": "earliest",
         "instances": 2,
-        "sink": { "kind": "log" }
+        "sink": {
+          "kind": "log"
+        }
       }
     },
     {
       "id": "topic-2",
       "type": "topic",
-      "position": { "x": 940, "y": 160 },
-      "data": { "name": "orders-archive", "partitions": 1, "replication_factor": 1 }
+      "position": {
+        "x": 940,
+        "y": 160
+      },
+      "data": {
+        "name": "orders-archive",
+        "partitions": 1,
+        "replication_factor": 1
+      }
     }
   ],
   "edges": [
-    { "id": "e1", "source": "producer-1", "target": "topic-1" },
-    { "id": "e2", "source": "topic-1", "target": "consumer-1" },
-    { "id": "e3", "source": "consumer-1", "target": "topic-2" }
+    {
+      "id": "e1",
+      "source": "producer-1",
+      "target": "topic-1"
+    },
+    {
+      "id": "e2",
+      "source": "topic-1",
+      "target": "consumer-1"
+    },
+    {
+      "id": "e3",
+      "source": "consumer-1",
+      "target": "topic-2"
+    }
   ],
-  "viewport": { "x": 0, "y": 0, "zoom": 1 }
+  "viewport": {
+    "x": -15,
+    "y": 0,
+    "zoom": 1
+  }
 }
