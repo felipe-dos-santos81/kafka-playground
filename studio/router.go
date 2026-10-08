@@ -6,6 +6,9 @@
 package main
 
 import (
+	"fmt"
+	"sync/atomic"
+
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
 )
@@ -20,4 +23,82 @@ func compileRule(src string) (*vm.Program, error) {
 		return nil, firstLine(err)
 	}
 	return p, nil
+}
+
+// router is one consumer's compiled rules, the VM they run on (a consumer
+// handles one record at a time) and its own counts.
+type router struct {
+	rules     []*vm.Program
+	topics    []string // rule i's topic
+	def       string   // the default topic; "" drops what no rule matches
+	vm        vm.VM
+	counts    counters
+	branches  []atomic.Int64 // records per rule, then the default's
+	unmatched atomic.Int64   // records dropped: no rule matched, no default
+}
+
+// routeTally is what /stats reports for a consumer's router.
+type routeTally struct {
+	tally
+	Branches  []int64 `json:"branches"`  // per rule, then the default (0 without one)
+	Unmatched int64   `json:"unmatched"` // dropped: no rule matched, no default
+}
+
+// newRouter compiles routes for one consumer to run.
+func newRouter(routes []Route, def string) (*router, error) {
+	r := &router{def: def, branches: make([]atomic.Int64, len(routes)+1)}
+	for i, rt := range routes {
+		p, err := compileRule(rt.When)
+		if err != nil {
+			return nil, fmt.Errorf("rule %d: %w", i+1, err)
+		}
+		r.rules = append(r.rules, p)
+		r.topics = append(r.topics, rt.Topic)
+	}
+	return r, nil
+}
+
+// route picks a value's topic and counts the outcome. "" with no error drops the
+// record (no rule matched, no default), which is not an error.
+func (r *router) route(value []byte) (string, error) {
+	r.counts.ok()
+	topic, err := r.pick(value)
+	switch {
+	case err != nil:
+		r.counts.fail(err)
+	case topic == "":
+		r.unmatched.Add(1)
+	}
+	return topic, err
+}
+
+// pick is route without the outcome's counting: the first rule that holds, else
+// the default. A rule that fails stops it, so a broken rule never falls through.
+func (r *router) pick(value []byte) (string, error) {
+	msg, err := decodeMsg(value)
+	if err != nil {
+		return "", err
+	}
+	for i, p := range r.rules {
+		res, err := r.vm.Run(p, transformEnv{Msg: msg})
+		if err != nil {
+			return "", fmt.Errorf("rule %d: %w", i+1, firstLine(err))
+		}
+		if res == true {
+			r.branches[i].Add(1)
+			return r.topics[i], nil
+		}
+	}
+	if r.def != "" {
+		r.branches[len(r.rules)].Add(1)
+	}
+	return r.def, nil
+}
+
+func (r *router) read() routeTally {
+	t := routeTally{tally: r.counts.read(), Branches: make([]int64, len(r.branches)), Unmatched: r.unmatched.Load()}
+	for i := range r.branches {
+		t.Branches[i] = r.branches[i].Load()
+	}
+	return t
 }

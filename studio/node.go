@@ -2,7 +2,8 @@
 // container. Its whole configuration is env STUDIO_NODE (a NodeSpec) plus
 // KAFKA_BROKERS. It serves the control plane on :9000 inside the compose
 // network: POST /send (producers), GET /tail?since=N and GET /stats. A consumer
-// also posts each record to its http sink and forwards it to its next topic.
+// also posts each record to its http sink and forwards it to its next topic, or
+// to the one its router picks.
 package main
 
 import (
@@ -100,10 +101,11 @@ func (t *tail) last() int64 {
 
 // nodeStats is what GET /stats answers; the control plane adds the container state.
 type nodeStats struct {
-	Boot    string `json:"boot"` // random per process: a restarted container starts its counters and tail over
-	tally          // records produced (producers) or fetched (consumers), the failures, the last one
-	TailSeq int64  `json:"tailSeq"`        // seq of the newest tail record; the drawer fetches when it moves
-	Step    *tally `json:"step,omitempty"` // a consumer's transform, when it runs one
+	Boot    string      `json:"boot"` // random per process: a restarted container starts its counters and tail over
+	tally               // records produced (producers) or fetched (consumers), the failures, the last one
+	TailSeq int64       `json:"tailSeq"`         // seq of the newest tail record; the drawer fetches when it moves
+	Step    *tally      `json:"step,omitempty"`  // a consumer's transform, when it runs one
+	Route   *routeTally `json:"route,omitempty"` // a consumer's router, when it runs one
 }
 
 // tally is what counters read: every record counted, the ones that failed, and
@@ -254,6 +256,7 @@ type consumer struct {
 	tail      *tail
 	counts    *counters
 	transform *transform                                               // nil without one
+	router    *router                                                  // nil without one
 	post      func(ctx context.Context, url string, body []byte) error // the http sink
 	produce   func(context.Context, *kgo.Record) error                 // the forward
 }
@@ -285,13 +288,22 @@ func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
 		}
 		value = out
 	}
-	if c.spec.Forward != "" {
+	forward := c.spec.Forward
+	if c.router != nil {
+		topic, err := c.router.route(value)
+		if err != nil {
+			c.counts.fail(fmt.Errorf("router: %w", err))
+			log.Printf("router: %v", err)
+		}
+		forward = topic // "": failed or unmatched, nothing to forward
+	}
+	if forward != "" {
 		pctx, cancel := context.WithTimeout(work, 10*time.Second)
-		err := c.produce(pctx, &kgo.Record{Topic: c.spec.Forward, Key: r.Key, Value: value})
+		err := c.produce(pctx, &kgo.Record{Topic: forward, Key: r.Key, Value: value})
 		cancel()
 		if err != nil {
 			c.counts.fail(fmt.Errorf("forward: %w", err))
-			log.Printf("forward to %s: %v", c.spec.Forward, err)
+			log.Printf("forward to %s: %v", forward, err)
 			return !errors.Is(err, kgo.ErrClientClosed)
 		}
 	}
@@ -373,6 +385,7 @@ func runNode() {
 
 	t, counts, boot := &tail{}, &counters{}, NewID()
 	var tr *transform           // a consumer's transform; nil without one
+	var rt *router              // a consumer's router; nil without one
 	var consuming chan struct{} // closed when a consumer's poll loop has returned; nil for a producer
 	produce := func(ctx context.Context, rec *kgo.Record) error {
 		return cl.ProduceSync(ctx, rec).FirstErr()
@@ -387,6 +400,10 @@ func runNode() {
 		if tr != nil {
 			step := tr.counts.read()
 			s.Step = &step
+		}
+		if rt != nil {
+			route := rt.read()
+			s.Route = &route
 		}
 		reply(w, http.StatusOK, s)
 	})
@@ -405,7 +422,12 @@ func runNode() {
 				log.Fatal("transform: ", err) // Validate compiled the same source on deploy
 			}
 		}
-		c := &consumer{spec: spec, tail: t, counts: counts, transform: tr, post: postJSON, produce: produce}
+		if len(spec.Routes) > 0 {
+			if rt, err = newRouter(spec.Routes, spec.RouteDefault); err != nil {
+				log.Fatal("router: ", err) // Validate compiled the same rules on deploy
+			}
+		}
+		c := &consumer{spec: spec, tail: t, counts: counts, transform: tr, router: rt, post: postJSON, produce: produce}
 		consuming = make(chan struct{})
 		go func() {
 			c.consume(ctx, cl)

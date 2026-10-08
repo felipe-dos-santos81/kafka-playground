@@ -64,16 +64,11 @@ func (t *transform) run(value []byte) ([]byte, error) {
 // eval is run without the counting: the value decoded (integers exact), the
 // program's result encoded, nil for a dropped record.
 func (t *transform) eval(value []byte) (out []byte, err error) {
-	d := json.NewDecoder(bytes.NewReader(value))
-	d.UseNumber()
-	var msg any
-	if err := d.Decode(&msg); err != nil {
-		return nil, errInvalidJSON
+	msg, err := decodeMsg(value)
+	if err != nil {
+		return nil, err
 	}
-	if _, err := d.Token(); err != io.EOF {
-		return nil, errInvalidJSON // trailing data after the value
-	}
-	res, err := t.vm.Run(t.program, transformEnv{Msg: numbers(msg)})
+	res, err := t.vm.Run(t.program, transformEnv{Msg: msg})
 	if err != nil {
 		return nil, firstLine(err)
 	}
@@ -84,6 +79,20 @@ func (t *transform) eval(value []byte) (out []byte, err error) {
 		return nil, fmt.Errorf("result: %w", err)
 	}
 	return out, nil
+}
+
+// decodeMsg decodes a record's value into msg, as transforms and routers see it.
+func decodeMsg(value []byte) (any, error) {
+	d := json.NewDecoder(bytes.NewReader(value))
+	d.UseNumber()
+	var msg any
+	if err := d.Decode(&msg); err != nil {
+		return nil, errInvalidJSON
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return nil, errInvalidJSON // trailing data after the value
+	}
+	return numbers(msg), nil
 }
 
 // numbers turns every JSON number in v into an int when it is one (so an id above

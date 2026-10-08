@@ -289,3 +289,55 @@ func TestConsumerTransform(t *testing.T) {
 		t.Fatalf("the consumer still counts and tails every record, and counts the transform's failure as its own; got %+v", s)
 	}
 }
+
+func TestConsumerRouter(t *testing.T) {
+	var forwarded []string
+	tr, err := newTransform(`msg.qty > 0 ? {id: msg.id, total: msg.qty * msg.price} : nil`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := newRouter([]Route{{When: "msg.total > 100", Topic: "big"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &consumer{
+		spec:      NodeSpec{Topic: "orders"},
+		tail:      &tail{},
+		counts:    &counters{},
+		transform: tr,
+		router:    rt,
+		produce: func(_ context.Context, r *kgo.Record) error {
+			forwarded = append(forwarded, r.Topic+":"+string(r.Key)+"="+string(r.Value))
+			return nil
+		},
+	}
+	for _, v := range []string{`{"id":1,"qty":2,"price":100}`, `{"id":2,"qty":1,"price":5}`, `{"id":3,"qty":1,"price":"x"}`, `{"id":4,"qty":0}`} {
+		if !c.handle(context.Background(), &kgo.Record{Topic: "orders", Key: []byte("k"), Value: []byte(v)}) {
+			t.Fatalf("%s: a router outcome never holds back the commit", v)
+		}
+	}
+	// The first is routed transformed and with its key; the second matches no rule
+	// and has no default: dropped. The third fails in the transform (1 * "x") and
+	// the fourth is dropped by it (nil): neither reaches the router.
+	if len(forwarded) != 1 || forwarded[0] != `big:k={"id":1,"total":200}` {
+		t.Fatalf(`want only big:k={"id":1,"total":200} forwarded, got %q`, forwarded)
+	}
+	if r := rt.read(); r.Total != 2 || r.Unmatched != 1 || r.Errors != 0 || r.Branches[0] != 1 {
+		t.Fatalf("the router got 2 records: 1 routed by rule 1, 1 unmatched; got %+v", r)
+	}
+
+	failing, err := newRouter([]Route{{When: "msg.total > 100", Topic: "big"}}, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.transform, c.router, forwarded = nil, failing, nil
+	if !c.handle(context.Background(), &kgo.Record{Topic: "orders", Value: []byte(`{"id":4}`)}) {
+		t.Fatal("a router error never holds back the commit")
+	}
+	if len(forwarded) != 0 {
+		t.Fatalf("a failing rule routes the record nowhere, not to the default; got %q", forwarded)
+	}
+	if s := c.counts.read(); !strings.HasPrefix(s.LastError, "router: rule 1: ") {
+		t.Fatalf("the consumer counts the router's failure as its own; got %+v", s)
+	}
+}
