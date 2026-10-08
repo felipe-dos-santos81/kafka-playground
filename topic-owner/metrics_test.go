@@ -5,8 +5,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/twmb/franz-go/pkg/kadm"
 )
 
 func testCollector(s topicState, err error, reconciled bool) *collector {
@@ -112,6 +114,78 @@ topic_owner_kafka_up{topic="orders-1__retry"} 1
 topic_owner_reconciled{topic="orders-1__retry"} 0
 `
 	if err := testutil.CollectAndCompare(c, strings.NewReader(want), "topic_owner_kafka_up", "topic_owner_reconciled"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The DLQ's oldest record per partition is fetched once, and again only when
+// the partition's start offset moves; an empty partition has none.
+func TestOldestTimes(t *testing.T) {
+	t0 := time.Date(2026, 10, 8, 14, 0, 0, 0, time.UTC)
+	fetches := 0
+	listed := kadm.ListedOffsets{"orders-1__dlq": {
+		0: {Topic: "orders-1__dlq", Partition: 0, Offset: 0, Timestamp: t0.UnixMilli()},
+		1: {Topic: "orders-1__dlq", Partition: 1, Offset: 0, Timestamp: -1}, // empty: the broker has no timestamp
+	}}
+	o := &oldestTimes{known: map[int32]oldestAt{}, fetch: func(context.Context) (kadm.ListedOffsets, error) {
+		fetches++
+		return listed, nil
+	}}
+	parts := []partitionState{{partition: 0, start: 0, end: 2}, {partition: 1, start: 0, end: 0}}
+	for range 2 {
+		times, err := o.get(context.Background(), "orders-1__dlq", parts)
+		if err != nil || len(times) != 1 || !times[0].Equal(t0) {
+			t.Fatalf("times %v, err %v; want partition 0 at %v only", times, err, t0)
+		}
+	}
+	if fetches != 1 {
+		t.Fatalf("%d fetches for an unchanged start, want 1", fetches)
+	}
+
+	// delete-records moved partition 0's start to 1: fetch again, the new oldest.
+	listed["orders-1__dlq"][0] = kadm.ListedOffset{Topic: "orders-1__dlq", Partition: 0, Offset: 1, Timestamp: t0.Add(time.Minute).UnixMilli()}
+	parts[0].start = 1
+	times, err := o.get(context.Background(), "orders-1__dlq", parts)
+	if err != nil || fetches != 2 || !times[0].Equal(t0.Add(time.Minute)) {
+		t.Fatalf("times %v, err %v, %d fetches; want the record at offset 1, fetched once more", times, err, fetches)
+	}
+
+	// Everything replayed and deleted: no oldest record, no fetch.
+	parts[0].start = 2
+	if times, _ := o.get(context.Background(), "orders-1__dlq", parts); len(times) != 0 || fetches != 2 {
+		t.Fatalf("times %v, %d fetches; want none, no fetch", times, fetches)
+	}
+
+	// A failed fetch reports its error and serves nothing stale.
+	parts[0].end = 3
+	o.fetch = func(context.Context) (kadm.ListedOffsets, error) { return nil, errors.New("unable to dial") }
+	if times, err := o.get(context.Background(), "orders-1__dlq", parts); err == nil || len(times) != 0 {
+		t.Fatalf("times %v, err %v", times, err)
+	}
+}
+
+// The DLQ role's collector serves the oldest record's timestamp in seconds.
+func TestCollectorOldest(t *testing.T) {
+	t0 := time.Date(2026, 10, 8, 14, 0, 0, 500_000_000, time.UTC)
+	c := &collector{
+		cfg:        Config{Base: "orders", Instance: 1, Role: RoleDLQ},
+		reconciled: func() bool { return true },
+		read: func(context.Context) (topicState, error) {
+			return topicState{partitions: []partitionState{{partition: 0, replicas: 1, isr: 1, start: 4, end: 6, size: 100}}}, nil
+		},
+		oldest: &oldestTimes{known: map[int32]oldestAt{}, fetch: func(context.Context) (kadm.ListedOffsets, error) {
+			return kadm.ListedOffsets{"orders-1__dlq": {0: {Topic: "orders-1__dlq", Partition: 0, Offset: 4, Timestamp: t0.UnixMilli()}}}, nil
+		}},
+	}
+	want := `
+# HELP topic_owner_oldest_message_timestamp_seconds Timestamp of the partition's oldest record (at its log start), for non-empty partitions. DLQ role only.
+# TYPE topic_owner_oldest_message_timestamp_seconds gauge
+topic_owner_oldest_message_timestamp_seconds{partition="0",topic="orders-1__dlq"} 1.7914680005e+09
+# HELP topic_owner_kafka_up 1 when this scrape's admin calls to Kafka succeeded.
+# TYPE topic_owner_kafka_up gauge
+topic_owner_kafka_up{topic="orders-1__dlq"} 1
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want), "topic_owner_oldest_message_timestamp_seconds", "topic_owner_kafka_up"); err != nil {
 		t.Fatal(err)
 	}
 }

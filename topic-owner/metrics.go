@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -16,7 +17,7 @@ import (
 const scrapeDeadline = 3 * time.Second
 
 // Series that mean exactly what kafka-exporter's mean keep its names and labels,
-// so its dashboards work on them; the rest are topic_owner_*.
+// so queries written for kafka-exporter work on them; the rest are topic_owner_*.
 var (
 	descInfo            = prometheus.NewDesc("topic_owner_info", "The topic this container owns, with its base, instance and role.", []string{"topic", "base", "topic_instance", "role"}, nil)
 	descReconciled      = prometheus.NewDesc("topic_owner_reconciled", "1 when the last reconcile left the topic in its desired state.", []string{"topic"}, nil)
@@ -28,6 +29,7 @@ var (
 	descLogSize         = prometheus.NewDesc("topic_owner_partition_log_size_bytes", "Size of the partition's log segments, summed over replicas.", []string{"topic", "partition"}, nil)
 	descGroupOffset     = prometheus.NewDesc("kafka_consumergroup_current_offset", "Offset the consumer group committed on the partition.", []string{"consumergroup", "topic", "partition"}, nil)
 	descGroupLag        = prometheus.NewDesc("kafka_consumergroup_lag", "Log end offset minus the group's committed offset, for committed partitions.", []string{"consumergroup", "topic", "partition"}, nil)
+	descOldest          = prometheus.NewDesc("topic_owner_oldest_message_timestamp_seconds", "Timestamp of the partition's oldest record (at its log start), for non-empty partitions. DLQ role only.", []string{"topic", "partition"}, nil)
 )
 
 // partitionState is one partition as a scrape reads it.
@@ -49,16 +51,23 @@ type collector struct {
 	cfg        Config
 	reconciled func() bool                               // whether the last reconcile left the topic in its desired state
 	read       func(context.Context) (topicState, error) // the topic and its groups, as the broker has them
+	oldest     *oldestTimes                              // the DLQ role's oldest record per partition; nil for the others
 }
 
 func newCollector(cfg Config, adm *kadm.Client, reconciled func() bool) *collector {
-	return &collector{cfg: cfg, reconciled: reconciled, read: func(ctx context.Context) (topicState, error) {
+	c := &collector{cfg: cfg, reconciled: reconciled, read: func(ctx context.Context) (topicState, error) {
 		return readTopic(ctx, adm, cfg.Topic())
 	}}
+	if cfg.Role == RoleDLQ {
+		c.oldest = &oldestTimes{known: map[int32]oldestAt{}, fetch: func(ctx context.Context) (kadm.ListedOffsets, error) {
+			return adm.ListOffsetsAfterMilli(ctx, 0, cfg.Topic()) // the first record with a timestamp ≥ 0: the oldest
+		}}
+	}
+	return c
 }
 
 func (c *collector) Describe(ch chan<- *prometheus.Desc) {
-	for _, d := range []*prometheus.Desc{descInfo, descReconciled, descKafkaUp, descPartitions, descUnderReplicated, descEndOffset, descStartOffset, descLogSize, descGroupOffset, descGroupLag} {
+	for _, d := range []*prometheus.Desc{descInfo, descReconciled, descKafkaUp, descPartitions, descUnderReplicated, descEndOffset, descStartOffset, descLogSize, descGroupOffset, descGroupLag, descOldest} {
 		ch <- d
 	}
 }
@@ -73,6 +82,13 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	ctx, cancel := context.WithTimeout(context.Background(), scrapeDeadline)
 	defer cancel()
 	s, err := c.read(ctx)
+	if c.oldest != nil {
+		times, oerr := c.oldest.get(ctx, topic, s.partitions)
+		for p, t := range times {
+			gauge(descOldest, float64(t.UnixMilli())/1000, topic, strconv.Itoa(int(p)))
+		}
+		err = errors.Join(err, oerr)
+	}
 	gauge(descKafkaUp, boolValue(err == nil), topic)
 	if len(s.partitions) > 0 {
 		gauge(descPartitions, float64(len(s.partitions)), topic)
@@ -101,6 +117,50 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 			}
 		}
 	}
+}
+
+// oldestTimes keeps, per partition, the time of its oldest record and the
+// start offset that record was at, so a scrape fetches again only when a
+// start offset moved (retention, delete-records, a first record).
+type oldestTimes struct {
+	fetch func(context.Context) (kadm.ListedOffsets, error) // the oldest record's offset and timestamp, per partition
+
+	mu    sync.Mutex
+	known map[int32]oldestAt
+}
+
+type oldestAt struct {
+	start int64
+	at    time.Time
+}
+
+// get is the oldest record's time of each non-empty partition in parts.
+func (o *oldestTimes) get(ctx context.Context, topic string, parts []partitionState) (map[int32]time.Time, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	nonEmpty := func(p partitionState) bool { return p.start >= 0 && p.end > p.start }
+	var err error
+	stale := func(p partitionState) bool {
+		k, ok := o.known[p.partition]
+		return nonEmpty(p) && (!ok || k.start != p.start)
+	}
+	if slices.ContainsFunc(parts, stale) {
+		var listed kadm.ListedOffsets
+		if listed, err = o.fetch(ctx); err == nil {
+			for _, p := range parts {
+				if l, ok := listed.Lookup(topic, p.partition); ok && l.Err == nil && l.Timestamp >= 0 && nonEmpty(p) {
+					o.known[p.partition] = oldestAt{start: p.start, at: time.UnixMilli(l.Timestamp)}
+				}
+			}
+		}
+	}
+	times := map[int32]time.Time{}
+	for _, p := range parts {
+		if k, ok := o.known[p.partition]; ok && nonEmpty(p) && k.start == p.start {
+			times[p.partition] = k.at
+		}
+	}
+	return times, err
 }
 
 func boolValue(b bool) float64 {
