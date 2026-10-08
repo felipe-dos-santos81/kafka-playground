@@ -722,11 +722,15 @@ quoted because the verify target greps the alert name:
 | `TopicConsumerLagHigh` | `sum by (consumergroup, topic) (kafka_consumergroup_lag{topic!~".+__(retry\|dlq)"}) > 100` | 2m | a consumer of a main topic falls behind |
 | `TopicDLQGrowing` | `sum by (topic) (increase(kafka_topic_partition_current_offset{topic=~".+__dlq"}[10m])) > 0` | 0s | any newly parked record is news in a playground |
 | `TopicRetryWaiting` | `sum by (consumergroup, topic) (kafka_consumergroup_lag{topic=~".+__retry"}) > 0` | 5m | records sit in a retry topic longer than any sensible backoff: the worker is down, or a Studio loop stopped (3.5) |
-| `TopicOwnerUnhealthy` | `up{job="topic-owners"} == 0 or topic_owner_reconciled == 0` | 1m | a container is down or its topic drifted beyond repair |
+| `TopicOwnerUnhealthy` | `up{job="topic-owners"} == 0 or topic_owner_reconciled == 0` | 1m | a running owner fails its scrapes, or its topic is not in its desired state |
 
 `TopicDLQGrowing` keeps firing for 10 minutes after the last parked record,
 also after its topic is deleted: `increase()` still sees the samples inside
 its window (M3). `make verify` leaves it firing for `owner-verify-1__dlq`.
+
+`up == 0` covers only a running owner that fails its scrapes: `docker_sd` lists
+running containers, so a stopped owner drops out of discovery and its `up`
+goes stale (M3). An alert for a missing owner is not built.
 
 No Alertmanager. On a laptop there is nothing to route to, and the alerts page
 (http://localhost:9090/alerts) plus a dashboard panel on `ALERTS` show the

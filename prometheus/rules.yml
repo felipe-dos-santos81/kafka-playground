@@ -13,6 +13,6 @@ groups:
       - alert: TopicRetryWaiting # the worker is down, or a Studio retry loop stopped
         expr: sum by (consumergroup, topic) (kafka_consumergroup_lag{topic=~".+__retry"}) > 0
         for: 5m
-      - alert: TopicOwnerUnhealthy # a container is down, or its topic drifted beyond repair
+      - alert: TopicOwnerUnhealthy # a running owner fails its scrapes, or its topic is not in its desired state
         expr: up{job="topic-owners"} == 0 or topic_owner_reconciled == 0
         for: 1m

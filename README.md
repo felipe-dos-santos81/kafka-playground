@@ -246,7 +246,7 @@ Prometheus evaluates the alert rules in `prometheus/rules.yml` every 5 s. Firing
 | `TopicConsumerLagHigh` | a group's lag on a main topic stays above 100 for 2 minutes |
 | `TopicDLQGrowing` | a record was parked in a DLQ in the last 10 minutes; it keeps firing for 10 minutes after the last one, also after the topic is gone (`make verify` leaves one for `owner-verify-1__dlq`) |
 | `TopicRetryWaiting` | records wait in a retry topic for 5 minutes: the worker is down, or a Studio retry loop stopped |
-| `TopicOwnerUnhealthy` | for 1 minute, a topic owner is not scraped, or its topic is not in its desired state |
+| `TopicOwnerUnhealthy` | for 1 minute, a running owner's scrapes fail, or its topic is not in its desired state; a stopped or crashed owner drops out of discovery and raises no alert (`make owners` shows it missing, and its panels go empty) |
 
 Bytes in and out per topic are not exported. Only the broker's JMX has them, and the JMX agent would need a jar and a change to the `kafka` service.
 

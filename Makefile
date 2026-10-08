@@ -249,6 +249,7 @@ verify-studio: up ## Check the studio API end to end: every node type, retry and
 
 # Runs owners of its own base, owner-verify, as one-offs of the orders-1 service
 # (same image, network and healthcheck; labels and environment overridden).
+# Step 6 sees the alert of a run within the last 10 minutes: a rerun without `make down` passes it on the old one.
 verify-topics: up ## Check the topic owners end to end: refusals, reconcile, metrics, the redelivery worker and the DLQ, alerts and Grafana; cleans up its containers, topics and group
 	@trap 'docker rm -f owner-verify-refused owner-verify-1 owner-verify-1__retry owner-verify-1__dlq >/dev/null 2>&1; $(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --delete --topic "owner-verify-1(__retry|__dlq)?" >/dev/null 2>&1; $(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --delete --group owner-verify-1__redelivery >/dev/null 2>&1' EXIT; \
 	own() { n=$$1 r=$$2 p=$$3; shift 3; docker rm -f "$$n" >/dev/null 2>&1; \
@@ -318,7 +319,7 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 	echo "topics worker: a redelivered, b and d dead-lettered, c left to its Studio loop, 2 parked"; \
 	out=$$($(COMPOSE) exec -T prometheus promtool check config /etc/prometheus/prometheus.yml 2>&1) || { echo "TOPICS FAILED: promtool check config: $$out"; exit 1; }; \
 	for i in $$(seq 30); do \
-		rules=$$(curl -sS $(PROMETHEUS_URL)/api/v1/rules?type=alert); \
+		rules=$$(curl -sS "$(PROMETHEUS_URL)/api/v1/rules?type=alert"); \
 		[ "$$(echo "$$rules" | grep -o '"health":"ok"' | wc -l | tr -d ' ')" = 4 ] && \
 			curl -sS $(PROMETHEUS_URL)/api/v1/alerts | grep -q '"alertname":"TopicDLQGrowing","topic":"owner-verify-1__dlq"},"annotations":{[^}]*},"state":"firing"' && break; \
 		[ "$$i" = 30 ] && { echo "TOPICS FAILED: want 4 healthy alert rules and TopicDLQGrowing firing for owner-verify-1__dlq: rules $$rules alerts $$(curl -sS $(PROMETHEUS_URL)/api/v1/alerts)"; exit 1; }; sleep 1; \
