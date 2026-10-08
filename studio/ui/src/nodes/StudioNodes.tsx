@@ -20,6 +20,9 @@ function runtimeLine(type: NodeType, rt: NodeRuntime): string {
   const parts = answered ? [`${rt.total ?? 0} msgs`, `${(rt.rate ?? 0).toFixed(1)}/s`] : []
   if (rt.errors) parts.push(`${rt.errors} errors`)
   if (rt.unmatched) parts.push(`${rt.unmatched} unmatched`)
+  if (rt.retried) parts.push(`${rt.retried} retried`)
+  if (rt.waiting !== undefined) parts.push(`${rt.waiting} waiting`)
+  if (rt.dlq) parts.push(`${rt.dlq} dlq`)
   if (rt.lag !== undefined) parts.push(`lag ${rt.lag}`)
   for (const c of containersOf(rt)) {
     const held = Object.values(c.assigned ?? {}).flat() // partitions this container's client holds

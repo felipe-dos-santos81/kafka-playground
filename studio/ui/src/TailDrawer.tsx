@@ -121,6 +121,11 @@ export default function TailDrawer({ flowId, node, instance, instances, onInstan
               </code>
               {e.key !== '' && <code>key={e.key}</code>}
               <code>{e.value}</code>
+              {Object.entries(e.headers ?? {}).map(([k, v]) => (
+                <code key={k}>
+                  {k}: {v}
+                </code>
+              ))}
             </li>
           ))}
         </ol>

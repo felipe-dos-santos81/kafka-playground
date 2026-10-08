@@ -21,6 +21,9 @@ export type NodeRuntime = {
   warning?: string
   branches?: number[] // routers: records per rule, then the default's
   unmatched?: number // routers: records dropped, no rule matched and no default
+  retried?: number // consumers: records sent to the retry topic
+  dlq?: number // consumers: records sent to the DLQ
+  waiting?: number // consumers: records waiting in the retry topic, once its group has committed
   instances?: NodeRuntime[]
 }
 
@@ -89,7 +92,15 @@ export type RewindTo = 'earliest' | 'latest'
 export type Rewound = { group: string; topic: string; partitions: number; to: RewindTo }
 
 // One record of a node's tail (Go: tailEntry in node.go).
-export type TailEntry = { seq: number; time: string; partition: number; offset: number; key: string; value: string }
+export type TailEntry = {
+  seq: number
+  time: string
+  partition: number
+  offset: number
+  key: string
+  value: string
+  headers?: Record<string, string> // studio-* on a record a consumer sent on after a failure
+}
 type Problem = { node?: string; edge?: string; message: string }
 
 // No constructor parameter properties: the Vite template enables erasableSyntaxOnly.

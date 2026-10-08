@@ -1,4 +1,5 @@
 import { DEFAULT_INTERVAL_MS } from './flow/schema'
+import OnFailure from './OnFailure'
 import RewindGroup from './RewindGroup'
 import RouterRules from './RouterRules'
 import type { StudioNode } from './nodes/types'
@@ -128,6 +129,7 @@ export default function Inspector({ node, flowId, running, dirty, onChange }: Pr
               <p className="hint">Each value is POSTed as JSON within 5 s; any answer but 2xx counts as an error.</p>
             </>
           )}
+          <OnFailure id={node.id} data={node.data} set={set} />
           <p className="hint">Wire it to a topic to forward every record there with the same key, through a Transform to reshape or drop records first, or through a Router to pick each record's topic.</p>
           {flowId && (
             // Keyed: a result belongs to one node of one flow.

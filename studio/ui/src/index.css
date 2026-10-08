@@ -48,4 +48,6 @@ html, body, #root { margin: 0; height: 100%; }
 .canvas.paused .node-runtime { opacity: 0.4; }
 .inspector .buttons { display: flex; gap: 6px; }
 .inspector fieldset.rule { margin: 8px 0; padding: 4px 8px 8px; border: 1px solid #ddd; border-radius: 4px; }
+.inspector fieldset.on-failure { margin: 12px 0 8px; padding: 4px 8px 8px; border: 1px solid #ddd; border-radius: 4px; }
+.inspector input[type='checkbox'] { width: auto; }
 .inspector fieldset.rule .buttons { margin-top: 6px; }
