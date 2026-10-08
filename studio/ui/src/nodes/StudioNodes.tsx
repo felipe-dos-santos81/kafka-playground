@@ -1,6 +1,7 @@
 import { createContext, useContext, type ReactNode } from 'react'
 import { Handle, Position, useNodesData, type NodeProps } from '@xyflow/react'
 import { containersOf, type NodeRuntime } from '../flow/api'
+import { topicName } from '../flow/router'
 import { DEFAULT_INTERVAL_MS, hasInput, hasOutput, type NodeType } from '../flow/schema'
 import type { ConsumerNode, ProducerNode, RouterNode, TopicNode, TransformNode } from './types'
 
@@ -82,7 +83,7 @@ export const nodeTypes = {
     const n = data.rules.length
     return (
       <Shell id={id} type="router" selected={selected}>
-        {n} rule{n === 1 ? '' : 's'} · {data.default ? `default ${fallback?.data.name || data.default}` : 'no default'}
+        {n} rule{n === 1 ? '' : 's'} · {data.default ? `default ${topicName(data.default, fallback)}` : 'no default'}
       </Shell>
     )
   },

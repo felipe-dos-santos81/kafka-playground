@@ -27,6 +27,10 @@ export function withRule(data: RouterData, topic: string): RouterData {
 export function wiredTopics(id: string, nodes: StudioNode[], edges: Edge[]): { id: string; name: string }[] {
   return edges.flatMap((e) => {
     const t = e.source === id ? nodes.find((n) => n.id === e.target) : undefined
-    return t?.type === 'topic' ? [{ id: t.id, name: t.data.name || t.id }] : []
+    return t?.type === 'topic' ? [{ id: t.id, name: topicName(t.id, t) }] : []
   })
 }
+
+// A topic as a router shows it: its name, or its node id while it has none (or
+// is gone).
+export const topicName = (id: string, topic?: { data: { name: string } } | null) => topic?.data.name || id

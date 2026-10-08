@@ -82,6 +82,7 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 	manual='{"source":"manual","key":"","value":"{}"}'; \
 	flow=$$(flow3 verify "$$manual" studio-verify 1 '{"group":"studio-verify","auto_offset_reset":"earliest","sink":{"kind":"log"}}'); \
 	create() { out=$$(curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows -H 'Content-Type: application/json' --data "$$1") || { echo "STUDIO FAILED: create $$2: $$out" >&2; return 1; }; echo "$$out" | sed 's/^{"id":"\([0-9a-f]\{8\}\)".*/\1/'; }; \
+	refuse_then_deploy() { fid=$$(create "$$2" "$$3") || return 1; flows="$$flows $$fid"; code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows/$$fid/deploy); [ "$$code" = 422 ] || { echo "STUDIO FAILED: $$3 deployed with an expression that does not compile ($$code)"; return 1; }; curl -sS --fail-with-body -X PUT $(STUDIO_URL)/api/flows/$$fid -H 'Content-Type: application/json' --data "$$1" >/dev/null || { echo "STUDIO FAILED: save $$3"; return 1; }; curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$fid/deploy >/dev/null || { echo "STUDIO FAILED: deploy $$3"; return 1; }; }; \
 	flows=; trap 'for f in $$flows; do curl -sS -X DELETE $(STUDIO_URL)/api/flows/$$f >/dev/null 2>&1; done; docker rm -f studio-$$id-consumer-1 >/dev/null 2>&1; $(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --delete --topic "studio-verify|studio-verify-(timer|a|a-out|b|instances|t-in|t-out|r-in|r-big|r-other)" >/dev/null 2>&1' EXIT; \
 	id=$$(create "$$flow" "the verify flow") || exit 1; flows="$$id"; \
 	nodes() { docker ps -aq -f label=studio.flow=$$id | wc -l | tr -d ' '; }; \
@@ -174,11 +175,7 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 		',{"id":"transform-1","type":"transform","position":{"x":600,"y":0},"data":{"expr":"{id: msg.id, total: msg.qty * msg.price}"}},{"id":"topic-2","type":"topic","position":{"x":800,"y":0},"data":{"name":"studio-verify-t-out","partitions":1,"replication_factor":1}},{"id":"consumer-2","type":"consumer","position":{"x":1000,"y":0},"data":{"group":"studio-verify-t-out","auto_offset_reset":"earliest","sink":{"kind":"log"}}}' \
 		',{"id":"e3","source":"consumer-1","target":"transform-1"},{"id":"e4","source":"transform-1","target":"topic-2"},{"id":"e5","source":"topic-2","target":"consumer-2"}'); \
 	broken=$$(echo "$$x" | sed 's/msg\.qty \* msg\.price/msg./'); \
-	xid=$$(create "$$broken" "the transform flow") || exit 1; flows="$$flows $$xid"; \
-	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows/$$xid/deploy); \
-	[ "$$code" = 422 ] || { echo "STUDIO FAILED: a transform that does not compile deployed ($$code)"; exit 1; }; \
-	curl -sS --fail-with-body -X PUT $(STUDIO_URL)/api/flows/$$xid -H 'Content-Type: application/json' --data "$$x" >/dev/null || { echo "STUDIO FAILED: save the transform flow"; exit 1; }; \
-	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$xid/deploy >/dev/null || { echo "STUDIO FAILED: deploy the transform flow"; exit 1; }; \
+	refuse_then_deploy "$$x" "$$broken" "the transform flow" || exit 1; xid=$$fid; \
 	rec="$$(date +%s)"; \
 	for v in "{\"id\":\"t1-$$rec\",\"qty\":2,\"price\":3}" "{\"id\":\"t2-$$rec\"}"; do \
 		curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$xid/nodes/producer-1/send --data "$$v" >/dev/null || { echo "STUDIO FAILED: send to the transform flow"; exit 1; }; \
@@ -198,11 +195,7 @@ verify-studio: up ## Check the studio end to end: save rules, deploy, send, tail
 		',{"id":"router-1","type":"router","position":{"x":600,"y":0},"data":{"rules":[{"when":"msg.total > 100","to":"topic-2"}],"default":"topic-3"}},{"id":"topic-2","type":"topic","position":{"x":800,"y":-100},"data":{"name":"studio-verify-r-big","partitions":1,"replication_factor":1}},{"id":"topic-3","type":"topic","position":{"x":800,"y":100},"data":{"name":"studio-verify-r-other","partitions":1,"replication_factor":1}},{"id":"consumer-2","type":"consumer","position":{"x":1000,"y":-100},"data":{"group":"studio-verify-r-big","auto_offset_reset":"earliest","sink":{"kind":"log"}}},{"id":"consumer-3","type":"consumer","position":{"x":1000,"y":100},"data":{"group":"studio-verify-r-other","auto_offset_reset":"earliest","sink":{"kind":"log"}}}' \
 		',{"id":"e3","source":"consumer-1","target":"router-1"},{"id":"e4","source":"router-1","target":"topic-2"},{"id":"e5","source":"router-1","target":"topic-3"},{"id":"e6","source":"topic-2","target":"consumer-2"},{"id":"e7","source":"topic-3","target":"consumer-3"}'); \
 	broken=$$(echo "$$r" | sed 's/msg\.total > 100/msg./'); \
-	rid=$$(create "$$broken" "the router flow") || exit 1; flows="$$flows $$rid"; \
-	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows/$$rid/deploy); \
-	[ "$$code" = 422 ] || { echo "STUDIO FAILED: a router rule that does not compile deployed ($$code)"; exit 1; }; \
-	curl -sS --fail-with-body -X PUT $(STUDIO_URL)/api/flows/$$rid -H 'Content-Type: application/json' --data "$$r" >/dev/null || { echo "STUDIO FAILED: save the router flow"; exit 1; }; \
-	curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$rid/deploy >/dev/null || { echo "STUDIO FAILED: deploy the router flow"; exit 1; }; \
+	refuse_then_deploy "$$r" "$$broken" "the router flow" || exit 1; rid=$$fid; \
 	rec="$$(date +%s)"; \
 	for v in "{\"id\":\"r1-$$rec\",\"total\":150}" "{\"id\":\"r2-$$rec\",\"total\":5}"; do \
 		curl -sS --fail-with-body -X POST $(STUDIO_URL)/api/flows/$$rid/nodes/producer-1/send --data "$$v" >/dev/null || { echo "STUDIO FAILED: send to the router flow"; exit 1; }; \
