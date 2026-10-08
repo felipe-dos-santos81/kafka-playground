@@ -18,7 +18,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -43,12 +45,13 @@ var errInvalidJSON = errors.New("value is not valid JSON")
 
 // tailEntry is one record as the tail drawer shows it.
 type tailEntry struct {
-	Seq       int64  `json:"seq"`
-	Time      string `json:"time"`
-	Partition int32  `json:"partition"`
-	Offset    int64  `json:"offset"`
-	Key       string `json:"key"`
-	Value     string `json:"value"`
+	Seq       int64             `json:"seq"`
+	Time      string            `json:"time"`
+	Partition int32             `json:"partition"`
+	Offset    int64             `json:"offset"`
+	Key       string            `json:"key"`
+	Value     string            `json:"value"`
+	Headers   map[string]string `json:"headers,omitempty"` // a record a consumer sent on after a failure carries studio-* headers
 }
 
 // tail keeps the last tailSize records; seq numbers every record ever pushed.
@@ -63,6 +66,13 @@ func (t *tail) push(r *kgo.Record) {
 	if len(v) > tailValueMax {
 		v = v[:tailValueMax]
 	}
+	var hs map[string]string
+	if len(r.Headers) > 0 {
+		hs = map[string]string{}
+		for _, h := range r.Headers {
+			hs[h.Key] = string(h.Value)
+		}
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.seq++
@@ -73,6 +83,7 @@ func (t *tail) push(r *kgo.Record) {
 		Offset:    r.Offset,
 		Key:       string(r.Key),
 		Value:     string(v),
+		Headers:   hs,
 	})
 	if len(t.entries) > tailSize {
 		t.entries = t.entries[len(t.entries)-tailSize:]
@@ -103,9 +114,11 @@ func (t *tail) last() int64 {
 type nodeStats struct {
 	Boot    string     `json:"boot"` // random per process: a restarted container starts its counters and tail over
 	tally              // records produced (producers) or fetched (consumers), the failures, the last one
-	TailSeq int64      `json:"tailSeq"`         // seq of the newest tail record; the drawer fetches when it moves
-	Step    *stepTally `json:"step,omitempty"`  // a consumer's transform, when it runs one
-	Route   *stepTally `json:"route,omitempty"` // a consumer's router, when it runs one
+	TailSeq int64      `json:"tailSeq"`           // seq of the newest tail record; the drawer fetches when it moves
+	Step    *stepTally `json:"step,omitempty"`    // a consumer's transform, when it runs one
+	Route   *stepTally `json:"route,omitempty"`   // a consumer's router, when it runs one
+	Retried int64      `json:"retried,omitempty"` // a consumer's records sent to its retry topic
+	DLQ     int64      `json:"dlq,omitempty"`     // a consumer's records sent to its DLQ
 }
 
 // tally is what counters read: every record counted, the ones that failed, and
@@ -246,11 +259,14 @@ func (p *producer) run(ctx context.Context, every time.Duration) {
 }
 
 // consumer takes each fetched record of one consumer node through the tail, the
-// http sink (when set), the transform (when set) and the forward (when set). A
-// failed sink, transform, router or forward is counted and logged, not retried:
-// autocommit still moves past the record. The sink and the forward run under
-// context.WithoutCancel: a stop (SIGTERM) must not fail them with "context
-// canceled" before Close commits past this record.
+// http sink (when set), the transform (when set) and the forward (when set).
+// Without a DLQ, a failed sink, transform, router or forward is counted and
+// logged, not retried: autocommit still moves past the record. With one, the
+// first failure ends the record's path and sendOn sends it to the retry topic or
+// the DLQ. The sink and the writes run under context.WithoutCancel: a stop
+// (SIGTERM) must not fail them with "context canceled" before Close commits past
+// this record. The main loop and the retry loop share one consumer; mu lets one
+// record through at a time, as the transform's and the router's VMs need.
 type consumer struct {
 	spec      NodeSpec
 	tail      *tail
@@ -258,30 +274,50 @@ type consumer struct {
 	transform *transform                                               // nil without one
 	router    *router                                                  // nil without one
 	post      func(ctx context.Context, url string, body []byte) error // the http sink
-	produce   func(context.Context, *kgo.Record) error                 // the forward
+	produce   func(context.Context, *kgo.Record) error                 // the forward, and the sends to the retry topic and the DLQ
+	retried   atomic.Int64                                             // records sent to the retry topic
+	dead      atomic.Int64                                             // records sent to the DLQ
+	mu        sync.Mutex
 }
 
-// handle reports whether r may be committed: false only when the forward failed
-// because the client was closed (a stop that outlasted its grace), so the record is
-// redelivered rather than lost. Any other failure is counted and logged, and r is
-// still committed.
+// handle reports whether r may be committed: false only when a write failed
+// because the client was closed (a stop that outlasted its grace), so the record
+// is redelivered rather than lost. Any other failure is counted and logged, and r
+// is still committed. A record from the retry topic is tailed but not counted in
+// total again.
 func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	work := context.WithoutCancel(ctx)
-	c.counts.ok()
+	if !c.fromRetry(r) {
+		c.counts.ok()
+	}
 	c.tail.push(r)
 	log.Printf("%s[%d]@%d key=%s %s", r.Topic, r.Partition, r.Offset, r.Key, r.Value)
+	// failed counts and logs one step's failure. With a DLQ it sends r on and ends
+	// r's path (end); commit then says whether r may be committed.
+	failed := func(err error, transient bool) (end, commit bool) {
+		c.counts.fail(err)
+		log.Print(err)
+		if c.spec.DLQ == "" {
+			return false, true
+		}
+		return true, c.sendOn(work, r, err, transient)
+	}
 	if c.spec.SinkURL != "" {
 		if err := c.post(work, c.spec.SinkURL, r.Value); err != nil {
-			c.counts.fail(fmt.Errorf("sink: %w", err))
-			log.Printf("sink: %v", err)
+			if end, commit := failed(fmt.Errorf("sink: %w", err), true); end {
+				return commit
+			}
 		}
 	}
 	value := r.Value
 	if c.transform != nil {
 		out, err := c.transform.run(value)
 		if err != nil {
-			c.counts.fail(fmt.Errorf("transform: %w", err))
-			log.Printf("transform: %v", err)
+			if end, commit := failed(fmt.Errorf("transform: %w", err), false); end {
+				return commit
+			}
 		}
 		if out == nil {
 			return true // failed or dropped (nil): nothing to forward
@@ -292,8 +328,9 @@ func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
 	if c.router != nil {
 		topic, err := c.router.route(value)
 		if err != nil {
-			c.counts.fail(fmt.Errorf("router: %w", err))
-			log.Printf("router: %v", err)
+			if end, commit := failed(fmt.Errorf("router: %w", err), false); end {
+				return commit
+			}
 		}
 		forward = topic // "": failed or unmatched, nothing to forward
 	}
@@ -302,12 +339,92 @@ func (c *consumer) handle(ctx context.Context, r *kgo.Record) bool {
 		err := c.produce(pctx, &kgo.Record{Topic: forward, Key: r.Key, Value: value})
 		cancel()
 		if err != nil {
-			c.counts.fail(fmt.Errorf("forward: %w", err))
-			log.Printf("forward to %s: %v", forward, err)
-			return !errors.Is(err, kgo.ErrClientClosed)
+			err = fmt.Errorf("forward: %w", err)
+			if errors.Is(err, kgo.ErrClientClosed) {
+				c.counts.fail(err)
+				log.Print(err)
+				return false
+			}
+			if end, commit := failed(err, true); end {
+				return commit
+			}
 		}
 	}
 	return true
+}
+
+// fromRetry says whether r was read from c's retry topic, not from its input topic.
+func (c *consumer) fromRetry(r *kgo.Record) bool {
+	return c.spec.Retry != nil && r.Topic == c.spec.Retry.Topic
+}
+
+// sendOn sends r, which just failed with err, to the retry topic when the failure
+// may pass later (transient), retry is on and tries remain, else to the DLQ. What
+// it sends is r as read (key and value, not the transformed value), so a retry
+// runs r's whole path again, with failureHeaders. It reports whether r may be
+// committed: a failed send is counted and logged and r still commits, unless the
+// client was closed (Stop), which leaves r to be redelivered.
+func (c *consumer) sendOn(ctx context.Context, r *kgo.Record, err error, transient bool) bool {
+	failed := 1 // tries of r that failed, this one included
+	if c.fromRetry(r) {
+		n, _ := strconv.Atoi(header(r, headerAttempt))
+		failed += n
+	}
+	to, what, sent := c.spec.DLQ, "dlq", &c.dead
+	if retry := c.spec.Retry; transient && retry != nil && failed <= retry.Attempts {
+		to, what, sent = retry.Topic, "retry", &c.retried
+	}
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	serr := c.produce(pctx, &kgo.Record{Topic: to, Key: r.Key, Value: r.Value, Headers: failureHeaders(r, c.spec.Group, failed, err)})
+	cancel()
+	if serr != nil {
+		c.counts.fail(fmt.Errorf("%s: %w", what, serr))
+		log.Printf("%s to %s: %v", what, to, serr)
+		return !errors.Is(serr, kgo.ErrClientClosed)
+	}
+	sent.Add(1)
+	return true
+}
+
+// The headers a consumer sets on a record it sends to its retry topic or its DLQ.
+const (
+	headerGroup   = "studio-group"   // the consumer's group: a retry loop skips other groups' records
+	headerAttempt = "studio-attempt" // tries of the record that failed so far
+	headerError   = "studio-error"   // the last failure: its first line, at most errorHeaderMax bytes
+	headerOrigin  = "studio-origin"  // where the record was first read: topic[partition]@offset
+)
+
+const errorHeaderMax = 1 << 10
+
+// header is r's last value for key, "" without one.
+func header(r *kgo.Record, key string) string {
+	v := ""
+	for _, h := range r.Headers {
+		if h.Key == key {
+			v = string(h.Value)
+		}
+	}
+	return v
+}
+
+// failureHeaders are r's own headers plus the studio-* ones for its failed'th
+// failed try, err. studio-origin keeps where r was first read.
+func failureHeaders(r *kgo.Record, group string, failed int, err error) []kgo.RecordHeader {
+	origin := header(r, headerOrigin)
+	if origin == "" {
+		origin = fmt.Sprintf("%s[%d]@%d", r.Topic, r.Partition, r.Offset)
+	}
+	msg, _, _ := strings.Cut(err.Error(), "\n")
+	if len(msg) > errorHeaderMax {
+		msg = msg[:errorHeaderMax]
+	}
+	hs := slices.DeleteFunc(slices.Clone(r.Headers), func(h kgo.RecordHeader) bool { return strings.HasPrefix(h.Key, "studio-") })
+	return append(hs,
+		kgo.RecordHeader{Key: headerGroup, Value: []byte(group)},
+		kgo.RecordHeader{Key: headerAttempt, Value: []byte(strconv.Itoa(failed))},
+		kgo.RecordHeader{Key: headerError, Value: []byte(msg)},
+		kgo.RecordHeader{Key: headerOrigin, Value: []byte(origin)},
+	)
 }
 
 // consume polls the group until ctx ends, handing every record to c.
@@ -394,6 +511,7 @@ func runNode() {
 	var tr *transform           // a consumer's transform; nil without one
 	var rt *router              // a consumer's router; nil without one
 	var consuming chan struct{} // closed when a consumer's poll loop has returned; nil for a producer
+	var c *consumer             // nil for a producer
 	produce := func(ctx context.Context, rec *kgo.Record) error {
 		return cl.ProduceSync(ctx, rec).FirstErr()
 	}
@@ -410,6 +528,9 @@ func runNode() {
 		if rt != nil {
 			route := rt.read()
 			s.Route = &route
+		}
+		if c != nil {
+			s.Retried, s.DLQ = c.retried.Load(), c.dead.Load()
 		}
 		reply(w, http.StatusOK, s)
 	})
@@ -433,7 +554,7 @@ func runNode() {
 				log.Fatal("router: ", err) // Validate compiled the same rules on deploy
 			}
 		}
-		c := &consumer{spec: spec, tail: t, counts: counts, transform: tr, router: rt, post: postJSON, produce: produce}
+		c = &consumer{spec: spec, tail: t, counts: counts, transform: tr, router: rt, post: postJSON, produce: produce}
 		consuming = make(chan struct{})
 		go func() {
 			c.consume(ctx, cl)
