@@ -101,11 +101,11 @@ func (t *tail) last() int64 {
 
 // nodeStats is what GET /stats answers; the control plane adds the container state.
 type nodeStats struct {
-	Boot    string      `json:"boot"` // random per process: a restarted container starts its counters and tail over
-	tally               // records produced (producers) or fetched (consumers), the failures, the last one
-	TailSeq int64       `json:"tailSeq"`         // seq of the newest tail record; the drawer fetches when it moves
-	Step    *tally      `json:"step,omitempty"`  // a consumer's transform, when it runs one
-	Route   *routeTally `json:"route,omitempty"` // a consumer's router, when it runs one
+	Boot    string     `json:"boot"` // random per process: a restarted container starts its counters and tail over
+	tally              // records produced (producers) or fetched (consumers), the failures, the last one
+	TailSeq int64      `json:"tailSeq"`         // seq of the newest tail record; the drawer fetches when it moves
+	Step    *stepTally `json:"step,omitempty"`  // a consumer's transform, when it runs one
+	Route   *stepTally `json:"route,omitempty"` // a consumer's router, when it runs one
 }
 
 // tally is what counters read: every record counted, the ones that failed, and
@@ -398,8 +398,7 @@ func runNode() {
 	mux.HandleFunc("GET /stats", func(w http.ResponseWriter, r *http.Request) {
 		s := counts.stats(boot, t.last())
 		if tr != nil {
-			step := tr.counts.read()
-			s.Step = &step
+			s.Step = &stepTally{tally: tr.counts.read()}
 		}
 		if rt != nil {
 			route := rt.read()

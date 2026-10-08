@@ -77,9 +77,9 @@ type NodeState struct {
 	Unmatched  int64              `json:"unmatched,omitempty"` // routers: records dropped, no rule matched and no default
 	Instances  []NodeState        `json:"instances,omitempty"`
 
-	step     *tally      // a consumer container's transform counts; applySteps puts them on the transform node
-	route    *routeTally // and its router's, put on the router node
-	answered bool        // its container's /stats answered in this snapshot
+	step     *stepTally // a consumer container's transform counts; applySteps puts them on the transform node
+	route    *stepTally // and its router's, put on the router node
+	answered bool       // its container's /stats answered in this snapshot
 }
 
 // A snapshot asks every running container for /stats in parallel and the broker
@@ -387,30 +387,18 @@ func (ns *NodeState) setCounts(t tally) {
 // the counts the consumer's containers report for it.
 func applySteps(st *FlowState, specs []NodeSpec) {
 	for _, s := range specs {
-		if s.Instance > 1 {
-			continue // a consumer's specs repeat per instance; its first does for all
+		if s.Instance > 1 || s.TransformNode == "" && s.RouterNode == "" {
+			continue // a consumer's specs repeat per instance (its first does for all), and most run no step
 		}
 		consumer := st.Nodes[s.Node]
 		if s.TransformNode != "" {
-			st.Nodes[s.TransformNode] = stepState(consumer, (*NodeState).transformCounts)
+			st.Nodes[s.TransformNode] = stepState(consumer, func(c *NodeState) *stepTally { return c.step })
 		}
 		if s.RouterNode != "" {
-			st.Nodes[s.RouterNode] = stepState(consumer, (*NodeState).routerCounts)
+			st.Nodes[s.RouterNode] = stepState(consumer, func(c *NodeState) *stepTally { return c.route })
 		}
 	}
 }
-
-// transformCounts is what a consumer container reported for its transform, nil
-// when nothing: a tally, which has no branches or unmatched.
-func (ns *NodeState) transformCounts() *routeTally {
-	if ns.step == nil {
-		return nil
-	}
-	return &routeTally{tally: *ns.step}
-}
-
-// routerCounts is what a consumer container reported for its router, nil when nothing.
-func (ns *NodeState) routerCounts() *routeTally { return ns.route }
 
 // stepState is the state of a step (a transform or a router) that runs in
 // consumer: the consumer's state, and the counts its containers report for the
@@ -420,7 +408,7 @@ func (ns *NodeState) routerCounts() *routeTally { return ns.route }
 // step whose consumer's containers answer but none reports it (added after
 // deploy) is "missing" until one does; one whose consumer did not answer keeps
 // the consumer's state, with no numbers.
-func stepState(consumer NodeState, countsOf func(*NodeState) *routeTally) NodeState {
+func stepState(consumer NodeState, countsOf func(*NodeState) *stepTally) NodeState {
 	t := NodeState{State: consumer.State}
 	var steps []NodeState
 	var boots []string

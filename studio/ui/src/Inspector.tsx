@@ -8,11 +8,10 @@ type Props = {
   flowId?: string // the open flow, for the producer's webhook line and a consumer's rewind
   running: boolean // the open flow runs: a consumer's group cannot be rewound
   dirty: boolean // unsaved edits: a rewind uses the saved group and topic
-  topics: { id: string; name: string }[] // a router's wired topics, for its rules (empty for other nodes)
   onChange: (id: string, patch: Record<string, unknown>) => void
 }
 
-export default function Inspector({ node, flowId, running, dirty, topics, onChange }: Props) {
+export default function Inspector({ node, flowId, running, dirty, onChange }: Props) {
   if (!node) return <p className="hint">Select a node to edit it.</p>
   const set = (patch: Record<string, unknown>) => onChange(node.id, patch)
 
@@ -143,7 +142,7 @@ export default function Inspector({ node, flowId, running, dirty, topics, onChan
           <p className="hint">An expr-lang expression over msg, the record's value decoded from JSON, e.g. {'{id: msg.id, total: msg.qty * msg.price}'}. Its result is forwarded with the same key; nil drops the record. Deploy checks that it compiles.</p>
         </>
       )}
-      {node.type === 'router' && <RouterRules data={node.data} topics={topics} set={set} />}
+      {node.type === 'router' && <RouterRules id={node.id} data={node.data} set={set} />}
     </div>
   )
 }

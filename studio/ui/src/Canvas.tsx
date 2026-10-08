@@ -47,21 +47,21 @@ export default function Canvas({ nodes, edges, onNodesChange, onEdgesChange, set
   const onConnect = useCallback(
     (c: Connection) => {
       setEdges((eds) => addEdge(c, eds))
-      if (getNode(c.source)?.type !== 'router') return
       setNodes((nds) => nds.map((n) => (n.id === c.source && n.type === 'router' ? { ...n, data: withRule(n.data, c.target) } : n)))
     },
-    [getNode, setEdges, setNodes],
+    [setEdges, setNodes],
   )
 
-  // A router's edges carry labels worked out from its rules, never saved.
-  const shownEdges = useMemo(
-    () =>
-      edges.map((e) => {
-        const router = nodes.find((n) => n.id === e.source)
-        return router?.type === 'router' ? { ...e, label: routeLabel(router.data, e.target, runtime[router.id]?.branches) } : e
-      }),
-    [edges, nodes, runtime],
-  )
+  // A router's edges carry labels worked out from its rules, never saved; without
+  // a router the edges pass through as they are, so a tick changes nothing here.
+  const shownEdges = useMemo(() => {
+    const routers = new Map(nodes.flatMap((n) => (n.type === 'router' ? [[n.id, n] as const] : [])))
+    if (routers.size === 0) return edges
+    return edges.map((e) => {
+      const router = routers.get(e.source)
+      return router ? { ...e, label: routeLabel(router.data, e.target, runtime[router.id]?.branches) } : e
+    })
+  }, [edges, nodes, runtime])
 
   const onDrop = useCallback(
     (e: DragEvent) => {

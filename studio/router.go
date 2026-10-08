@@ -18,11 +18,7 @@ import (
 // compile; with msg declared any, one of unknown type does, and a result that is
 // not a boolean is an error when it runs.
 func compileRule(src string) (*vm.Program, error) {
-	p, err := expr.Compile(src, expr.Env(transformEnv{}), expr.AsBool())
-	if err != nil {
-		return nil, firstLine(err)
-	}
-	return p, nil
+	return compileTransform(src, expr.AsBool())
 }
 
 // router is one consumer's compiled rules, the VM they run on (a consumer
@@ -37,11 +33,12 @@ type router struct {
 	unmatched atomic.Int64   // records dropped: no rule matched, no default
 }
 
-// routeTally is what /stats reports for a consumer's router.
-type routeTally struct {
+// stepTally is what /stats reports for a step a consumer runs: a transform's
+// tally, or a router's, which adds its branches and unmatched.
+type stepTally struct {
 	tally
-	Branches  []int64 `json:"branches"`  // per rule, then the default (0 without one)
-	Unmatched int64   `json:"unmatched"` // dropped: no rule matched, no default
+	Branches  []int64 `json:"branches,omitempty"`  // a router's, per rule, then the default (0 without one)
+	Unmatched int64   `json:"unmatched,omitempty"` // a router's dropped records: no rule matched, no default
 }
 
 // newRouter compiles routes for one consumer to run.
@@ -79,8 +76,9 @@ func (r *router) pick(value []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	env := transformEnv{Msg: msg}
 	for i, p := range r.rules {
-		res, err := r.vm.Run(p, transformEnv{Msg: msg})
+		res, err := r.vm.Run(p, env)
 		if err != nil {
 			return "", fmt.Errorf("rule %d: %w", i+1, firstLine(err))
 		}
@@ -95,8 +93,8 @@ func (r *router) pick(value []byte) (string, error) {
 	return r.def, nil
 }
 
-func (r *router) read() routeTally {
-	t := routeTally{tally: r.counts.read(), Branches: make([]int64, len(r.branches)), Unmatched: r.unmatched.Load()}
+func (r *router) read() stepTally {
+	t := stepTally{tally: r.counts.read(), Branches: make([]int64, len(r.branches)), Unmatched: r.unmatched.Load()}
 	for i := range r.branches {
 		t.Branches[i] = r.branches[i].Load()
 	}

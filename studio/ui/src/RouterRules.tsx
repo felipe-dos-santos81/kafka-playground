@@ -1,15 +1,18 @@
-import type { RouterData, Rule } from './nodes/types'
+import { useEdges, useNodes } from '@xyflow/react'
+import { wiredTopics } from './flow/router'
+import type { RouterData, Rule, StudioNode } from './nodes/types'
 
 type Props = {
+  id: string // the router's node id
   data: RouterData
-  topics: { id: string; name: string }[] // the topics the router has edges to
   set: (patch: Partial<RouterData>) => void
 }
 
 // A router's rules in order (first match wins), each a condition and one of the
 // router's wired topics, and its default. A rule or default naming a topic the
 // router is not wired to stays, marked, until it is changed: Deploy refuses it.
-export default function RouterRules({ data, topics, set }: Props) {
+export default function RouterRules({ id, data, set }: Props) {
+  const topics = wiredTopics(id, useNodes<StudioNode>(), useEdges())
   const wired = new Set(topics.map((t) => t.id))
   const setRules = (rules: Rule[]) => set({ rules })
   const update = (i: number, patch: Partial<Rule>) => setRules(data.rules.map((r, j) => (j === i ? { ...r, ...patch } : r)))

@@ -357,14 +357,14 @@ func TestApplySteps(t *testing.T) {
 	}
 	st := FlowState{Status: "running", Nodes: map[string]NodeState{
 		"consumer-1": {State: "exited", Instances: []NodeState{
-			{Instance: 1, State: "running", Boot: "a", step: &tally{Total: 5, Errors: 1, LastError: "invalid operation"}},
+			{Instance: 1, State: "running", Boot: "a", step: &stepTally{tally: tally{Total: 5, Errors: 1, LastError: "invalid operation"}}},
 			{Instance: 2, State: "exited"},
 		}},
-		"consumer-2": {State: "running", Boot: "c", step: &tally{Total: 3}},
+		"consumer-2": {State: "running", Boot: "c", step: &stepTally{tally: tally{Total: 3}}},
 		"consumer-3": {State: "running"},
 		"consumer-4": {State: "running", Instances: []NodeState{
-			{Instance: 1, State: "running", Boot: "a", step: &tally{Total: 5, Errors: 1, LastError: "first"}},
-			{Instance: 2, State: "running", Boot: "b", step: &tally{Total: 3, LastError: "second"}},
+			{Instance: 1, State: "running", Boot: "a", step: &stepTally{tally: tally{Total: 5, Errors: 1, LastError: "first"}}},
+			{Instance: 2, State: "running", Boot: "b", step: &stepTally{tally: tally{Total: 3, LastError: "second"}}},
 		}},
 		"consumer-5": {State: "running", Boot: "d", answered: true}, // answers, but no container reports transform-4
 		"consumer-6": {State: "running"},                            // runs, but its /stats did not answer this tick
@@ -395,8 +395,8 @@ func TestApplyStepsRouter(t *testing.T) {
 	}
 	st := FlowState{Status: "running", Nodes: map[string]NodeState{
 		"consumer-1": {State: "running", Instances: []NodeState{
-			{Instance: 1, State: "running", Boot: "a", step: &tally{Total: 4}, route: &routeTally{tally: tally{Total: 4}, Branches: []int64{2, 1, 0}, Unmatched: 1}},
-			{Instance: 2, State: "running", Boot: "b", step: &tally{Total: 2}, route: &routeTally{tally: tally{Total: 2, Errors: 1, LastError: "rule 1: invalid operation"}, Branches: []int64{1, 0, 0}}},
+			{Instance: 1, State: "running", Boot: "a", step: &stepTally{tally: tally{Total: 4}}, route: &stepTally{tally: tally{Total: 4}, Branches: []int64{2, 1, 0}, Unmatched: 1}},
+			{Instance: 2, State: "running", Boot: "b", step: &stepTally{tally: tally{Total: 2}}, route: &stepTally{tally: tally{Total: 2, Errors: 1, LastError: "rule 1: invalid operation"}, Branches: []int64{1, 0, 0}}},
 		}},
 		"consumer-2": {State: "running", Boot: "c", answered: true}, // answers, but reports no router (added after deploy)
 	}}

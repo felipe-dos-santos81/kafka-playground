@@ -68,13 +68,8 @@ test('build, run and stop a flow in the editor', async ({ page, studio }) => {
 test('a router built in the editor: wiring adds rules, Deploy wants their conditions', async ({ page, studio }) => {
   const name = studio.unique('router-editor')
   const flow = chain(name, manual, topic(`${name}-in`), consumer(`${name}-in`))
-  flow.nodes = [
-    node('producer-1', 'producer', 60, manual, 20),
-    node('topic-1', 'topic', 60, topic(`${name}-in`), 100),
-    node('consumer-1', 'consumer', 60, consumer(`${name}-in`), 180),
-    node('topic-2', 'topic', 60, topic(`${name}-big`), 360),
-    node('topic-3', 'topic', 60, topic(`${name}-other`), 440),
-  ]
+  flow.nodes.forEach((n, i) => (n.position = { x: 60, y: 20 + 80 * i })) // producer, topic, consumer at y 20, 100, 180
+  flow.nodes.push(node('topic-2', 'topic', 60, topic(`${name}-big`), 360), node('topic-3', 'topic', 60, topic(`${name}-other`), 440))
   // One column, unfitted: the long names widen the nodes, and the router goes in the gap at y 270.
   flow.viewport = { x: 0, y: 0, zoom: 1 }
   await studio.create(flow)

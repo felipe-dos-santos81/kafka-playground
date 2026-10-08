@@ -23,9 +23,10 @@ type transformEnv struct {
 	Msg any `expr:"msg"`
 }
 
-// compileTransform compiles src; Validate calls it on deploy, newTransform when a consumer starts.
-func compileTransform(src string) (*vm.Program, error) {
-	p, err := expr.Compile(src, expr.Env(transformEnv{}))
+// compileTransform compiles src, with opts (a router's rules add expr.AsBool);
+// Validate calls it on deploy, newTransform when a consumer starts.
+func compileTransform(src string, opts ...expr.Option) (*vm.Program, error) {
+	p, err := expr.Compile(src, append([]expr.Option{expr.Env(transformEnv{})}, opts...)...)
 	if err != nil {
 		return nil, firstLine(err)
 	}

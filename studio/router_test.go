@@ -46,7 +46,7 @@ func TestRoute(t *testing.T) {
 			t.Errorf("%s: want %q, got %q %v", c.value, c.topic, topic, err)
 		}
 	}
-	want := routeTally{tally: tally{Total: 7, Errors: 2, LastError: "value is not valid JSON"}, Branches: []int64{3, 1, 1}}
+	want := stepTally{tally: tally{Total: 7, Errors: 2, LastError: "value is not valid JSON"}, Branches: []int64{3, 1, 1}}
 	if got := withDefault.read(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("per rule, then the default:\n got %+v\nwant %+v", got, want)
 	}
@@ -66,7 +66,7 @@ func TestRoute(t *testing.T) {
 	if topic, err := noDefault.route([]byte(`{"total":5}`)); topic != "" || err != nil {
 		t.Fatalf("no rule matches and no default: dropped, not an error; got %q %v", topic, err)
 	}
-	want = routeTally{tally: tally{Total: 1}, Branches: []int64{0, 0, 0}, Unmatched: 1}
+	want = stepTally{tally: tally{Total: 1}, Branches: []int64{0, 0, 0}, Unmatched: 1}
 	if got := noDefault.read(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("an unmatched record counts as unmatched:\n got %+v\nwant %+v", got, want)
 	}

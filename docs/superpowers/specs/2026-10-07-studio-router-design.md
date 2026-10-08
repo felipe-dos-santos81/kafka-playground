@@ -103,7 +103,8 @@ router → forward.
   the router got, `branches` one count per rule plus one for the default (always
   present, 0 without a default) of the records each picked, whether or not the
   forward then succeeded (a failed forward counts on the consumer), `unmatched`
-  the dropped ones.
+  the dropped ones (left out at 0). A transform's `step` is the same shape
+  without the two router fields.
 - The snapshot gives the Router node its consumer's state and these counts,
   summed over the consumer's instances (the last error prefixed `#<i>: ` from an
   instance, like every node), and a `boot` joining theirs, as for a Transform.

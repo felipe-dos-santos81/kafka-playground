@@ -1,5 +1,6 @@
 // A router's rules as the canvas shows and edits them.
-import type { RouterData } from '../nodes/types'
+import type { Edge } from '@xyflow/react'
+import type { RouterData, StudioNode } from '../nodes/types'
 
 // The label on a router's edge to target: the rules that send there (#1, #2) and
 // the default, each with its count while the flow runs (#1 · 80).
@@ -20,4 +21,12 @@ export function routeLabel(data: RouterData, target: string, branches?: number[]
 export function withRule(data: RouterData, topic: string): RouterData {
   if (data.default === topic || data.rules.some((r) => r.to === topic)) return data
   return { ...data, rules: [...data.rules, { when: '', to: topic }] }
+}
+
+// The topics a router has edges to, by name, for its rules' selects.
+export function wiredTopics(id: string, nodes: StudioNode[], edges: Edge[]): { id: string; name: string }[] {
+  return edges.flatMap((e) => {
+    const t = e.source === id ? nodes.find((n) => n.id === e.target) : undefined
+    return t?.type === 'topic' ? [{ id: t.id, name: t.data.name || t.id }] : []
+  })
 }
