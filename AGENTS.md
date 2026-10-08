@@ -44,3 +44,59 @@ make down                  # then `docker ps -aq -f label=studio.flow`, `docker 
 - A topic owner's series that mean what kafka-exporter's mean keep its names and labels; the rest are `topic_owner_*`. `verify-topics` greps metric names and log lines; renaming one changes it too. `verify-topics` owns the `owner-verify` prefix: don't give anything else that name.
 - Makefile: GNU make 3.81 on macOS with BSD tools (no `timeout`, no `base64 -w0`, no `sed -i` without `''`). Recipes use real tabs. Follow the existing style: `SERVICE`, `## ` help comments, `# ── Section ──` rules, lower-case `arg ?= default`. Pass user text to the shell as `$(call shq,$(value var))`.
 - Keep README.md, and the spec when behaviour departs from it, in sync with any behaviour change.
+
+## Unit testing: write fewer, better tests
+
+Every test is code someone has to read, maintain, and wait on in CI. A test
+earns its place only if it can fail for a reason no other test already covers.
+Optimize for distinct behaviors verified, not for test count or coverage numbers.
+
+### Before writing any test
+
+1. Read the existing tests for the code you're touching. If a behavior is
+   already covered, do not cover it again. Extend or adjust the existing test
+   instead of adding a new one beside it.
+2. List the distinct behaviors you need to verify (one line each). If two items
+   on the list would fail for the same underlying bug, merge them.
+3. For each remaining item, ask: "If I deleted this test, what bug could slip
+   through that the other tests would miss?" If you can't name one, don't write it.
+
+### What counts as redundant
+
+- Multiple inputs from the same equivalence class (e.g. testing 3, 5, and 7
+  when any positive integer exercises the same path). Pick one representative
+  plus the boundaries.
+- The same logic tested at several layers. Test it once at the lowest layer
+  that owns it; higher layers only test their own wiring and logic.
+- Tests that differ only in input and expected values. Collapse them into one
+  table-driven/parameterized test.
+- A new test that is a strict subset of an existing, broader one.
+
+### What not to test at all
+
+- Trivial code with no logic: getters, setters, plain constructors, constants,
+  simple delegation.
+- The language, standard library, framework, or third-party dependencies.
+- Implementation details: private helpers, internal call order, or mock
+  interactions that merely restate the implementation. Test observable behavior
+  through the public interface.
+- Scenarios that the type system or compiler already makes impossible.
+
+### What you should still test
+
+- Each distinct branch or behavior of the public contract, once.
+- Boundaries and edge cases (empty, zero, max, nil/null, off-by-one).
+- Error paths that have distinct handling.
+- A regression test for each bug you fix, targeting that specific bug.
+
+### When changing existing code
+
+- Update the tests that cover the changed behavior rather than adding parallel
+  ones. Delete tests made obsolete by the change.
+- Don't add tests for code you didn't change unless asked.
+
+### Reporting
+
+When you finish, state briefly which behaviors you tested and any you
+deliberately skipped as redundant or trivial, so the reviewer can disagree
+if needed.
