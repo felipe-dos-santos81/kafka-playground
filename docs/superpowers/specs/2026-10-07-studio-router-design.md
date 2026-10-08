@@ -63,7 +63,7 @@ Edge table additions: `consumer → router`, `transform → router`,
     the same environment as a Transform: `msg` declared `any`); a compile error
     keeps its first line, e.g. `rule 2: when: unexpected token`;
   - every rule's `to`, and `default` when set, is a topic node the router has an
-    edge to;
+    edge to; a rule with no topic picked is refused as `rule <i>: pick a topic`;
   - every edge out of the router is some rule's `to` or the default (a dangling
     branch is refused, not ignored);
   - a transform before the router keeps its existing rule (one edge in, one out);
