@@ -1,6 +1,6 @@
 # Local Kafka playground: one KRaft broker, one-shot topic jobs, kcat consumers,
-# a small producer page, Redpanda Console, Pipeline Studio, topic owners and
-# Prometheus. No auth, no TLS, nothing persisted.
+# a small producer page, Redpanda Console, Pipeline Studio, topic owners,
+# Prometheus and Grafana. No auth, no TLS, nothing persisted.
 # Containers reach the broker at kafka:19092; the host at localhost:9092.
 
 # One-shot job: create a topic, exit 0 (also when it already exists).
@@ -213,5 +213,34 @@ services:
       - ./prometheus:/etc/prometheus:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9090/-/ready"]
+      interval: 2s
+      retries: 30
+
+  # Grafana: the topic-owners dashboard, provisioned from files; anonymous
+  # admin, nothing phones home. http://localhost:3000
+  grafana:
+    image: grafana/grafana:13.2.3
+    depends_on:
+      prometheus: {condition: service_healthy}
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      # the two subdirectories, not the whole tree: the image's other provisioning
+      # directories must stay, or Grafana logs an error for each one it cannot open
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboards:/var/lib/grafana-dashboards:ro
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
       interval: 2s
       retries: 30
