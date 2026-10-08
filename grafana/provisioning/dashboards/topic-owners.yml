@@ -1,9 +1,7 @@
 # Loads grafana/dashboards/*.json (mounted at /var/lib/grafana-dashboards).
-# Edit the files, not the UI: allowUiUpdates is off.
+# Edit the files, not the UI: Grafana does not save UI edits to a provisioned dashboard.
 apiVersion: 1
 providers:
   - name: topic-owners
-    type: file
-    allowUiUpdates: false
     options:
       path: /var/lib/grafana-dashboards

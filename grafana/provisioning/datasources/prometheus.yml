@@ -1,4 +1,4 @@
-# The playground's Prometheus, the dashboard's only datasource. Not editable in the UI.
+# The playground's Prometheus, the dashboard's only datasource (provisioned: not editable in the UI).
 apiVersion: 1
 datasources:
   - name: Prometheus
@@ -7,6 +7,5 @@ datasources:
     access: proxy
     url: http://prometheus:9090
     isDefault: true
-    editable: false
     jsonData:
       timeInterval: 5s # Prometheus's scrape_interval

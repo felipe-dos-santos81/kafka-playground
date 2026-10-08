@@ -239,7 +239,7 @@ Grafana at http://localhost:3000/d/topic-owners shows the `Topic owners` dashboa
 
 The dashboard is `grafana/dashboards/topic-owners.json`, and its datasource is in `grafana/provisioning/`. Grafana does not save UI edits: edit the JSON, and Grafana reloads it within 10 s.
 
-Prometheus evaluates `prometheus/rules.yml` every 5 s. Firing alerts show at http://localhost:9090/alerts and on the dashboard. There is no Alertmanager, so nothing is sent anywhere.
+Prometheus evaluates `prometheus/rules.yml` every 15 s. Firing alerts show at http://localhost:9090/alerts and on the dashboard. There is no Alertmanager, so nothing is sent anywhere.
 
 | Alert | Fires when |
 |---|---|

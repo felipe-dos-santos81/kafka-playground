@@ -5,9 +5,8 @@
     "kafka",
     "topic-owners"
   ],
-  "description": "The topic owners' series (topic-owner/): one row per role. Provisioned from grafana/dashboards/topic-owners.json.",
   "schemaVersion": 41,
-  "refresh": "5s",
+  "refresh": "15s",
   "time": {
     "from": "now-30m",
     "to": "now"

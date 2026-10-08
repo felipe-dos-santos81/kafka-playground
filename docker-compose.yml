@@ -220,8 +220,6 @@ services:
   # admin, nothing phones home. http://localhost:3000
   grafana:
     image: grafana/grafana:13.2.3
-    depends_on:
-      prometheus: {condition: service_healthy}
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
@@ -240,6 +238,7 @@ services:
       GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
       GF_NEWS_NEWS_FEED_ENABLED: "false"
       GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_UNIFIED_ALERTING_ENABLED: "false"   # alerts live in Prometheus (prometheus/rules.yml)
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
       interval: 2s

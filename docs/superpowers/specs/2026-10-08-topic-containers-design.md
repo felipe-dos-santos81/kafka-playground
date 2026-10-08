@@ -885,8 +885,6 @@ Why anchors:
   # admin, nothing phones home. http://localhost:3000
   grafana:
     image: grafana/grafana:13.2.3
-    depends_on:
-      prometheus: {condition: service_healthy}
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
@@ -903,6 +901,7 @@ Why anchors:
       GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
       GF_NEWS_NEWS_FEED_ENABLED: "false"
       GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_UNIFIED_ALERTING_ENABLED: "false"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
       interval: 2s
@@ -945,7 +944,7 @@ Why anchors:
 global:
   scrape_interval: 5s
   scrape_timeout: 4s
-  evaluation_interval: 5s
+  evaluation_interval: 15s
 rule_files: [/etc/prometheus/rules.yml]
 scrape_configs:
   - job_name: topic-owners
@@ -986,9 +985,16 @@ Grafana provisioning:
 
 - **`grafana/provisioning/datasources/prometheus.yml`:** `uid: prometheus`,
   `url: http://prometheus:9090`, `access: proxy`, `isDefault: true`,
-  `editable: false`, `jsonData.timeInterval: 5s`.
-- **`grafana/provisioning/dashboards/topic-owners.yml`:** a file provider with
-  `path: /var/lib/grafana-dashboards` and `allowUiUpdates: false`.
+  `jsonData.timeInterval: 5s`. A provisioned datasource is not editable in the
+  UI by default.
+- **`grafana/provisioning/dashboards/topic-owners.yml`:** a file provider
+  (the default type) with `path: /var/lib/grafana-dashboards`. Grafana does
+  not save UI edits to a provisioned dashboard by default.
+- **No `depends_on` on Prometheus, and no Grafana alerting (M3).** The
+  datasource connects lazily, so Grafana starts beside Prometheus; `make up
+  --wait` still waits for both. `GF_UNIFIED_ALERTING_ENABLED=false` stops
+  Grafana's own alert scheduler: the alerts live in Prometheus. The dashboard
+  refreshes every 15 s.
 - **`grafana/dashboards/topic-owners.json`:** uid `topic-owners`, title
   `Topic owners`. It has variables `base` and `topic_instance`, from
   `label_values(topic_owner_info, …)` (multi-value, default All). A table of
@@ -1418,8 +1424,9 @@ prints nothing either.
    Desktop for macOS, with GNU make 3.81 and BSD tools. Data is throwaway.
 2. "Owns" means desired state wins. Hand-made config changes on an owned topic
    are reverted, and topic-level overrides nobody asked for are removed.
-3. The reconcile interval of 10 s, the scrape and evaluation interval of 5 s
-   and the 4 s scrape timeout are constants, not settings.
+3. The reconcile interval of 10 s, the scrape interval of 5 s, the rule
+   evaluation interval of 15 s (M3) and the 4 s scrape timeout are constants,
+   not settings.
 4. `/healthz` reflects the last reconcile, not a live check per request.
 5. `PARTITIONS` is shared by the three roles of an instance through the
    environment anchor. A role may override it, but nothing requires that.

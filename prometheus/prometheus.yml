@@ -4,7 +4,7 @@
 global:
   scrape_interval: 5s
   scrape_timeout: 4s
-  evaluation_interval: 5s
+  evaluation_interval: 15s
 rule_files: [/etc/prometheus/rules.yml]
 
 scrape_configs:
