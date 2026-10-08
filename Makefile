@@ -1,5 +1,5 @@
 # Kafka Playground: a local Kafka sandbox (KRaft broker, topic jobs, kcat consumers,
-# producer page, Redpanda Console, Pipeline Studio, topic owners, Prometheus).
+# producer page, Redpanda Console, Pipeline Studio, topic owners, Prometheus, Grafana).
 # Typical use: up → produce → logs → scale → groups → down. verify checks it all end to end.
 SERVICE = Kafka Playground
 
@@ -9,6 +9,7 @@ PRODUCER_URL ?= http://localhost:8081
 CONSOLE_URL ?= http://localhost:8080
 STUDIO_URL ?= http://localhost:8082
 PROMETHEUS_URL ?= http://localhost:9090
+GRAFANA_URL ?= http://localhost:3000
 KAFKA_BIN = $(COMPOSE) exec -T kafka /opt/kafka/bin
 BOOTSTRAP = --bootstrap-server localhost:19092
 topic ?= orders
@@ -40,7 +41,7 @@ help: ## Print this help message
 
 up: ## [STEP 1] Start everything and wait until it is healthy
 	$(COMPOSE) up -d --wait
-	@echo "Producer page: $(PRODUCER_URL)   Console: $(CONSOLE_URL)   Studio: $(STUDIO_URL)   Prometheus: $(PROMETHEUS_URL)   Broker from the host: localhost:9092"
+	@echo "Producer page: $(PRODUCER_URL)   Console: $(CONSOLE_URL)   Studio: $(STUDIO_URL)   Prometheus: $(PROMETHEUS_URL)   Grafana: $(GRAFANA_URL)/d/topic-owners   Broker from the host: localhost:9092"
 
 # Studio nodes and topic-owner one-offs (docker compose run) are not services:
 # remove them first, or the network cannot go. -v removes the anonymous volumes
@@ -248,7 +249,7 @@ verify-studio: up ## Check the studio API end to end: every node type, retry and
 
 # Runs owners of its own base, owner-verify, as one-offs of the orders-1 service
 # (same image, network and healthcheck; labels and environment overridden).
-verify-topics: up ## Check the topic owners end to end: refusals, reconcile, metrics, the redelivery worker and the DLQ; cleans up its containers, topics and group
+verify-topics: up ## Check the topic owners end to end: refusals, reconcile, metrics, the redelivery worker and the DLQ, alerts and Grafana; cleans up its containers, topics and group
 	@trap 'docker rm -f owner-verify-refused owner-verify-1 owner-verify-1__retry owner-verify-1__dlq >/dev/null 2>&1; $(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --delete --topic "owner-verify-1(__retry|__dlq)?" >/dev/null 2>&1; $(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --delete --group owner-verify-1__redelivery >/dev/null 2>&1' EXIT; \
 	own() { n=$$1 r=$$2 p=$$3; shift 3; docker rm -f "$$n" >/dev/null 2>&1; \
 		out=$$($(COMPOSE) run -d --no-deps --name "$$n" -l topic-owner.base=owner-verify -l topic-owner.instance=1 -l topic-owner.role="$$r" \
@@ -315,6 +316,19 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 		{ echo "TOPICS FAILED: want a back on owner-verify-1 with its studio-origin, b and d (bad header) on the DLQ: main $$main dlq $$dlq"; exit 1; }; \
 	echo "$$main$$dlq" | grep -q '"key":"c"' && { echo "TOPICS FAILED: c (studio-group set) was forwarded: $$main $$dlq"; exit 1; }; \
 	echo "topics worker: a redelivered, b and d dead-lettered, c left to its Studio loop, 2 parked"; \
+	out=$$($(COMPOSE) exec -T prometheus promtool check config /etc/prometheus/prometheus.yml 2>&1) || { echo "TOPICS FAILED: promtool check config: $$out"; exit 1; }; \
+	for i in $$(seq 30); do \
+		rules=$$(curl -sS $(PROMETHEUS_URL)/api/v1/rules?type=alert); \
+		[ "$$(echo "$$rules" | grep -o '"health":"ok"' | wc -l | tr -d ' ')" = 4 ] && \
+			curl -sS $(PROMETHEUS_URL)/api/v1/alerts | grep -q '"alertname":"TopicDLQGrowing","topic":"owner-verify-1__dlq"},"annotations":{[^}]*},"state":"firing"' && break; \
+		[ "$$i" = 30 ] && { echo "TOPICS FAILED: want 4 healthy alert rules and TopicDLQGrowing firing for owner-verify-1__dlq: rules $$rules alerts $$(curl -sS $(PROMETHEUS_URL)/api/v1/alerts)"; exit 1; }; sleep 1; \
+	done; \
+	for p in /api/health /api/dashboards/uid/topic-owners; do \
+		curl -sSf -o /dev/null $(GRAFANA_URL)$$p || { echo "TOPICS FAILED: Grafana $$p"; exit 1; }; \
+	done; \
+	out=$$(curl -sS $(GRAFANA_URL)/api/datasources/uid/prometheus/health); \
+	echo "$$out" | grep -q 'Successfully queried the Prometheus API' || { echo "TOPICS FAILED: Grafana's Prometheus datasource: $$out"; exit 1; }; \
+	echo "topics alerts: 4 rules, TopicDLQGrowing firing for owner-verify-1__dlq; Grafana: dashboard topic-owners, datasource healthy"; \
 	echo "TOPICS OK"
 
 verify-ui: up studio/ui/.chromium ## Check the studio UI in Chromium (Playwright); installs Chromium once
