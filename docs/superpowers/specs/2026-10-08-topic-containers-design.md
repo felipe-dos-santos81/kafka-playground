@@ -720,13 +720,14 @@ quoted because the verify target greps the alert name:
 | Alert | Expression | `for` | Why |
 |---|---|---|---|
 | `TopicConsumerLagHigh` | `sum by (consumergroup, topic) (kafka_consumergroup_lag{topic!~".+__(retry\|dlq)"}) > 100` | 2m | a consumer of a main topic falls behind |
-| `TopicDLQGrowing` | `sum by (topic) (increase(kafka_topic_partition_current_offset{topic=~".+__dlq"}[10m])) > 0` | 0s | any newly parked record is news in a playground |
+| `TopicDLQGrowing` | `sum by (topic) (increase(kafka_topic_partition_current_offset{topic=~".+__dlq"}[10m])) > 0 and on (topic) kafka_topic_partitions` | 0s | any newly parked record is news in a playground |
 | `TopicRetryWaiting` | `sum by (consumergroup, topic) (kafka_consumergroup_lag{topic=~".+__retry"}) > 0` | 5m | records sit in a retry topic longer than any sensible backoff: the worker is down, or a Studio loop stopped (3.5) |
 | `TopicOwnerUnhealthy` | `up{job="topic-owners"} == 0 or topic_owner_reconciled == 0 or (max_over_time(topic_owner_info{oneoff=""}[1h]) unless topic_owner_info)` | 1m | a running owner fails its scrapes, its topic is not in its desired state, or an owner seen in the last hour is gone |
 
-`TopicDLQGrowing` keeps firing for 10 minutes after the last parked record,
-also after its topic is deleted: `increase()` still sees the samples inside
-its window (M3). `make verify` leaves it firing for `owner-verify-1__dlq`.
+`TopicDLQGrowing` requires the DLQ owner's `kafka_topic_partitions`. Without
+it, `increase()` still saw the samples inside its window and kept the alert
+firing for 10 minutes after the DLQ was deleted, also after `make verify`
+(M3).
 
 `up == 0` covers only a running owner that fails its scrapes: `docker_sd` lists
 running containers, so a stopped owner drops out of discovery and its `up`
@@ -1395,9 +1396,9 @@ with the evidence on a miss.
    - `/api/v1/rules` lists every alert of `rules.yml` (counted from the file)
      with `"health":"ok"`.
    - `/api/v1/alerts` has `"alertname":"TopicDLQGrowing"` with
-     `"topic":"owner-verify-1__dlq"` and `"state":"firing"`. When that alert
-     was already firing before step 5 (a run in the last 10 minutes), the
-     step's line says this run cannot show it.
+     `"topic":"owner-verify-1__dlq"` and `"state":"firing"`. When an earlier
+     run parked records in `owner-verify-1__dlq` in the last 10 minutes, the
+     step's line says this run cannot show the alert.
    - Grafana: `/api/health` answers 200, `/api/dashboards/uid/topic-owners`
      answers 200, and `/api/datasources/uid/prometheus/health` contains
      `Successfully queried the Prometheus API`.

@@ -81,12 +81,12 @@ Consumers with the same `GROUP_ID` split the partitions. Without one, each conta
 
 `orders-1`, `orders-1__retry` and `orders-1__dlq` are long-running containers, one per topic (`topic-owner/`, Go). Each one owns its topic:
 
-- It creates the topic. Then, every 10 s, it puts the topic back in its desired state: it sets missing configs, sets changed ones back, removes topic-level overrides nobody asked for, and raises partitions.
-- It never lowers partitions or changes the replication factor. Such a difference makes the container unhealthy and says why: `docker inspect --format '{{json .State.Health.Log}}' orders-1`, or `make logs svc=orders-1`.
-- `make up` waits until every topic is in its desired state. So `depends_on: {orders-1: {condition: service_healthy}}` guarantees a consumer its topic, as a finished topic job does.
-- A config changed by hand, in Console or with `kafka-configs.sh`, is set back. To change one, change the container's environment and recreate it.
-- It serves `/metrics` for its topic on port 9000 inside the network. Prometheus (http://localhost:9090) finds the containers by their labels, with no target list. Grafana shows them (below).
-- `make owners` lists them. `make query q='kafka_topic_partitions'` asks Prometheus. `make kcat args='-C -t orders-1 -o beginning -e -J'` runs kcat on the compose network (default `-L`).
+- It creates the topic. Then, every 10 s, it sets missing or changed configs, removes topic-level overrides nobody asked for, and raises partitions.
+- It never lowers partitions or changes the replication factor. Instead, the container turns unhealthy and says why: `docker inspect --format '{{json .State.Health.Log}}' orders-1`, or `make logs svc=orders-1`.
+- `make up` waits until every topic is in its desired state, so `depends_on: {orders-1: {condition: service_healthy}}` guarantees a consumer its topic.
+- It sets back a config changed by hand (in Console or with `kafka-configs.sh`). To change a config, change the container's environment and recreate it.
+- It serves `/metrics` on port 9000 inside the network. Prometheus finds the containers by their labels, with no target list.
+- `make owners` lists them, `make query q='kafka_topic_partitions'` asks Prometheus, and `make kcat args='-C -t orders-1 -o beginning -e -J'` runs kcat on the compose network (default `-L`).
 
 The retry container also runs the redelivery worker (below).
 
@@ -141,7 +141,7 @@ Copy the three `orders-1` services with new anchors and numbers. Paste them afte
     environment: {<<: *orders-2-env, ROLE: dlq}
 ```
 
-Instances share nothing: `orders-2` has its own topics and settings. Prometheus finds the new containers by their labels.
+Instances share nothing: `orders-2` has its own topics and settings. Prometheus finds the new containers on its own.
 
 ### Retry and the DLQ
 
@@ -203,7 +203,7 @@ Read headers with `-J`. kcat's `%h` joins them with commas and does not escape a
 
 ### Metrics
 
-Every series has a `topic` label. Where a series means what a [kafka-exporter](https://github.com/danielqsj/kafka_exporter) series means, it has the same name and labels, so kafka-exporter queries over these series work.
+Every series has a `topic` label. A series that means what a [kafka-exporter](https://github.com/danielqsj/kafka_exporter) series means has its name and labels, so kafka-exporter queries work.
 
 | Metric | |
 |---|---|
@@ -230,27 +230,27 @@ Some queries:
 
 ### Dashboard and alerts
 
-Grafana at http://localhost:3000/d/topic-owners shows the `Topic owners` dashboard. Anyone can open it, as admin, without logging in. Choose `base` and `topic_instance` at the top (both default to All). It has:
+Grafana at http://localhost:3000/d/topic-owners shows the `Topic owners` dashboard; anyone can open it as admin, without logging in. Pick `base` and `topic_instance` at the top (both default to All). It shows:
 
-- a table of the alerts firing now;
+- the alerts firing now;
 - **main:** messages in per second, partitions, log size, lag per group;
 - **retry:** waiting, redeliveries per second, moves to the DLQ per second by reason, backoff p50 and p95, skipped per second;
-- **dlq:** parked records, and the age of the oldest one.
+- **dlq:** parked records and the age of the oldest one.
 
-The dashboard and its datasource are files: `grafana/dashboards/topic-owners.json` and `grafana/provisioning/`. Grafana does not save changes made in the UI, and `make down` removes everything it stored. To change a panel, edit the JSON. Grafana reloads it within 10 s.
+The dashboard is `grafana/dashboards/topic-owners.json`, and its datasource is in `grafana/provisioning/`. Grafana does not save UI edits: edit the JSON, and Grafana reloads it within 10 s.
 
-Prometheus evaluates the alert rules in `prometheus/rules.yml` every 5 s. Firing alerts show at http://localhost:9090/alerts and in the dashboard's table. There is no Alertmanager, so nothing is sent anywhere.
+Prometheus evaluates `prometheus/rules.yml` every 5 s. Firing alerts show at http://localhost:9090/alerts and on the dashboard. There is no Alertmanager, so nothing is sent anywhere.
 
 | Alert | Fires when |
 |---|---|
 | `TopicConsumerLagHigh` | a group's lag on a main topic stays above 100 for 2 minutes |
-| `TopicDLQGrowing` | a record was parked in a DLQ in the last 10 minutes; it keeps firing for 10 minutes after the last one, also after the topic is gone (`make verify` leaves one for `owner-verify-1__dlq`, and a second run within those 10 minutes says it cannot show the alert again) |
+| `TopicDLQGrowing` | a record was parked in a DLQ in the last 10 minutes, and the DLQ's owner runs |
 | `TopicRetryWaiting` | records wait in a retry topic for 5 minutes: the worker is down, or a Studio retry loop stopped |
-| `TopicOwnerUnhealthy` | for 1 minute, a running owner's scrapes fail, its topic is not in its desired state, or an owner seen in the last hour is gone (stopped or crashed). A `docker compose run` one-off, such as `make verify`'s, is meant to go away: Prometheus labels its series `oneoff="true"`, and its absence raises nothing |
+| `TopicOwnerUnhealthy` | for 1 minute: a running owner's scrapes fail, its topic is not in its desired state, or an owner seen in the last hour is gone (stopped or crashed). Prometheus labels a `docker compose run` one-off, such as `make verify`'s, `oneoff="true"`; it may go away without an alert |
 
-Bytes in and out per topic are not exported. Only the broker's JMX has them, and the JMX agent would need a jar and a change to the `kafka` service.
+Bytes in and out per topic are not exported: only the broker's JMX has them, and the JMX agent needs a jar and a change to the `kafka` service.
 
-Prometheus reads the Docker socket with `group_add: ["0"]`, because Docker Desktop shows the socket as `root:root 0660` inside containers. On native Linux, use the host's docker gid instead. The socket gives root on the host, which is one more reason everything stays on `127.0.0.1`.
+Prometheus reads the Docker socket with `group_add: ["0"]`, because Docker Desktop shows the socket as `root:root 0660` inside containers; on native Linux, use the host's docker gid. The socket gives root on the host, one more reason everything stays on `127.0.0.1`.
 
 ## Pipeline Studio
 

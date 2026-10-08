@@ -41,12 +41,11 @@ help: ## Print this help message
 
 up: ## [STEP 1] Start everything and wait until it is healthy
 	$(COMPOSE) up -d --wait
-	@echo "Producer page: $(PRODUCER_URL)   Console: $(CONSOLE_URL)   Studio: $(STUDIO_URL)   Prometheus: $(PROMETHEUS_URL)   Grafana: $(GRAFANA_URL)/d/topic-owners   Broker from the host: localhost:9092"
+	@echo "Producer: $(PRODUCER_URL)   Console: $(CONSOLE_URL)   Studio: $(STUDIO_URL)   Prometheus: $(PROMETHEUS_URL)   Grafana: $(GRAFANA_URL)/d/topic-owners   Broker: localhost:9092"
 
-# Studio nodes and topic-owner one-offs (docker compose run) are not services:
-# remove them first, or the network cannot go. -v removes the anonymous volumes
-# the kafka and prometheus images declare.
-down: ## Remove every container and volume, Studio nodes first (deletes topics, messages and metrics)
+# Studio nodes and topic-owner one-offs are not services: remove them first, or
+# the network cannot go. -v removes the kafka and prometheus images' anonymous volumes.
+down: ## Remove every container and volume (deletes topics, messages and metrics)
 	@ids=$$(docker ps -aq -f label=studio.flow; docker ps -aq -f label=topic-owner.role -f label=com.docker.compose.oneoff=True); [ -z "$$ids" ] || docker rm -f $$ids >/dev/null
 	$(COMPOSE) down -v --remove-orphans
 
@@ -94,7 +93,7 @@ scale: ## [STEP 4] Set the number of orders-workers group members (usage: make s
 
 # ── Verify ───────────────────────────────────────────────────────────────────
 
-verify-studio: up ## Check the studio API end to end: every node type, retry and DLQ; cleans up its flows and topics
+verify-studio: up ## Check the studio API end to end: every node type, retry and DLQ; cleans up after itself
 	@health=$$(curl -sS --fail-with-body $(STUDIO_URL)/api/health) || { echo "STUDIO FAILED: health: $$health"; exit 1; }; \
 	echo "studio health: $$health"; \
 	code=$$(curl -sS -o /dev/null -w '%{http_code}' -X POST $(STUDIO_URL)/api/flows -H 'Sec-Fetch-Site: cross-site' --data '{"name":"x"}'); \
@@ -247,12 +246,13 @@ verify-studio: up ## Check the studio API end to end: every node type, retry and
 	curl -sS --fail -X DELETE $(STUDIO_URL)/api/flows/$$qid || { echo "STUDIO FAILED: delete the retry flow"; exit 1; }; \
 	echo "STUDIO OK ($$id)"
 
-# Runs owners of its own base, owner-verify, as one-offs of the orders-1 service
-# (same image, network and healthcheck; labels and environment overridden).
-# TopicDLQGrowing lasts 10 minutes: when an earlier run's alert for owner-verify-1__dlq
-# is still firing, step 6 says this run cannot show it.
-verify-topics: up ## Check the topic owners end to end: refusals, reconcile, metrics, the redelivery worker and the DLQ, alerts and Grafana; cleans up its containers, topics and group
-	@trap 'docker rm -f owner-verify-refused owner-verify-1 owner-verify-1__retry owner-verify-1__dlq >/dev/null 2>&1; $(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --delete --topic "owner-verify-1(__retry|__dlq)?" >/dev/null 2>&1; $(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --delete --group owner-verify-1__redelivery >/dev/null 2>&1' EXIT; \
+# Runs owners of its own base, owner-verify, as one-offs of the orders-1 service.
+# TopicDLQGrowing looks back 10 minutes, so after a run in that window step 6
+# says it cannot show the alert.
+verify-topics: up ## Check the topic owners end to end: reconcile, metrics, the redelivery worker, alerts, Grafana; cleans up after itself
+	@promis() { curl -sS $(PROMETHEUS_URL)/api/v1/query --data-urlencode "query=$$1" | grep -q "\"value\":\[[0-9.]*,\"$$2\"\]"; }; \
+	stale=0; promis 'count(last_over_time(kafka_topic_partition_current_offset{topic="owner-verify-1__dlq"}[10m])) > bool 0' 1 && stale=1; \
+	trap 'docker rm -f owner-verify-refused owner-verify-1 owner-verify-1__retry owner-verify-1__dlq >/dev/null 2>&1; $(KAFKA_BIN)/kafka-topics.sh $(BOOTSTRAP) --delete --topic "owner-verify-1(__retry|__dlq)?" >/dev/null 2>&1; $(KAFKA_BIN)/kafka-consumer-groups.sh $(BOOTSTRAP) --delete --group owner-verify-1__redelivery >/dev/null 2>&1' EXIT; \
 	own() { n=$$1 r=$$2 p=$$3; shift 3; docker rm -f "$$n" >/dev/null 2>&1; \
 		out=$$($(COMPOSE) run -d --no-deps --name "$$n" -l topic-owner.base=owner-verify -l topic-owner.instance=1 -l topic-owner.role="$$r" \
 			-e BASE_NAME=owner-verify -e INSTANCE=1 -e ROLE="$$r" -e PARTITIONS="$$p" "$$@" orders-1 2>&1) || { echo "TOPICS FAILED: start $$n: $$out"; return 1; }; }; \
@@ -287,7 +287,6 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 	done; \
 	echo "topics partitions: raised 2 -> 3, a decrease refused"; \
 	own owner-verify-1 main 3 -e TOPIC_CONFIG_RETENTION_MS=3600000 && healthy owner-verify-1 || exit 1; \
-	promis() { curl -sS $(PROMETHEUS_URL)/api/v1/query --data-urlencode "query=$$1" | grep -q "\"value\":\[[0-9.]*,\"$$2\"\]"; }; \
 	for i in $$(seq 30); do \
 		promis 'up{job="topic-owners",instance="owner-verify-1"}' 1 && promis 'kafka_topic_partitions{topic="owner-verify-1"}' 3 && promis 'topic_owner_info{topic="owner-verify-1",role="main"}' 1 && break; \
 		[ "$$i" = 30 ] && { echo "TOPICS FAILED: Prometheus never scraped owner-verify-1 with 3 partitions: $$(curl -sS $(PROMETHEUS_URL)/api/v1/query --data-urlencode 'query={topic="owner-verify-1"}')"; exit 1; }; sleep 1; \
@@ -301,7 +300,6 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 	done; \
 	kc() { $(call kcat_run,kcat) -b kafka:19092 "$$@" 2>/dev/null; }; \
 	park() { k=$$1; shift; echo "{\"id\":\"$$k\"}" | kc -P -t owner-verify-1__retry -k "$$k" "$$@" || { echo "TOPICS FAILED: park $$k in owner-verify-1__retry"; return 1; }; }; \
-	stale=$$(curl -sS $(PROMETHEUS_URL)/api/v1/alerts | grep -c '"alertname":"TopicDLQGrowing","topic":"owner-verify-1__dlq"}'); \
 	park a -H studio-attempt=1 -H studio-backoff-ms=1000 && park b -H studio-attempt=2 && \
 		park c -H studio-group=owner-verify-studio && park d -H studio-backoff-ms=soon || exit 1; \
 	for i in $$(seq 30); do \
@@ -324,25 +322,22 @@ verify-topics: up ## Check the topic owners end to end: refusals, reconcile, met
 	for i in $$(seq 30); do \
 		rules=$$(curl -sS "$(PROMETHEUS_URL)/api/v1/rules?type=alert"); \
 		[ "$$(echo "$$rules" | grep -o '"health":"ok"' | wc -l | tr -d ' ')" = "$$n" ] && \
-			curl -sS $(PROMETHEUS_URL)/api/v1/alerts | grep -q '"alertname":"TopicDLQGrowing","topic":"owner-verify-1__dlq"},"annotations":{[^}]*},"state":"firing"' && break; \
-		[ "$$i" = 30 ] && { echo "TOPICS FAILED: want $$n healthy alert rules and TopicDLQGrowing firing for owner-verify-1__dlq: rules $$rules alerts $$(curl -sS $(PROMETHEUS_URL)/api/v1/alerts)"; exit 1; }; sleep 1; \
+			promis 'ALERTS{alertname="TopicDLQGrowing",topic="owner-verify-1__dlq",alertstate="firing"}' 1 && break; \
+		[ "$$i" = 30 ] && { echo "TOPICS FAILED: want $$n healthy alert rules and TopicDLQGrowing firing for owner-verify-1__dlq: rules $$rules alerts $$(curl -sS $(PROMETHEUS_URL)/api/v1/query --data-urlencode query=ALERTS)"; exit 1; }; sleep 1; \
 	done; \
-	for p in /api/health /api/dashboards/uid/topic-owners; do \
-		curl -sSf -o /dev/null $(GRAFANA_URL)$$p || { echo "TOPICS FAILED: Grafana $$p"; exit 1; }; \
-	done; \
+	curl -sSf -o /dev/null $(GRAFANA_URL)/api/dashboards/uid/topic-owners || { echo "TOPICS FAILED: Grafana has no dashboard topic-owners"; exit 1; }; \
 	out=$$(curl -sS $(GRAFANA_URL)/api/datasources/uid/prometheus/health); \
 	echo "$$out" | grep -q 'Successfully queried the Prometheus API' || { echo "TOPICS FAILED: Grafana's Prometheus datasource: $$out"; exit 1; }; \
 	alert="TopicDLQGrowing firing for owner-verify-1__dlq"; \
-	[ "$$stale" = 0 ] || alert="TopicDLQGrowing for owner-verify-1__dlq already firing from a run in the last 10 minutes, so this run cannot show it"; \
+	[ "$$stale" = 0 ] || alert="TopicDLQGrowing not shown: a run in the last 10 minutes already parked records in owner-verify-1__dlq"; \
 	echo "topics alerts: $$n rules, $$alert; Grafana: dashboard topic-owners, datasource healthy"; \
 	echo "TOPICS OK"
 
 verify-ui: up studio/ui/.chromium ## Check the studio UI in Chromium (Playwright); installs Chromium once
 	@cd studio/ui && STUDIO_URL=$(STUDIO_URL) KAFKA_BOOTSTRAP=$(lastword $(BOOTSTRAP)) npx playwright test && echo "UI OK"
 
-# Waits until both groups have committed past the record (so it can no longer be
-# redelivered), then counts it in the logs: exactly once per group.
-verify: up verify-studio verify-ui verify-topics ## Full check: studio API, studio UI, topic owners, then one record seen once per consumer group
+# Waits until both groups commit past the record, then counts it in the logs: once per group.
+verify: up verify-studio verify-ui verify-topics ## Full check: studio API, studio UI, topic owners, then one record seen once per group
 	@id="verify-$$(date +%s)"; \
 	sent=$$($(MAKE) --no-print-directory produce key="$$id" value="{\"id\":\"$$id\"}") || exit 1; \
 	partition=$$(echo "$$sent" | sed 's/.*"partition":\([0-9]*\).*/\1/'); \

@@ -8,14 +8,13 @@ groups:
       - alert: TopicConsumerLagHigh # a consumer of a main topic falls behind
         expr: sum by (consumergroup, topic) (kafka_consumergroup_lag{topic!~".+__(retry|dlq)"}) > 100
         for: 2m
-      - alert: TopicDLQGrowing # any newly parked record is news in a playground
-        expr: sum by (topic) (increase(kafka_topic_partition_current_offset{topic=~".+__dlq"}[10m])) > 0
+      - alert: TopicDLQGrowing # a record parked in the last 10 minutes, while the DLQ's owner runs
+        expr: sum by (topic) (increase(kafka_topic_partition_current_offset{topic=~".+__dlq"}[10m])) > 0 and on (topic) kafka_topic_partitions
       - alert: TopicRetryWaiting # the worker is down, or a Studio retry loop stopped
         expr: sum by (consumergroup, topic) (kafka_consumergroup_lag{topic=~".+__retry"}) > 0
         for: 5m
-      # TopicOwnerUnhealthy: a running owner fails its scrapes, its topic is not in its desired state, or an
-      # owner seen in the last hour is gone (stopped or crashed: docker_sd drops it). A `docker compose run`
-      # one-off (oneoff="true", prometheus.yml) is meant to go away, so its absence is not news.
+      # TopicOwnerUnhealthy: a running owner fails its scrapes, its topic drifted, or an owner seen in the
+      # last hour is gone (docker_sd drops a stopped container). One-offs (oneoff="true") are meant to go.
       - alert: TopicOwnerUnhealthy
         expr: up{job="topic-owners"} == 0 or topic_owner_reconciled == 0 or (max_over_time(topic_owner_info{oneoff=""}[1h]) unless topic_owner_info)
         for: 1m

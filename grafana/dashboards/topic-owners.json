@@ -7,7 +7,6 @@
   ],
   "description": "The topic owners' series (topic-owner/): one row per role. Provisioned from grafana/dashboards/topic-owners.json.",
   "schemaVersion": 41,
-  "version": 1,
   "refresh": "5s",
   "time": {
     "from": "now-30m",
@@ -79,10 +78,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "refId": "A",
           "expr": "ALERTS{alertstate=\"firing\"}",
           "instant": true,
@@ -133,10 +128,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "refId": "A",
           "expr": "sum by (topic) (rate(kafka_topic_partition_current_offset{topic=~\"${base}-${topic_instance}\"}[1m]))",
           "legendFormat": "{{topic}}"
@@ -146,8 +137,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "ops"
-        },
-        "overrides": []
+        }
       }
     },
     {
@@ -166,10 +156,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "refId": "A",
           "expr": "kafka_topic_partitions{topic=~\"${base}-${topic_instance}\"}",
           "legendFormat": "{{topic}}"
@@ -192,10 +178,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "refId": "A",
           "expr": "sum by (topic) (topic_owner_partition_log_size_bytes{topic=~\"${base}-${topic_instance}\"})",
           "legendFormat": "{{topic}}"
@@ -204,8 +186,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "bytes"
-        },
-        "overrides": []
+        }
       }
     },
     {
@@ -224,10 +205,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "refId": "A",
           "expr": "sum by (consumergroup, topic) (kafka_consumergroup_lag{topic=~\"${base}-${topic_instance}\"})",
           "legendFormat": "{{consumergroup}} on {{topic}}"
@@ -236,8 +213,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short"
-        },
-        "overrides": []
+        }
       }
     },
     {
@@ -269,10 +245,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "refId": "A",
           "expr": "sum by (topic) (kafka_consumergroup_lag{consumergroup=~\".+__redelivery\",topic=~\"${base}-${topic_instance}__retry\"})",
           "legendFormat": "{{topic}}"
@@ -282,8 +254,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short"
-        },
-        "overrides": []
+        }
       }
     },
     {
@@ -302,10 +273,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "refId": "A",
           "expr": "rate(topic_owner_redeliveries_total{topic=~\"${base}-${topic_instance}__retry\"}[5m])",
           "legendFormat": "{{topic}}"
@@ -314,8 +281,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "ops"
-        },
-        "overrides": []
+        }
       }
     },
     {
@@ -334,10 +300,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "refId": "A",
           "expr": "sum by (topic, reason) (rate(topic_owner_dead_lettered_total{topic=~\"${base}-${topic_instance}__retry\"}[5m]))",
           "legendFormat": "{{topic}} {{reason}}"
@@ -346,8 +308,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "ops"
-        },
-        "overrides": []
+        }
       }
     },
     {
@@ -366,19 +327,11 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "refId": "A",
           "expr": "histogram_quantile(0.5, sum by (le, topic) (rate(topic_owner_backoff_seconds_bucket{topic=~\"${base}-${topic_instance}__retry\"}[5m])))",
           "legendFormat": "{{topic}} p50"
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "refId": "B",
           "expr": "histogram_quantile(0.95, sum by (le, topic) (rate(topic_owner_backoff_seconds_bucket{topic=~\"${base}-${topic_instance}__retry\"}[5m])))",
           "legendFormat": "{{topic}} p95"
@@ -387,8 +340,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "s"
-        },
-        "overrides": []
+        }
       }
     },
     {
@@ -407,10 +359,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "refId": "A",
           "expr": "rate(topic_owner_skipped_total{topic=~\"${base}-${topic_instance}__retry\"}[5m])",
           "legendFormat": "{{topic}}"
@@ -420,8 +368,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "ops"
-        },
-        "overrides": []
+        }
       }
     },
     {
@@ -453,10 +400,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "refId": "A",
           "expr": "sum by (topic) (kafka_topic_partition_current_offset{topic=~\"${base}-${topic_instance}__dlq\"} - kafka_topic_partition_oldest_offset{topic=~\"${base}-${topic_instance}__dlq\"})",
           "legendFormat": "{{topic}}"
@@ -465,8 +408,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short"
-        },
-        "overrides": []
+        }
       }
     },
     {
@@ -485,10 +427,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
           "refId": "A",
           "expr": "time() - min by (topic) (topic_owner_oldest_message_timestamp_seconds{topic=~\"${base}-${topic_instance}__dlq\"})",
           "legendFormat": "{{topic}}"
@@ -497,8 +435,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "s"
-        },
-        "overrides": []
+        }
       }
     }
   ]
