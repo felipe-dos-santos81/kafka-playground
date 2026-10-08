@@ -1,21 +1,28 @@
 // The editor: flows built and run through the UI.
 import {
+  chain,
   connect,
+  consumer,
   deployFlow,
+  edgeOf,
   expectGrowing,
   expect,
   field,
   flowIdOf,
   flowItem,
   flowRow,
+  manual,
   messageCount,
+  node,
   nodeOf,
   paletteItem,
+  ruleOf,
   runtimeOf,
   simple,
   tail,
   test,
   topBar,
+  topic,
 } from './studio'
 
 test('build, run and stop a flow in the editor', async ({ page, studio }) => {
@@ -56,6 +63,46 @@ test('build, run and stop a flow in the editor', async ({ page, studio }) => {
   await page.getByRole('button', { name: 'Stop' }).click()
   await expect(topBar(page).getByText('stopped', { exact: true })).toBeVisible({ timeout: 15_000 })
   expect(studio.containers(await flowIdOf(name))).toEqual([])
+})
+
+test('a router built in the editor: wiring adds rules, Deploy wants their conditions', async ({ page, studio }) => {
+  const name = studio.unique('router-editor')
+  const flow = chain(name, manual, topic(`${name}-in`), consumer(`${name}-in`))
+  flow.nodes = [
+    node('producer-1', 'producer', 60, manual, 20),
+    node('topic-1', 'topic', 60, topic(`${name}-in`), 100),
+    node('consumer-1', 'consumer', 60, consumer(`${name}-in`), 180),
+    node('topic-2', 'topic', 60, topic(`${name}-big`), 360),
+    node('topic-3', 'topic', 60, topic(`${name}-other`), 440),
+  ]
+  // One column, unfitted: the long names widen the nodes, and the router goes in the gap at y 270.
+  flow.viewport = { x: 0, y: 0, zoom: 1 }
+  await studio.create(flow)
+  await studio.open(page, name)
+
+  await paletteItem(page, 'router').dragTo(page.locator('.react-flow__pane'), { targetPosition: { x: 60, y: 270 } })
+  await connect(page, 'consumer-1', 'router-1')
+  await connect(page, 'router-1', 'topic-2')
+  await connect(page, 'router-1', 'topic-3')
+  await nodeOf(page, 'router-1').click()
+  await expect(ruleOf(page, 1).getByLabel('Topic')).toHaveValue('topic-2')
+  await expect(ruleOf(page, 2).getByLabel('Topic')).toHaveValue('topic-3')
+  await expect(nodeOf(page, 'router-1')).toContainText('2 rules · no default')
+  await expect(edgeOf(page, 'router-1', 'topic-3')).toContainText('#2')
+
+  await page.getByRole('button', { name: 'Save' }).click()
+  await page.getByRole('button', { name: 'Deploy' }).click()
+  await expect(topBar(page)).toContainText('422: router-1: rule 1: when is required')
+
+  await ruleOf(page, 1).getByLabel('When').fill('msg.total > 100')
+  await ruleOf(page, 2).getByRole('button', { name: 'Remove' }).click()
+  await field(page, 'Default').selectOption('topic-3')
+  await expect(nodeOf(page, 'router-1')).toContainText(`1 rule · default ${name}-other`)
+  await expect(edgeOf(page, 'router-1', 'topic-2')).toContainText('#1')
+  await expect(edgeOf(page, 'router-1', 'topic-3')).toContainText('default')
+  await page.getByRole('button', { name: 'Save' }).click()
+  await page.getByRole('button', { name: 'Deploy' }).click()
+  await expect(topBar(page).getByText('running', { exact: true })).toBeVisible({ timeout: 15_000 })
 })
 
 test('a wire the edge table refuses is not drawn', async ({ page, studio }) => {

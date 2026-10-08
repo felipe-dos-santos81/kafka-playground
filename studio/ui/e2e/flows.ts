@@ -30,8 +30,8 @@ export async function flowIdOf(name: string): Promise<string> {
   return f.id
 }
 
-// A flow's parts, laid out left to right.
-export const node = (id: string, type: NodeType, x: number, data: Data): FlowNode => ({ id, type, position: { x, y: 0 }, data })
+// A flow's parts, laid out left to right (or where y puts them).
+export const node = (id: string, type: NodeType, x: number, data: Data, y = 0): FlowNode => ({ id, type, position: { x, y }, data })
 export const edge = (source: string, target: string): FlowEdge => ({ id: `${source}-${target}`, source, target })
 export const manual = { source: 'manual', key: '', value: '{"id": {{.Seq}}}' }
 export const timer = (ms: number) => ({ source: 'timer', interval_ms: ms, key: '{{.Seq}}', value: '{"id": {{.Seq}}}' })
